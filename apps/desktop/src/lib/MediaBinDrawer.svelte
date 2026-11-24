@@ -2,6 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
   import { allowDrop, clearAppDrag, readDroppedMedia, startAppDrag } from "./dragStore";
+  import { openContextMenu, type ContextMenuItem } from "./contextMenuStore.svelte";
   import type { MediaAssetRecord, MediaBinRecord, SceneState } from "./types";
 
   interface Props {
@@ -168,6 +169,37 @@
     }
   }
 
+  function openMediaContextMenu(event: MouseEvent, asset: MediaAssetRecord) {
+    const items: ContextMenuItem[] = [
+      { id: "background", label: "Set as Background Layer (L1)" },
+      { id: "foreground", label: "Show as Foreground / Slide (L2)" },
+      { id: "announcement", label: "Show on Announcements Layer (L3)" },
+    ];
+    if (asset.kind === "audio") {
+      items.push({ id: "auto", label: "Play Audio Track" });
+    }
+    bins
+      .filter((b) => b.id !== asset.bin_id)
+      .forEach((bin, i) => {
+        items.push({ id: `move:${bin.id}`, label: `Move to Bin: ${bin.name}`, separator: i === 0 });
+      });
+    items.push({ id: "delete", label: "Delete Media Asset", danger: true, separator: true });
+    openContextMenu(
+      event,
+      items,
+      (id) => {
+        if (id === "background" || id === "foreground" || id === "announcement" || id === "auto") {
+          void triggerAsset(asset, id);
+        } else if (id.startsWith("move:")) {
+          void moveAssetToBin(asset.blake3_hash, id.slice(5));
+        } else if (id === "delete") {
+          void removeAsset(asset);
+        }
+      },
+      asset.file_name,
+    );
+  }
+
   function swatchStyle(asset: MediaAssetRecord): string {
     if (asset.local_path.includes("sanctuary-glow")) {
       return "background: linear-gradient(135deg, #431407, #c2410c);";
@@ -324,6 +356,7 @@
           role="group"
           ondragstart={(e) => startMediaDrag(e, asset)}
           ondragend={clearAppDrag}
+          oncontextmenu={(e) => openMediaContextMenu(e, asset)}
           title="Click to fire (BG stays behind slides; FG clears on next slide). Drag onto any Slide, Layer, or Bin."
         >
           <button

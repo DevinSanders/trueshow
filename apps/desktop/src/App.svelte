@@ -3,7 +3,9 @@
   import { onMount } from "svelte";
   import PreviewCanvas from "./lib/PreviewCanvas.svelte";
   import BroadcastPanel from "./lib/BroadcastPanel.svelte";
+  import ContextMenu from "./lib/ContextMenu.svelte";
   import DiagnosticsPanel from "./lib/DiagnosticsPanel.svelte";
+  import { openContextMenu, type ContextMenuItem } from "./lib/contextMenuStore.svelte";
   import LayerManager from "./lib/LayerManager.svelte";
   import LibraryPlaylistDrawer from "./lib/LibraryPlaylistDrawer.svelte";
   import LooksTemplatesPanel from "./lib/LooksTemplatesPanel.svelte";
@@ -25,7 +27,9 @@
     LayerKind,
     MaskStyle,
     MediaFitMode,
+    OutputConfig,
     SceneState,
+    Slide,
     SlideElement,
   } from "./lib/types";
 
@@ -67,6 +71,60 @@
 
   function selectTab(tab: WorkspaceTab) {
     activeTab = tab;
+  }
+
+  function openSlideContextMenu(event: MouseEvent, slide: Slide) {
+    const items: ContextMenuItem[] = [
+      { id: "live", label: "Go Live (Trigger Slide)" },
+      { id: "edit", label: "Edit in Slide Editor" },
+      { id: "clear-slide", label: "Clear Slide Layer", shortcut: "F2" },
+    ];
+    if (slide.media_cue) {
+      items.push({ id: "clear-cue", label: `Remove Attached Cue (${slide.media_cue.label})` });
+    }
+    items.push(
+      { id: "blackout", label: scene?.blackout ? "Exit Blackout" : "Blackout", shortcut: "B", separator: true },
+      { id: "clear-all", label: "Clear All Layers", shortcut: "F1", danger: true },
+    );
+    openContextMenu(
+      event,
+      items,
+      (id) => {
+        if (id === "live") void triggerSlide(slide.id);
+        else if (id === "edit") { void triggerSlide(slide.id); selectTab("editor"); }
+        else if (id === "clear-slide") void clearLayer("Slide");
+        else if (id === "clear-cue") void attachMediaToSlide(slide.id, null);
+        else if (id === "blackout") void toggleBlackout();
+        else if (id === "clear-all") void clearAll();
+      },
+      slide.label,
+    );
+  }
+
+  function openOutputContextMenu(event: MouseEvent, output: OutputConfig) {
+    const items: ContextMenuItem[] = [
+      { id: "screens", label: "Configure Screen & Monitors" },
+      { id: "looks", label: "Manage Looks & Templates" },
+    ];
+    if (output.kind === "Stage") {
+      items.push({ id: "stage", label: "Stage Layout Designer" });
+    }
+    items.push(
+      { id: "freeze", label: scene?.freeze_output ? "Unfreeze Output" : "Freeze Output", shortcut: "F", separator: true },
+      { id: "blackout", label: scene?.blackout ? "Exit Blackout" : "Blackout", shortcut: "B" },
+      { id: "clear-all", label: "Clear All Layers", shortcut: "F1", danger: true },
+    );
+    openContextMenu(
+      event,
+      items,
+      (id) => {
+        if (id === "screens" || id === "looks" || id === "stage") selectTab(id);
+        else if (id === "freeze") void toggleFreeze();
+        else if (id === "blackout") void toggleBlackout();
+        else if (id === "clear-all") void clearAll();
+      },
+      `${output.name} (${output.kind})`,
+    );
   }
 
   async function attachEngine() {
@@ -615,6 +673,7 @@
                   if (dragOverSlideId === slide.id) dragOverSlideId = null;
                 }}
                 ondrop={(e) => handleDropMediaOnSlide(e, slide.id)}
+                oncontextmenu={(e) => openSlideContextMenu(e, slide)}
               >
                 <button
                   class="slide-card"
@@ -691,7 +750,7 @@
       {#if scene}
         <div class="monitors">
           {#each scene.outputs as output (output.id)}
-            <div class="output-block">
+            <div class="output-block" role="group" oncontextmenu={(e) => openOutputContextMenu(e, output)}>
               <PreviewCanvas
                 outputId={output.id}
                 label={output.name}
@@ -743,6 +802,8 @@
     onReconnect={attachEngine}
     onOpenDiagnostics={() => selectTab("diagnostics")}
   />
+
+  <ContextMenu />
 </div>
 
 <style>

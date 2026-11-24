@@ -8,6 +8,7 @@
     readDroppedSongId,
     startAppDrag,
   } from "./dragStore";
+  import { openContextMenu, type ContextMenuItem } from "./contextMenuStore.svelte";
   import type {
     PlaylistRecord,
     PresentationLibraryRecord,
@@ -283,6 +284,51 @@
     startAppDrag(event, { type: "song", songId: song.id, title: song.title });
   }
 
+  function openSongContextMenu(event: MouseEvent, song: SongRecord) {
+    const items: ContextMenuItem[] = [{ id: "open", label: "Load into Cue Deck" }];
+    if (activePlaylist) {
+      items.push({ id: "add-pl", label: `Add to "${activePlaylist.name}"` });
+    }
+    libraries
+      .filter((l) => l.id !== song.library_id)
+      .forEach((lib, i) => {
+        items.push({ id: `move:${lib.id}`, label: `Move to Library: ${lib.name}`, separator: i === 0 });
+      });
+    items.push({ id: "delete", label: "Delete Presentation", danger: true, separator: true });
+    openContextMenu(
+      event,
+      items,
+      (id) => {
+        if (id === "open") void openPresentation(song.id);
+        else if (id === "add-pl") void addSongToActivePlaylist(song.id);
+        else if (id.startsWith("move:")) void moveSongToLibrary(song.id, id.slice(5));
+        else if (id === "delete") void removePresentation(song.id);
+      },
+      song.title,
+    );
+  }
+
+  function openCueContextMenu(event: MouseEvent, songId: string, idx: number, title: string) {
+    const len = activePlaylist?.item_song_ids.length ?? 0;
+    const items: ContextMenuItem[] = [
+      { id: "open", label: "Load into Cue Deck" },
+      { id: "up", label: "Move Up", disabled: idx <= 0, separator: true },
+      { id: "down", label: "Move Down", disabled: idx >= len - 1 },
+      { id: "remove", label: "Remove from Playlist", danger: true, separator: true },
+    ];
+    openContextMenu(
+      event,
+      items,
+      (id) => {
+        if (id === "open") void openPresentation(songId);
+        else if (id === "up") void movePlaylistItem(idx, -1);
+        else if (id === "down") void movePlaylistItem(idx, 1);
+        else if (id === "remove") void removePlaylistItem(idx);
+      },
+      title,
+    );
+  }
+
   function handleDropOnLibrary(event: DragEvent, targetLibId: string) {
     dragOverLibraryId = null;
     event.preventDefault();
@@ -432,6 +478,7 @@
           draggable="true"
           ondragstart={(e) => startSongDrag(e, song)}
           ondragend={clearAppDrag}
+          oncontextmenu={(e) => openSongContextMenu(e, song)}
           title="Drag onto a library to move, or onto a playlist to add"
         >
           <button class="item-main" onclick={() => void openPresentation(song.id)}>
@@ -556,6 +603,7 @@
               e.stopPropagation();
               handleDropOnCueRow(e, idx);
             }}
+            oncontextmenu={(e) => openCueContextMenu(e, songId, idx, song?.title ?? songId)}
           >
             <button class="item-main" onclick={() => void openPresentation(songId)}>
               <strong>{idx + 1}. {song ? song.title : songId.slice(0, 8)}</strong>

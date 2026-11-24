@@ -1,5 +1,6 @@
 <script lang="ts">
   import { allowDrop, readDroppedMedia } from "./dragStore";
+  import { openContextMenu, type ContextMenuItem } from "./contextMenuStore.svelte";
   import type { LayerKind, SceneState } from "./types";
 
   interface Props {
@@ -121,6 +122,33 @@
       onDropMediaToLayer(media.blake3_hash, row.dropRole);
     }
   }
+
+  function openLayerContextMenu(event: MouseEvent, row: LayerRow) {
+    const items: ContextMenuItem[] = [
+      { id: "clear", label: `Clear ${row.name}`, disabled: !row.active },
+    ];
+    if (row.kind === "PropsAndOverlays") {
+      items.push({ id: "ov", label: row.active ? "Hide Props & Overlays" : "Show Props & Overlays" });
+    } else if (row.kind === "VideoInput") {
+      items.push({ id: "vid", label: row.active ? "Disable Video Input" : "Enable Video Input" });
+    }
+    items.push(
+      { id: "all", label: "Clear All Layers", shortcut: "F1", separator: true, danger: true },
+      { id: "blackout", label: scene.blackout ? "Exit Blackout" : "Blackout", shortcut: "B" },
+    );
+    openContextMenu(
+      event,
+      items,
+      (id) => {
+        if (id === "clear") onClearLayer(row.kind);
+        else if (id === "ov") onToggleOverlay();
+        else if (id === "vid") onToggleVideoInput();
+        else if (id === "all") onClearAll();
+        else if (id === "blackout") onToggleBlackout();
+      },
+      `L${row.index} · ${row.name}`,
+    );
+  }
 </script>
 
 <section class="layer-dock" data-testid="layer-manager">
@@ -150,6 +178,7 @@
           if (dragOverLayer === row.kind) dragOverLayer = null;
         }}
         ondrop={(e) => handleDrop(e, row)}
+        oncontextmenu={(e) => openLayerContextMenu(e, row)}
       >
         <div class="chip-top">
           <span class="status-dot" class:on={row.active}></span>

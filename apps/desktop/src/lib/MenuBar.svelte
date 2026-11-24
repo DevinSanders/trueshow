@@ -20,7 +20,6 @@
     disabled?: boolean;
     danger?: boolean;
     separator?: boolean;
-    action: () => void;
   }
 
   interface MenuGroup {
@@ -92,59 +91,58 @@
       id: "file",
       label: "File",
       items: [
-        { id: "file-show", label: "Show Deck", checked: activeTab === "show", action: () => onSelectTab("show") },
-        { id: "file-scripture", label: "Scripture Lookup", checked: activeTab === "scripture", action: () => onSelectTab("scripture") },
-        { id: "file-lyrics", label: "Quick Lyrics & Arrangements", checked: activeTab === "lyrics", action: () => onSelectTab("lyrics") },
-        { id: "file-import", label: "Import & .opbundle Backup...", separator: true, action: () => onSelectTab("ecosystem") },
-        { id: "file-reconnect", label: "Reconnect Engine", separator: true, action: onReconnect },
-        { id: "file-reload", label: "Reload UI (Keep Live)", action: onReloadUi },
-        { id: "file-stop", label: "Stop Engine", disabled: !connected, danger: true, separator: true, action: onShutdownEngine },
-        { id: "file-quit", label: "Shutdown All", danger: true, action: onShutdownAll },
+        { id: "tab:show", label: "Show Deck", checked: activeTab === "show" },
+        { id: "tab:scripture", label: "Scripture Lookup", checked: activeTab === "scripture" },
+        { id: "tab:lyrics", label: "Quick Lyrics & Arrangements", checked: activeTab === "lyrics" },
+        { id: "tab:ecosystem", label: "Import & .opbundle Backup...", separator: true },
+        { id: "reconnect", label: "Reconnect Engine", separator: true },
+        { id: "reload", label: "Reload UI (Keep Live)" },
+        { id: "stop-engine", label: "Stop Engine", disabled: !connected, danger: true, separator: true },
+        { id: "shutdown-all", label: "Shutdown All", danger: true },
       ],
     },
     {
       id: "edit",
       label: "Edit",
       items: [
-        { id: "edit-undo", label: "Undo", shortcut: "Ctrl+Z", disabled: !connected, action: onUndo },
-        { id: "edit-redo", label: "Redo", shortcut: "Ctrl+Y", disabled: !connected, action: onRedo },
-        { id: "edit-slide", label: "Slide Editor", checked: activeTab === "editor", separator: true, action: () => onSelectTab("editor") },
-        { id: "edit-overlays", label: "Overlays & Messages", checked: activeTab === "overlays", action: () => onSelectTab("overlays") },
+        { id: "undo", label: "Undo", shortcut: "Ctrl+Z", disabled: !connected },
+        { id: "redo", label: "Redo", shortcut: "Ctrl+Y", disabled: !connected },
+        { id: "tab:editor", label: "Slide Editor", checked: activeTab === "editor", separator: true },
+        { id: "tab:overlays", label: "Overlays & Messages", checked: activeTab === "overlays" },
       ],
     },
     {
       id: "view",
       label: "View",
       items: [
-        { id: "view-show", label: "Show Workspace", checked: activeTab === "show", action: () => onSelectTab("show") },
-        { id: "view-scripture", label: "Scripture Drawer", checked: activeTab === "scripture", action: () => onSelectTab("scripture") },
-        { id: "view-lyrics", label: "Quick Lyrics", checked: activeTab === "lyrics", action: () => onSelectTab("lyrics") },
-        { id: "view-lib", label: "Libraries & Playlists Drawer", checked: showLibraryDrawer, separator: true, action: onToggleLibraryDrawer },
-        { id: "view-layers", label: "Layer Manager Dock", checked: showLayerDock, action: onToggleLayerDock },
-        { id: "view-media", label: "Media Bin Drawer", checked: showMediaDrawer, action: onToggleMediaDrawer },
+        { id: "tab:show", label: "Show Workspace", checked: activeTab === "show" },
+        { id: "tab:scripture", label: "Scripture Drawer", checked: activeTab === "scripture" },
+        { id: "tab:lyrics", label: "Quick Lyrics", checked: activeTab === "lyrics" },
+        { id: "toggle-lib", label: "Libraries & Playlists Drawer", checked: showLibraryDrawer, separator: true },
+        { id: "toggle-layers", label: "Layer Manager Dock", checked: showLayerDock },
+        { id: "toggle-media", label: "Media Bin Drawer", checked: showMediaDrawer },
       ],
     },
     {
       id: "screens",
       label: "Screens",
       items: [
-        { id: "scr-config", label: "Configure Screens & Monitors", checked: activeTab === "screens", action: () => onSelectTab("screens") },
-        { id: "scr-looks", label: "Looks & Templates", checked: activeTab === "looks", action: () => onSelectTab("looks") },
-        { id: "scr-stage", label: "Stage Layout Designer", checked: activeTab === "stage", action: () => onSelectTab("stage") },
-        { id: "scr-broadcast", label: "Broadcast I/O & LAN Remote", checked: activeTab === "broadcast", separator: true, action: () => onSelectTab("broadcast") },
+        { id: "tab:screens", label: "Configure Screens & Monitors", checked: activeTab === "screens" },
+        { id: "tab:looks", label: "Looks & Templates", checked: activeTab === "looks" },
+        { id: "tab:stage", label: "Stage Layout Designer", checked: activeTab === "stage" },
+        { id: "tab:broadcast", label: "Broadcast I/O & LAN Remote", checked: activeTab === "broadcast", separator: true },
       ],
     },
     {
       id: "tools",
       label: "Tools",
       items: [
-        { id: "tools-control", label: "Control, Timers, Macros & Sync", checked: activeTab === "ecosystem", action: () => onSelectTab("ecosystem") },
+        { id: "tab:ecosystem", label: "Control, Timers, Macros & Sync", checked: activeTab === "ecosystem" },
         {
-          id: "tools-diag",
+          id: "tab:diagnostics",
           label: crashCount > 0 ? `Diagnostics (${crashCount})` : "Diagnostics & Logs",
           checked: activeTab === "diagnostics",
           separator: true,
-          action: () => onSelectTab("diagnostics"),
         },
       ],
     },
@@ -163,7 +161,21 @@
   function runItem(item: MenuItem) {
     if (item.disabled) return;
     openMenuId = null;
-    item.action();
+    if (item.id.startsWith("tab:")) {
+      onSelectTab(item.id.slice(4) as WorkspaceTab);
+      return;
+    }
+    switch (item.id) {
+      case "toggle-lib": onToggleLibraryDrawer(); break;
+      case "toggle-layers": onToggleLayerDock(); break;
+      case "toggle-media": onToggleMediaDrawer(); break;
+      case "undo": onUndo(); break;
+      case "redo": onRedo(); break;
+      case "reconnect": onReconnect(); break;
+      case "reload": onReloadUi(); break;
+      case "stop-engine": onShutdownEngine(); break;
+      case "shutdown-all": onShutdownAll(); break;
+    }
   }
 
   function handleWindowClick(event: MouseEvent) {

@@ -368,9 +368,34 @@ describe("OpenPresenter Operator Control Surface UI (Happy & Failure Paths)", ()
     await waitFor(() => expect(screen.getByText("Aurora Wave (GPU Motion)")).toBeTruthy());
     await fireEvent.click(screen.getByText("Aurora Wave (GPU Motion)"));
 
-    // 2. Trigger slide 2
+    // 2. Trigger slide 2 & test context-aware right-click menus across Slide, Output, Presentation, Media, and Layer
     await fireEvent.click(screen.getByText("02 — Amazing Grace"));
     await waitFor(() => expect(currentState.active_slide?.label).toBe("02 — Amazing Grace"));
+
+    const slideCardWrap = screen.getAllByText("02 — Amazing Grace")[0].closest(".slide-card-wrap")!;
+    await fireEvent.contextMenu(slideCardWrap);
+    expect(await screen.findByTestId("context-menu")).toBeTruthy();
+    await fireEvent.click(screen.getByRole("menuitem", { name: /Go Live \(Trigger Slide\)/ }));
+
+    const outputBlock = screen.getByLabelText("Look for Audience 1").closest(".output-block")!;
+    await fireEvent.contextMenu(outputBlock);
+    expect(await screen.findByTestId("context-menu")).toBeTruthy();
+    await fireEvent.click(screen.getByRole("menuitem", { name: /Freeze Output/ }));
+
+    const mediaTile = screen.getByText("Aurora Wave (GPU Motion)").closest(".asset-card")!;
+    await fireEvent.contextMenu(mediaTile);
+    expect(await screen.findByTestId("context-menu")).toBeTruthy();
+    await fireEvent.click(screen.getByRole("menuitem", { name: /Set as Background Layer/ }));
+
+    const songRow = screen.getAllByText("Amazing Grace")[0].closest("li")!;
+    await fireEvent.contextMenu(songRow);
+    expect(await screen.findByTestId("context-menu")).toBeTruthy();
+    await fireEvent.click(screen.getByRole("menuitem", { name: /Load into Cue Deck/ }));
+
+    const bgChip = screen.getByText("Media / Background").closest("li")!;
+    await fireEvent.contextMenu(bgChip);
+    expect(await screen.findByTestId("context-menu")).toBeTruthy();
+    await fireEvent.keyDown(window, { key: "Escape" });
 
     // 3. Toggle blackout ON and OFF
     await fireEvent.click(screen.getByText("BLACKOUT"));
@@ -455,7 +480,7 @@ describe("OpenPresenter Operator Control Surface UI (Happy & Failure Paths)", ()
     await clickMenu("Edit", /Overlays & Messages/);
     await waitFor(() => expect(screen.getByTestId("overlays-messages-panel")).toBeTruthy());
 
-    await fireEvent.click(screen.getByText("Freeze"));
+    await fireEvent.click(screen.getByText("Unfreeze"));
     await clickMenu("Edit", /Undo/);
     await clickMenu("Edit", /Redo/);
     await fireEvent.click(screen.getByText("Manage Looks"));
