@@ -245,15 +245,34 @@ async fn run_ipc_server(
         }
     });
 
-    let stage_server = match show_control::WebStageServer::bind_with_remote(
-        "0.0.0.0:0",
-        show_control::payload_from_scene(&shared.snapshot().state),
+    let stage_payload = show_control::payload_from_scene(&shared.snapshot().state);
+    let stage_bind = match show_control::WebStageServer::bind_with_remote(
+        "0.0.0.0:5505",
+        stage_payload.clone(),
         "2026".to_string(),
-        Some(remote_handler),
+        Some(Arc::clone(&remote_handler)),
     )
     .await
     {
+        Ok(srv) => Ok(srv),
+        Err(_) => {
+            show_control::WebStageServer::bind_with_remote(
+                "0.0.0.0:0",
+                stage_payload,
+                "2026".to_string(),
+                Some(remote_handler),
+            )
+            .await
+        }
+    };
+    let stage_server = match stage_bind {
         Ok(srv) => {
+            let port_dir = std::env::temp_dir().join("openpresenter-data");
+            let _ = std::fs::create_dir_all(&port_dir);
+            let _ = std::fs::write(
+                port_dir.join("web_stage_port.txt"),
+                srv.local_addr().port().to_string(),
+            );
             info!(
                 stage_url = %srv.url(),
                 remote_url = %srv.remote_url(),

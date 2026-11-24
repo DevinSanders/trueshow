@@ -21,10 +21,11 @@ use core_library::{
 use core_scene::{
     ActiveBackground, ActiveMessage, Arrangement, AudioPlaybackState, ColorRgba, ForegroundMedia,
     LOOK_AUDIENCE_FULL, LOOK_STAGE_CONFIDENCE, LayerKind, LookConfig, LookId, MaskStyle,
-    MediaCueRole, MediaTransportState, MessageTemplate, MonitorRegion, OutputConfig, OutputId,
-    OutputKind, OutputPlacement, OverlayItem, SceneDiff, SceneState, ShaderMotionStyle, Slide,
-    SlideAction, SlideElement, SlideId, SlideMediaCue, StageLayoutConfig, TemplateConfig,
-    TemplateId, TransitionSpec, render_message_template, split_monitor_regions,
+    MediaCueRole, MediaTransportState, MessageTemplate, MonitorRegion, OutputCalibration,
+    OutputConfig, OutputId, OutputKind, OutputPlacement, OverlayItem, SceneDiff, SceneState,
+    ShaderMotionStyle, Slide, SlideAction, SlideElement, SlideId, SlideMediaCue,
+    StageLayoutConfig, TemplateConfig, TemplateId, TransitionSpec, render_message_template,
+    split_monitor_regions,
 };
 use interprocess::local_socket::tokio::{Stream, prelude::*};
 use std::collections::{BTreeMap, HashMap};
@@ -38,6 +39,25 @@ use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
+#[derive(Clone)]
+struct BroadcastProfileState {
+    source_name: String,
+    alpha_mode: String,
+    decklink_mode: String,
+    streaming_active: bool,
+}
+
+impl Default for BroadcastProfileState {
+    fn default() -> Self {
+        Self {
+            source_name: "OpenPresenter — Main Broadcast".to_string(),
+            alpha_mode: "PremultipliedAlpha".to_string(),
+            decklink_mode: "ExternalKeyAndFill".to_string(),
+            streaming_active: false,
+        }
+    }
+}
+
 struct EngineBridgeState {
     socket_name: String,
     conn: Mutex<Option<Stream>>,
@@ -45,6 +65,7 @@ struct EngineBridgeState {
     preview_readers: StdMutex<HashMap<OutputId, (String, ShmPreviewReader)>>,
     library: StdMutex<LibraryStore>,
     timers: StdMutex<show_control::TimerEngine>,
+    broadcast_profile: StdMutex<BroadcastProfileState>,
     diagnostics: DiagnosticsPaths,
     logging: Option<LoggingController>,
     last_gpu_summary: StdMutex<Option<String>>,
@@ -67,6 +88,7 @@ impl EngineBridgeState {
             preview_readers: StdMutex::new(HashMap::new()),
             library: StdMutex::new(store),
             timers: StdMutex::new(show_control::TimerEngine::new()),
+            broadcast_profile: StdMutex::new(BroadcastProfileState::default()),
             diagnostics,
             logging,
             last_gpu_summary: StdMutex::new(None),
@@ -763,10 +785,28 @@ async fn upsert_output_screen(
         placement,
         look_id,
         stage_layout: (screen.kind == OutputKind::Stage).then(StageLayoutConfig::default),
+        calibration: OutputCalibration::default(),
     };
 
     let state = apply_scene_diff(&bridge, SceneDiff::UpsertOutput(cfg)).await?;
     refresh_snapshot_and_buses(&bridge, Some(state.outputs.len())).await
+}
+
+#[tauri::command]
+async fn set_output_calibration(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    output_id: String,
+    calibration: OutputCalibration,
+) -> Result<SceneState, String> {
+    let oid = OutputId(Uuid::parse_str(&output_id).map_err(|e| e.to_string())?);
+    apply_scene_diff(
+        &bridge,
+        SceneDiff::SetOutputCalibration {
+            output_id: oid,
+            calibration,
+        },
+    )
+    .await
 }
 
 #[tauri::command]
@@ -834,6 +874,7 @@ async fn split_monitor_into_screens(
             placement: OutputPlacement::Region(reg),
             look_id,
             stage_layout: (default_kind == OutputKind::Stage).then(StageLayoutConfig::default),
+            calibration: OutputCalibration::default(),
         };
         let st = apply_scene_diff(&bridge, SceneDiff::UpsertOutput(cfg)).await?;
         final_count = st.outputs.len();
@@ -1554,10 +1595,39 @@ struct BroadcastCapabilitiesDto {
     decklink_status: String,
     virtual_output_backend: String,
     web_stage_url: String,
+    web_remote_url: String,
+    remote_pin: String,
+    active_source_name: String,
+    alpha_mode: String,
+    decklink_mode: String,
+    streaming_active: bool,
+}
+
+fn detect_lan_ipv4() -> String {
+    std::net::UdpSocket::bind("0.0.0.0:0")
+        .and_then(|sock| {
+            sock.connect("8.8.8.8:80")?;
+            sock.local_addr()
+        })
+        .map(|addr| addr.ip().to_string())
+        .unwrap_or_else(|_| "127.0.0.1".to_string())
+}
+
+fn read_web_stage_port() -> u16 {
+    std::fs::read_to_string(
+        std::env::temp_dir()
+            .join("openpresenter-data")
+            .join("web_stage_port.txt"),
+    )
+    .ok()
+    .and_then(|s| s.trim().parse::<u16>().ok())
+    .unwrap_or(5505)
 }
 
 #[tauri::command]
-fn get_broadcast_capabilities() -> BroadcastCapabilitiesDto {
+fn get_broadcast_capabilities(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+) -> BroadcastCapabilitiesDto {
     let ndi_status = match broadcast_io::probe_ndi_runtime(&[]) {
         broadcast_io::NdiRuntimeStatus::Available { library_path } => {
             format!("Available ({library_path})")
@@ -1570,13 +1640,69 @@ fn get_broadcast_capabilities() -> BroadcastCapabilitiesDto {
         }
         broadcast_io::DeckLinkStatus::DriverNotInstalled { install_hint } => install_hint,
     };
+    let lan_ip = detect_lan_ipv4();
+    let port = read_web_stage_port();
+    let profile = bridge
+        .broadcast_profile
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_default();
     BroadcastCapabilitiesDto {
         ndi_status,
         omt_ready: true,
         decklink_status,
         virtual_output_backend: format!("{:?}", broadcast_io::VirtualOutputBackend::native_for_host()),
-        web_stage_url: "http://127.0.0.1:<ephemeral-stage-port>".to_string(),
+        web_stage_url: format!("http://{lan_ip}:{port}/"),
+        web_remote_url: format!("http://{lan_ip}:{port}/remote"),
+        remote_pin: "2026".to_string(),
+        active_source_name: profile.source_name,
+        alpha_mode: profile.alpha_mode,
+        decklink_mode: profile.decklink_mode,
+        streaming_active: profile.streaming_active,
     }
+}
+
+#[tauri::command]
+fn apply_broadcast_profile(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    source_name: String,
+    alpha_mode: String,
+    decklink_mode: String,
+    streaming_active: bool,
+) -> Result<BroadcastCapabilitiesDto, String> {
+    let trimmed = source_name.trim();
+    if trimmed.is_empty() {
+        return Err("Broadcast source name cannot be empty".to_string());
+    }
+    let resolved_alpha = match alpha_mode.as_str() {
+        "StraightBgra" | "StraightAlpha" => broadcast_io::AlphaMode::StraightBgra,
+        "KeyFillSplit" => broadcast_io::AlphaMode::KeyFillSplit,
+        _ => broadcast_io::AlphaMode::PremultipliedBgra,
+    };
+    let _ndi_cfg = broadcast_io::NdiConfig {
+        source_name: trimmed.to_string(),
+        groups: None,
+        clock_video: true,
+        alpha_mode: resolved_alpha,
+    };
+    let _dl_mode = match decklink_mode.as_str() {
+        "InternalKeyer" | "InternalKey" => broadcast_io::DeckLinkKeyMode::InternalKeyer {
+            subdevice: 1,
+            level: 255,
+        },
+        _ => broadcast_io::DeckLinkKeyMode::ExternalDualSdiKeyFill {
+            fill_subdevice: 1,
+            key_subdevice: 2,
+        },
+    };
+    {
+        let mut guard = bridge.broadcast_profile.lock().map_err(|e| e.to_string())?;
+        guard.source_name = trimmed.to_string();
+        guard.alpha_mode = alpha_mode;
+        guard.decklink_mode = decklink_mode;
+        guard.streaming_active = streaming_active;
+    }
+    Ok(get_broadcast_capabilities(bridge))
 }
 
 #[derive(serde::Serialize)]
@@ -2053,6 +2179,39 @@ struct ImportSummaryDto {
     source_format: String,
 }
 
+fn persist_imported_presentation(
+    lib: &LibraryStore,
+    imported: integrations::PresentationImportResult,
+) -> Result<ImportSummaryDto, String> {
+    let slide_count = imported.slides.len();
+    let rec = SongRecord {
+        id: Uuid::new_v4().to_string(),
+        library_id: DEFAULT_LIBRARY_ID.to_string(),
+        title: imported.title.clone(),
+        author: String::new(),
+        copyright: String::new(),
+        ccli_number: imported.ccli_number.clone(),
+        key_signature: None,
+        bpm: None,
+        lyrics_plain: imported
+            .slides
+            .iter()
+            .map(|s| s.plain_text())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        slides: imported.slides,
+        arrangements: Vec::new(),
+        updated_at: chrono::Utc::now(),
+    };
+    lib.upsert_song(&rec).map_err(|e| e.to_string())?;
+    Ok(ImportSummaryDto {
+        title: imported.title,
+        slide_count,
+        ccli_number: imported.ccli_number,
+        source_format: imported.source_format,
+    })
+}
+
 #[tauri::command]
 fn import_worship_document(
     bridge: State<'_, Arc<EngineBridgeState>>,
@@ -2114,12 +2273,26 @@ fn import_worship_document(
         "plain_text" => {
             let imported = integrations::import_plain_text_song("Imported Song", &content)
                 .map_err(|e| e.to_string())?;
-            Ok(ImportSummaryDto {
-                title: imported.title,
-                slide_count: imported.slides.len(),
-                ccli_number: imported.ccli_number,
-                source_format: imported.source_format,
-            })
+            persist_imported_presentation(&lib, imported)
+        }
+        "propresenter_xml" => {
+            let imported = integrations::import_pro6_xml(&content).map_err(|e| e.to_string())?;
+            persist_imported_presentation(&lib, imported)
+        }
+        "openlyrics_xml" => {
+            let imported =
+                integrations::import_openlyrics_xml(&content).map_err(|e| e.to_string())?;
+            persist_imported_presentation(&lib, imported)
+        }
+        "opensong_xml" => {
+            let imported =
+                integrations::import_opensong_xml(&content).map_err(|e| e.to_string())?;
+            persist_imported_presentation(&lib, imported)
+        }
+        "freeshow_json" => {
+            let imported =
+                integrations::import_freeshow_json(&content).map_err(|e| e.to_string())?;
+            persist_imported_presentation(&lib, imported)
         }
         "bible_osis" => {
             let verses = integrations::parse_bible_xml(
@@ -2139,6 +2312,102 @@ fn import_worship_document(
         }
         other => Err(format!("unsupported import format '{other}'")),
     }
+}
+
+#[tauri::command]
+fn import_worship_file(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    format: String,
+    file_path: String,
+) -> Result<ImportSummaryDto, String> {
+    let trimmed = file_path.trim();
+    if trimmed.is_empty() {
+        return Err("Provide a local file path to import".to_string());
+    }
+    let path = PathBuf::from(trimmed);
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("Imported Deck")
+        .to_string();
+
+    if format == "pptx" || path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("pptx")) {
+        let bytes = std::fs::read(&path).map_err(|e| format!("failed to read '{}': {e}", path.display()))?;
+        let imported = integrations::import_pptx_bytes(&stem, &bytes).map_err(|e| e.to_string())?;
+        let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+        return persist_imported_presentation(&lib, imported);
+    }
+
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| format!("failed to read '{}': {e}", path.display()))?;
+    let auto_format = if format == "auto" {
+        match path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "show" | "json" => "freeshow_json".to_string(),
+            "pro6" | "pro5" => "propresenter_xml".to_string(),
+            "cho" | "chopro" => "chordpro".to_string(),
+            "usr" => "songselect_usr".to_string(),
+            "xml" => {
+                if content.contains("<RVPresentationDocument") {
+                    "propresenter_xml".to_string()
+                } else if content.contains("<lyrics>") && content.contains("<ccli>") {
+                    "opensong_xml".to_string()
+                } else {
+                    "openlyrics_xml".to_string()
+                }
+            }
+            _ => "plain_text".to_string(),
+        }
+    } else {
+        format
+    };
+    import_worship_document(bridge, auto_format, content)
+}
+
+#[derive(serde::Serialize)]
+struct BackupSummaryDto {
+    bundle_path: String,
+    item_count: usize,
+}
+
+#[tauri::command]
+fn export_library_backup(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+) -> Result<BackupSummaryDto, String> {
+    let dir = std::env::temp_dir()
+        .join("openpresenter-data")
+        .join("backups");
+    let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+    let dest = dir.join(format!("openpresenter-backup-{ts}.opbundle"));
+    let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    let item_count = lib.export_backup_bundle(&dest).map_err(|e| e.to_string())?;
+    Ok(BackupSummaryDto {
+        bundle_path: dest.to_string_lossy().into_owned(),
+        item_count,
+    })
+}
+
+#[tauri::command]
+fn import_library_backup(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    file_path: String,
+) -> Result<BackupSummaryDto, String> {
+    let trimmed = file_path.trim();
+    if trimmed.is_empty() {
+        return Err("Provide a .opbundle file path to restore".to_string());
+    }
+    let src = PathBuf::from(trimmed);
+    let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    let item_count = lib.import_backup_bundle(&src).map_err(|e| e.to_string())?;
+    Ok(BackupSummaryDto {
+        bundle_path: src.to_string_lossy().into_owned(),
+        item_count,
+    })
 }
 
 #[tauri::command]
@@ -2460,6 +2729,7 @@ pub fn run() {
             apply_look_routing,
             list_physical_displays,
             upsert_output_screen,
+            set_output_calibration,
             remove_output_screen,
             split_monitor_into_screens,
             list_libraries,
@@ -2484,6 +2754,7 @@ pub fn run() {
             attach_media_to_slide,
             toggle_video_input,
             get_broadcast_capabilities,
+            apply_broadcast_profile,
             create_countdown_timer,
             list_timers,
             control_timer,
@@ -2508,6 +2779,9 @@ pub fn run() {
             delete_scheduled_event,
             dispatch_control_command,
             import_worship_document,
+            import_worship_file,
+            export_library_backup,
+            import_library_backup,
             export_ccli_csv_report,
             list_plugin_tiers,
             shutdown_engine,

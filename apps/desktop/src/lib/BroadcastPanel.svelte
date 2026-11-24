@@ -8,6 +8,12 @@
     decklink_status: string;
     virtual_output_backend: string;
     web_stage_url: string;
+    web_remote_url?: string;
+    remote_pin?: string;
+    active_source_name?: string;
+    alpha_mode?: "StraightBgra" | "PremultipliedBgra" | "KeyFillSplit";
+    decklink_mode?: "ExternalDualSdiKeyFill" | "InternalKeyer";
+    streaming_active?: boolean;
   }
 
   let caps = $state<BroadcastCapabilities | null>(null);
@@ -15,25 +21,47 @@
   let ndiSourceName = $state("OpenPresenter — Main Output");
   let alphaMode = $state<"StraightBgra" | "PremultipliedBgra" | "KeyFillSplit">("StraightBgra");
   let decklinkMode = $state<"ExternalDualSdiKeyFill" | "InternalKeyer">("ExternalDualSdiKeyFill");
+  let streamingActive = $state(false);
   let saveMessage = $state<string | null>(null);
 
   async function refreshStatus() {
     loadError = null;
     try {
-      caps = await invoke<BroadcastCapabilities>("get_broadcast_capabilities");
+      const next = await invoke<BroadcastCapabilities>("get_broadcast_capabilities");
+      caps = next;
+      if (next.active_source_name) ndiSourceName = next.active_source_name;
+      if (next.alpha_mode) alphaMode = next.alpha_mode;
+      if (next.decklink_mode) decklinkMode = next.decklink_mode;
+      if (typeof next.streaming_active === "boolean") streamingActive = next.streaming_active;
     } catch (err) {
       loadError = String(err);
     }
   }
 
-  function applyConfig() {
+  async function applyConfig(nextStreaming = streamingActive) {
     saveMessage = null;
     if (ndiSourceName.trim().length === 0) {
       loadError = "Broadcast source name cannot be empty";
       return;
     }
     loadError = null;
-    saveMessage = `Configured "${ndiSourceName.trim()}" (${alphaMode} / ${decklinkMode})`;
+    try {
+      const updated = await invoke<BroadcastCapabilities>("apply_broadcast_profile", {
+        sourceName: ndiSourceName.trim(),
+        alphaMode,
+        decklinkMode,
+        streamingActive: nextStreaming,
+      });
+      if (updated) caps = updated;
+      streamingActive = nextStreaming;
+      saveMessage = `Configured "${ndiSourceName.trim()}" (${alphaMode} / ${decklinkMode}${nextStreaming ? " · LIVE" : ""})`;
+    } catch (err) {
+      loadError = String(err);
+    }
+  }
+
+  function toggleStream() {
+    void applyConfig(!streamingActive);
   }
 
   onMount(() => {
@@ -43,8 +71,13 @@
 
 <div class="broadcast-panel" data-testid="broadcast-panel">
   <div class="header">
-    <h2>Broadcast Video I/O & Virtual Outputs</h2>
-    <button class="btn" onclick={refreshStatus}>Probe Runtimes</button>
+    <h2>Broadcast Video I/O, Virtual Outputs & LAN Mobile Remote</h2>
+    <div class="header-actions">
+      <button class="btn" class:live-btn={streamingActive} onclick={toggleStream}>
+        {streamingActive ? "⏹ Stop Broadcast Output" : "● Start Broadcast Output"}
+      </button>
+      <button class="btn" onclick={refreshStatus}>Probe Runtimes</button>
+    </div>
   </div>
 
   {#if loadError}
@@ -72,9 +105,13 @@
         <h3>Virtual Output (OBS / vMix)</h3>
         <p>{caps.virtual_output_backend}</p>
       </div>
-      <div class="card wide">
+      <div class="card">
         <h3>LAN Browser Stage Display</h3>
         <p><code>{caps.web_stage_url}</code></p>
+      </div>
+      <div class="card">
+        <h3>LAN Mobile Remote Controller (PIN: {caps.remote_pin ?? "2026"})</h3>
+        <p><code>{caps.web_remote_url ?? `${caps.web_stage_url.replace(/\/$/, "")}/remote`}</code></p>
       </div>
     </div>
   {/if}
@@ -99,7 +136,9 @@
         <option value="InternalKeyer">Internal Hardware Keyer</option>
       </select>
     </label>
-    <button class="btn primary" onclick={applyConfig}>Apply Broadcast Profile</button>
+    <button class="btn primary" onclick={() => void applyConfig(streamingActive)}>
+      Apply Broadcast Profile
+    </button>
   </div>
 </div>
 
@@ -116,6 +155,12 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
+    gap: 8px;
+  }
+
+  .header-actions {
+    display: flex;
+    gap: 8px;
   }
 
   .header h2 {
@@ -139,10 +184,6 @@
     padding: 10px 12px;
   }
 
-  .card.wide {
-    grid-column: span 2;
-  }
-
   .card h3 {
     margin: 0 0 4px 0;
     font-size: 12px;
@@ -152,6 +193,7 @@
   .card p {
     margin: 0;
     font-size: 12px;
+    word-break: break-all;
   }
 
   .form {
@@ -212,5 +254,11 @@
   .btn.primary {
     background: var(--accent);
     border-color: var(--accent);
+  }
+
+  .btn.live-btn {
+    background: #b91c1c;
+    border-color: #ef4444;
+    color: #fff;
   }
 </style>

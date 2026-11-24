@@ -19,8 +19,8 @@ pub use ccli::{
 };
 pub use importers::{
     PresentationImportResult, build_keynote_applescript, build_libreoffice_pdf_args,
-    import_openlyrics_xml, import_plain_text_song, import_pptx_bytes, import_pro6_xml,
-    import_pro7_protobuf,
+    import_freeshow_json, import_openlyrics_xml, import_opensong_xml, import_plain_text_song,
+    import_pptx_bytes, import_pro6_xml, import_pro7_protobuf,
 };
 pub use pco::{
     PcoOAuthPkceSession, PcoPlanSummary, PcoRateLimitState, build_pco_plans_url,

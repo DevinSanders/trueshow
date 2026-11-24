@@ -146,6 +146,35 @@ pub struct ScheduledEventRecord {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Portable full-library `.opbundle` archive format for backup, restore, and computer migration.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LibraryBackupBundle {
+    pub format_version: u32,
+    pub exported_at: DateTime<Utc>,
+    #[serde(default)]
+    pub libraries: Vec<PresentationLibraryRecord>,
+    #[serde(default)]
+    pub songs: Vec<SongRecord>,
+    #[serde(default)]
+    pub playlists: Vec<PlaylistRecord>,
+    #[serde(default)]
+    pub media_bins: Vec<MediaBinRecord>,
+    #[serde(default)]
+    pub looks: Vec<LookConfig>,
+    #[serde(default)]
+    pub templates: Vec<TemplateConfig>,
+    #[serde(default)]
+    pub look_presets: Vec<LookPresetRecord>,
+    #[serde(default)]
+    pub overlays: Vec<OverlayItem>,
+    #[serde(default)]
+    pub message_templates: Vec<MessageTemplate>,
+    #[serde(default)]
+    pub macros: Vec<MacroRecord>,
+    #[serde(default)]
+    pub scheduled_events: Vec<ScheduledEventRecord>,
+}
+
 /// Authoritative offline SQLite repository.
 pub struct LibraryStore {
     conn: Connection,
@@ -1366,6 +1395,98 @@ impl LibraryStore {
         Ok(removed > 0)
     }
 
+    /// Exports the complete local library (libraries, songs, playlists, media bins,
+    /// looks, templates, presets, overlays, message templates, macros, and scheduled events)
+    /// into a single portable `.opbundle` JSON archive file.
+    pub fn export_backup_bundle(&self, dest_path: &Path) -> Result<usize, LibraryError> {
+        if let Some(parent) = dest_path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
+        }
+        let bundle = LibraryBackupBundle {
+            format_version: 1,
+            exported_at: Utc::now(),
+            libraries: self.list_libraries()?,
+            songs: self.list_songs_in_library(None)?,
+            playlists: self.list_playlists()?,
+            media_bins: self.list_media_bins()?,
+            looks: self.list_looks()?,
+            templates: self.list_templates()?,
+            look_presets: self.list_look_presets()?,
+            overlays: self.list_overlays()?,
+            message_templates: self.list_message_templates()?,
+            macros: self.list_macros()?,
+            scheduled_events: self.list_scheduled_events()?,
+        };
+        let total = bundle.libraries.len()
+            + bundle.songs.len()
+            + bundle.playlists.len()
+            + bundle.media_bins.len()
+            + bundle.looks.len()
+            + bundle.templates.len()
+            + bundle.look_presets.len()
+            + bundle.overlays.len()
+            + bundle.message_templates.len()
+            + bundle.macros.len()
+            + bundle.scheduled_events.len();
+        let bytes = serde_json::to_vec_pretty(&bundle)?;
+        std::fs::write(dest_path, bytes)?;
+        Ok(total)
+    }
+
+    /// Restores a portable `.opbundle` JSON archive into the local SQLite database (upsert merge).
+    pub fn import_backup_bundle(&self, src_path: &Path) -> Result<usize, LibraryError> {
+        let bytes = std::fs::read(src_path)?;
+        let bundle: LibraryBackupBundle = serde_json::from_slice(&bytes)?;
+        let mut count = 0usize;
+        for lib in &bundle.libraries {
+            self.upsert_library(lib)?;
+            count += 1;
+        }
+        for song in &bundle.songs {
+            self.upsert_song(song)?;
+            count += 1;
+        }
+        for pl in &bundle.playlists {
+            self.upsert_playlist(pl)?;
+            count += 1;
+        }
+        for bin in &bundle.media_bins {
+            self.upsert_media_bin(bin)?;
+            count += 1;
+        }
+        for tpl in &bundle.templates {
+            self.upsert_template(tpl)?;
+            count += 1;
+        }
+        for look in &bundle.looks {
+            self.upsert_look(look)?;
+            count += 1;
+        }
+        for preset in &bundle.look_presets {
+            self.upsert_look_preset(preset)?;
+            count += 1;
+        }
+        for ov in &bundle.overlays {
+            self.upsert_overlay(ov)?;
+            count += 1;
+        }
+        for mt in &bundle.message_templates {
+            self.upsert_message_template(mt)?;
+            count += 1;
+        }
+        for m in &bundle.macros {
+            self.upsert_macro(m)?;
+            count += 1;
+        }
+        for ev in &bundle.scheduled_events {
+            self.upsert_scheduled_event(ev)?;
+            count += 1;
+        }
+        Ok(count)
+    }
+
     /// Seeds default presentation libraries, media bins, starter media backgrounds,
     /// looks, templates, demo presentations, and a Sunday Morning Service playlist if empty.
     pub fn seed_demo_if_empty(&self) -> Result<(), LibraryError> {
@@ -2300,5 +2421,28 @@ mod tests {
             })
             .expect("upsert sched");
         assert!(store.delete_scheduled_event("ev-test").expect("del sched"));
+
+        // Portable .opbundle backup export & import round-trip
+        let bundle_path = std::env::temp_dir()
+            .join(format!("op-backup-test-{}.opbundle", Uuid::new_v4()));
+        let exported = store
+            .export_backup_bundle(&bundle_path)
+            .expect("export bundle");
+        assert!(exported >= 10);
+
+        let restored_store = LibraryStore::open_in_memory().expect("open empty db");
+        let imported = restored_store
+            .import_backup_bundle(&bundle_path)
+            .expect("import bundle");
+        assert_eq!(imported, exported);
+        assert_eq!(
+            restored_store.list_songs_in_library(None).expect("songs").len(),
+            store.list_songs_in_library(None).expect("orig songs").len()
+        );
+        assert_eq!(
+            restored_store.list_macros().expect("macros").len(),
+            store.list_macros().expect("orig macros").len()
+        );
+        let _ = std::fs::remove_file(&bundle_path);
     }
 }

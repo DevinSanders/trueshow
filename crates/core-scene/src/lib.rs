@@ -867,6 +867,35 @@ pub fn split_monitor_regions(
     regions
 }
 
+/// Per-output multi-projector soft-edge blending and color calibration parameters,
+/// executed natively at 60 fps in the GPU compositor fragment shader.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct OutputCalibration {
+    pub edge_blend_left: f32,
+    pub edge_blend_right: f32,
+    pub edge_blend_top: f32,
+    pub edge_blend_bottom: f32,
+    pub edge_blend_gamma: f32,
+    pub brightness: f32,
+    pub contrast: f32,
+    pub gamma: f32,
+}
+
+impl Default for OutputCalibration {
+    fn default() -> Self {
+        Self {
+            edge_blend_left: 0.0,
+            edge_blend_right: 0.0,
+            edge_blend_top: 0.0,
+            edge_blend_bottom: 0.0,
+            edge_blend_gamma: 2.2,
+            brightness: 0.0,
+            contrast: 1.0,
+            gamma: 1.0,
+        }
+    }
+}
+
 /// Configuration for an individual compositor output window / render target.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OutputConfig {
@@ -881,6 +910,8 @@ pub struct OutputConfig {
     pub placement: OutputPlacement,
     pub look_id: LookId,
     pub stage_layout: Option<StageLayoutConfig>,
+    #[serde(default)]
+    pub calibration: OutputCalibration,
 }
 
 impl OutputConfig {
@@ -1011,6 +1042,10 @@ pub enum SceneDiff {
     SetOutputStageLayout {
         output_id: OutputId,
         layout: StageLayoutConfig,
+    },
+    SetOutputCalibration {
+        output_id: OutputId,
+        calibration: OutputCalibration,
     },
     ToggleOverlayLayer(bool),
     UpsertOverlay(OverlayItem),
@@ -1324,6 +1359,7 @@ impl SceneState {
             placement: OutputPlacement::Windowed,
             look_id: LOOK_AUDIENCE_FULL,
             stage_layout: None,
+            calibration: OutputCalibration::default(),
         }];
 
         if output_count >= 2 {
@@ -1338,6 +1374,7 @@ impl SceneState {
                 placement: OutputPlacement::Windowed,
                 look_id: LOOK_STAGE_CONFIDENCE,
                 stage_layout: Some(StageLayoutConfig::default()),
+                calibration: OutputCalibration::default(),
             });
         }
 
@@ -1932,6 +1969,27 @@ impl SceneState {
                     false
                 }
             }
+            SceneDiff::SetOutputCalibration {
+                output_id,
+                calibration,
+            } => {
+                if let Some(output) = self.outputs.iter_mut().find(|o| o.id == output_id) {
+                    output.calibration = OutputCalibration {
+                        edge_blend_left: calibration.edge_blend_left.clamp(0.0, 0.45),
+                        edge_blend_right: calibration.edge_blend_right.clamp(0.0, 0.45),
+                        edge_blend_top: calibration.edge_blend_top.clamp(0.0, 0.45),
+                        edge_blend_bottom: calibration.edge_blend_bottom.clamp(0.0, 0.45),
+                        edge_blend_gamma: calibration.edge_blend_gamma.clamp(0.5, 4.0),
+                        brightness: calibration.brightness.clamp(-0.5, 0.5),
+                        contrast: calibration.contrast.clamp(0.5, 2.0),
+                        gamma: calibration.gamma.clamp(0.5, 2.5),
+                    };
+                    self.revision += 1;
+                    true
+                } else {
+                    false
+                }
+            }
             SceneDiff::ToggleOverlayLayer(active) => {
                 self.overlay_layer_active = active;
                 self.revision += 1;
@@ -2424,6 +2482,7 @@ mod tests {
             }),
             look_id: LookId::from_u128(9999), // unknown look falls back to Stage default
             stage_layout: None,
+            calibration: OutputCalibration::default(),
         };
         assert!(state.apply(SceneDiff::UpsertOutput(region_out)));
         let stored = state.outputs.iter().find(|o| o.id == stage_id).expect("stored");
@@ -2453,6 +2512,20 @@ mod tests {
                 ..StageLayoutConfig::default()
             },
         }));
+        assert!(state.apply(SceneDiff::SetOutputCalibration {
+            output_id: stage_id,
+            calibration: OutputCalibration {
+                edge_blend_left: 0.15,
+                edge_blend_right: 0.15,
+                brightness: 0.05,
+                contrast: 1.1,
+                ..OutputCalibration::default()
+            },
+        }));
+        assert!(!state.apply(SceneDiff::SetOutputCalibration {
+            output_id: OutputId::new(),
+            calibration: OutputCalibration::default(),
+        }));
         assert!(!state.apply(SceneDiff::SetOutputStageLayout {
             output_id: OutputId::new(),
             layout: StageLayoutConfig::default(),
@@ -2470,6 +2543,7 @@ mod tests {
             placement: OutputPlacement::Windowed,
             look_id: LOOK_AUDIENCE_FULL,
             stage_layout: None,
+            calibration: OutputCalibration::default(),
         };
         assert!(!state.apply(SceneDiff::UpsertOutput(bad_name)));
         let bad_region = OutputConfig {
@@ -2483,6 +2557,7 @@ mod tests {
             placement: OutputPlacement::Region(MonitorRegion { x: 0, y: 0, width: 0, height: 500 }),
             look_id: LOOK_AUDIENCE_FULL,
             stage_layout: None,
+            calibration: OutputCalibration::default(),
         };
         assert!(!state.apply(SceneDiff::UpsertOutput(bad_region)));
         assert!(!state.apply(SceneDiff::RemoveOutput(OutputId::new())));

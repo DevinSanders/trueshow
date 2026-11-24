@@ -21,6 +21,8 @@ struct CompositorUniforms {
     _pad0: u32,
     _pad1: u32,
     _pad2: u32,
+    edge_blend: vec4<f32>,
+    color_cal: vec4<f32>,
 };
 
 @group(0) @binding(0)
@@ -166,6 +168,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let stage_mode = (u.flags & 32u) != 0u;
     let transparent_bg = (u.flags & 64u) != 0u;
     let has_bg_tex = (u.flags & 128u) != 0u;
+    let video_input_active = (u.flags & 256u) != 0u;
 
     let smooth_blend = smoothstep(0.0, 1.0, clamp(u.blend_t, 0.0, 1.0));
     let slide_sample = textureSample(slide_tex, slide_sampler, in.uv);
@@ -192,8 +195,15 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         return vec4<f32>(composed.rgb, 1.0);
     }
 
-    // Layer 1: Media / Motion Background (real local image texture OR procedural GPU shader)
+    // Layer 0: Live Camera / Capture Video Input (underneath Layer 1)
     var out_col = vec4<f32>(0.0, 0.0, 0.0, select(1.0, 0.0, transparent_bg));
+    if video_input_active && !transparent_bg {
+        let wave = 0.5 + 0.5 * sin(in.uv.x * 12.0 + u.time_sec * 1.6);
+        let cam_bg = mix(vec3<f32>(0.04, 0.09, 0.14), vec3<f32>(0.08, 0.18, 0.28), wave * (1.0 - in.uv.y * 0.4));
+        out_col = vec4<f32>(cam_bg, 1.0);
+    }
+
+    // Layer 1: Media / Motion Background (real local image texture OR procedural GPU shader)
     if media_active && !transparent_bg {
         if has_bg_tex {
             let prev_px = eval_style(in.uv, u.time_sec, u.prev_style, u.prev_primary, u.prev_secondary, u.prev_accent);
@@ -238,12 +248,30 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         }
     }
 
-    // Layer 5: Masks
+    // Layer 5: Masks + Multi-Projector Soft-Edge Blending & Color Calibration
     let m = eval_mask(in.uv, u.mask_style);
+    var eb = 1.0;
+    let eb_gamma = max(0.5, u.color_cal.w);
+    if u.edge_blend.x > 0.001 && in.uv.x < u.edge_blend.x {
+        eb *= pow(clamp(in.uv.x / u.edge_blend.x, 0.0, 1.0), eb_gamma);
+    }
+    if u.edge_blend.y > 0.001 && (1.0 - in.uv.x) < u.edge_blend.y {
+        eb *= pow(clamp((1.0 - in.uv.x) / u.edge_blend.y, 0.0, 1.0), eb_gamma);
+    }
+    if u.edge_blend.z > 0.001 && in.uv.y < u.edge_blend.z {
+        eb *= pow(clamp(in.uv.y / u.edge_blend.z, 0.0, 1.0), eb_gamma);
+    }
+    if u.edge_blend.w > 0.001 && (1.0 - in.uv.y) < u.edge_blend.w {
+        eb *= pow(clamp((1.0 - in.uv.y) / u.edge_blend.w, 0.0, 1.0), eb_gamma);
+    }
+
+    var rgb = (out_col.rgb - vec3<f32>(0.5)) * u.color_cal.y + vec3<f32>(0.5) + vec3<f32>(u.color_cal.x);
+    rgb = pow(clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(1.0 / max(0.2, u.color_cal.z)));
+    let final_mask = m * eb;
     if transparent_bg {
-        out_col = vec4<f32>(out_col.rgb * m, out_col.a * m);
+        out_col = vec4<f32>(rgb * final_mask, out_col.a * final_mask);
     } else {
-        out_col = vec4<f32>(out_col.rgb * m, 1.0);
+        out_col = vec4<f32>(rgb * final_mask, 1.0);
     }
 
     return out_col;

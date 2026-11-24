@@ -410,6 +410,198 @@ pub fn import_pptx_bytes(title: &str, pptx_bytes: &[u8]) -> Result<PresentationI
     })
 }
 
+/// Clean-room importer for FreeShow `.show` JSON files (two-element array `[id, showObj]` or direct `{ name, slides, meta }`).
+pub fn import_freeshow_json(json_str: &str) -> Result<PresentationImportResult, ImporterError> {
+    let val: serde_json::Value = serde_json::from_str(json_str)
+        .map_err(|e| ImporterError::InvalidInput(format!("invalid FreeShow JSON: {e}")))?;
+
+    let show_obj = if let Some(arr) = val.as_array() {
+        arr.get(1)
+            .or_else(|| arr.first())
+            .and_then(|v| v.as_object())
+    } else {
+        val.as_object()
+    }
+    .ok_or_else(|| ImporterError::InvalidInput("missing FreeShow show object".into()))?;
+
+    let title = show_obj
+        .get("name")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("Imported FreeShow Presentation")
+        .to_string();
+
+    let ccli_number = show_obj
+        .get("meta")
+        .and_then(|m| m.get("CCLI").or_else(|| m.get("ccli")))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string);
+
+    let slides_map = show_obj
+        .get("slides")
+        .and_then(|v| v.as_object())
+        .ok_or_else(|| ImporterError::InvalidInput("FreeShow JSON missing slides map".into()))?;
+
+    let mut slides = Vec::new();
+    for (idx, (_slide_key, slide_val)) in slides_map.iter().enumerate() {
+        let group = slide_val
+            .get("group")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or("Slide")
+            .to_string();
+
+        let mut lines_out = Vec::new();
+        if let Some(items) = slide_val.get("items").and_then(|v| v.as_array()) {
+            for item in items {
+                if let Some(lines) = item.get("lines").and_then(|v| v.as_array()) {
+                    for line in lines {
+                        if let Some(runs) = line.get("text").and_then(|v| v.as_array()) {
+                            let line_text: String = runs
+                                .iter()
+                                .filter_map(|r| r.get("value").and_then(|v| v.as_str()))
+                                .collect();
+                            let trimmed = line_text.trim();
+                            if !trimmed.is_empty() {
+                                lines_out.push(trimmed.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !lines_out.is_empty() {
+            slides.push(core_library::slide_from_text(
+                &format!("{title} — {group} {}", idx + 1),
+                &group,
+                &lines_out.join("\n"),
+                ccli_number.clone(),
+            ));
+        }
+    }
+
+    if slides.is_empty() {
+        return Err(ImporterError::InvalidInput(
+            "FreeShow JSON contained no text slides".into(),
+        ));
+    }
+
+    Ok(PresentationImportResult {
+        title,
+        ccli_number,
+        source_format: "FreeShow (.show JSON)".into(),
+        slides,
+    })
+}
+
+/// Clean-room importer for OpenSong XML files (`<song><title>`, `<ccli>`, `<lyrics>` with `[V1]`/`[C]` sections).
+pub fn import_opensong_xml(xml: &str) -> Result<PresentationImportResult, ImporterError> {
+    let mut reader = Reader::from_str(xml);
+    let mut title = String::new();
+    let mut ccli_number = None;
+    let mut lyrics_raw = String::new();
+    let mut in_title = false;
+    let mut in_ccli = false;
+    let mut in_lyrics = false;
+    let mut found_song = false;
+
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) => match e.name().as_ref() {
+                b"song" => found_song = true,
+                b"title" => in_title = true,
+                b"ccli" => in_ccli = true,
+                b"lyrics" => in_lyrics = true,
+                _ => {}
+            },
+            Ok(Event::Text(t)) => {
+                let txt = t
+                    .unescape()
+                    .map_err(|err| ImporterError::Xml(err.to_string()))?
+                    .to_string();
+                if in_title {
+                    title.push_str(txt.trim());
+                } else if in_ccli && !txt.trim().is_empty() {
+                    ccli_number = Some(txt.trim().to_string());
+                } else if in_lyrics {
+                    lyrics_raw.push_str(&txt);
+                }
+            }
+            Ok(Event::End(e)) => match e.name().as_ref() {
+                b"title" => in_title = false,
+                b"ccli" => in_ccli = false,
+                b"lyrics" => in_lyrics = false,
+                _ => {}
+            },
+            Ok(Event::Eof) => break,
+            Err(err) => return Err(ImporterError::Xml(err.to_string())),
+            _ => {}
+        }
+    }
+
+    if !found_song || lyrics_raw.trim().is_empty() {
+        return Err(ImporterError::InvalidInput(
+            "missing <song> or <lyrics> in OpenSong XML".into(),
+        ));
+    }
+    if title.is_empty() {
+        title = "Imported OpenSong".to_string();
+    }
+
+    let mut group = "Verse 1".to_string();
+    let mut stanza = Vec::new();
+    let mut slides = Vec::new();
+
+    for raw in lyrics_raw.lines() {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() || trimmed.starts_with('.') || trimmed.starts_with(';') {
+            // Skip OpenSong chord lines (`.G  C  D`) and comment lines (`;note`).
+            continue;
+        }
+        if trimmed.starts_with('[') && trimmed.ends_with(']') && trimmed.len() > 2 {
+            if !stanza.is_empty() {
+                slides.push(core_library::slide_from_text(
+                    &format!("{title} — {group}"),
+                    &group,
+                    &stanza.join("\n"),
+                    ccli_number.clone(),
+                ));
+                stanza.clear();
+            }
+            let tag = &trimmed[1..trimmed.len() - 1];
+            group = match tag.to_ascii_uppercase().as_str() {
+                "C" | "C1" => "Chorus".into(),
+                "B" | "B1" => "Bridge".into(),
+                "P" | "P1" => "Pre-Chorus".into(),
+                v if v.starts_with('V') => format!("Verse {}", v.trim_start_matches('V')),
+                _ => tag.to_string(),
+            };
+        } else {
+            // Strip leading single-space lyric indicator & OpenSong `||` slide break markers.
+            let clean = trimmed.replace("||", "\n");
+            stanza.push(clean);
+        }
+    }
+    if !stanza.is_empty() {
+        slides.push(core_library::slide_from_text(
+            &format!("{title} — {group}"),
+            &group,
+            &stanza.join("\n"),
+            ccli_number.clone(),
+        ));
+    }
+
+    Ok(PresentationImportResult {
+        title,
+        ccli_number,
+        source_format: "OpenSong XML".into(),
+        slides,
+    })
+}
+
 /// Builds headless LibreOffice conversion arguments with isolated user profile for visual `.pptx` PDF/SVG export.
 pub fn build_libreoffice_pdf_args(input_pptx: &Path, output_dir: &Path, profile_dir: &Path) -> Vec<String> {
     vec![
@@ -509,5 +701,50 @@ mod tests {
         assert!(lo_args.contains(&"--headless".to_string()));
         let as_src = build_keynote_applescript(Path::new("/tmp/a.key"), Path::new("/tmp/a.pdf"));
         assert!(as_src.contains("tell application \"Keynote\""));
+
+        // FreeShow .show JSON (both array tuple and object formats + error paths)
+        let freeshow_arr = r#"["show-1", {
+            "name": "Way Maker",
+            "meta": { "CCLI": "7115744" },
+            "slides": {
+                "s1": {
+                    "group": "Chorus",
+                    "items": [{ "lines": [{ "text": [{ "value": "Way maker, miracle worker" }] }] }]
+                }
+            }
+        }]"#;
+        let rfs = import_freeshow_json(freeshow_arr).expect("freeshow array");
+        assert_eq!(rfs.title, "Way Maker");
+        assert_eq!(rfs.ccli_number.as_deref(), Some("7115744"));
+        assert_eq!(rfs.slides.len(), 1);
+        assert!(rfs.slides[0].plain_text().contains("miracle worker"));
+
+        let freeshow_obj = r#"{ "name": "Direct Show", "slides": { "s1": { "group": "Verse 1", "items": [{ "lines": [{ "text": [{ "value": "Hello sanctuary" }] }] }] } } }"#;
+        assert_eq!(import_freeshow_json(freeshow_obj).expect("freeshow obj").slides.len(), 1);
+        assert!(import_freeshow_json("not-json").is_err());
+        assert!(import_freeshow_json(r#"{"name":"Empty","slides":{}}"#).is_err());
+
+        // OpenSong XML (with chord lines, comments, section tags, and error paths)
+        let opensong = r#"<song><title>Cornerstone</title><ccli>6158927</ccli><lyrics>
+; comment line
+[V1]
+.C        Am
+ My hope is built on nothing less
+[C]
+ Christ alone cornerstone
+[B]
+ Through the storm He is Lord
+[P]
+ Ready now
+[Tag]
+ Amen||Forever
+</lyrics></song>"#;
+        let ros = import_opensong_xml(opensong).expect("opensong");
+        assert_eq!(ros.title, "Cornerstone");
+        assert_eq!(ros.ccli_number.as_deref(), Some("6158927"));
+        assert_eq!(ros.slides.len(), 5);
+        assert_eq!(ros.slides[0].group, "Verse 1");
+        assert_eq!(ros.slides[1].group, "Chorus");
+        assert!(import_opensong_xml("<other/>").is_err());
     }
 }

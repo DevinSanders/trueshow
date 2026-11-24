@@ -5,7 +5,9 @@
     EngineSnapshot,
     LookConfig,
     MonitorRegion,
+    OutputCalibration,
     OutputConfig,
+    SceneState,
   } from "./types";
 
   interface Props {
@@ -37,9 +39,70 @@
   let notice = $state<string | null>(null);
   let errorMsg = $state<string | null>(null);
 
+  let calOutputId = $state<string>("");
+  let calLeft = $state(0);
+  let calRight = $state(0);
+  let calTop = $state(0);
+  let calBottom = $state(0);
+  let calBlendGamma = $state(2.2);
+  let calBrightness = $state(1.0);
+  let calContrast = $state(1.0);
+  let calGamma = $state(1.0);
+
   const displays = $derived(snapshot.displays ?? []);
   const outputs = $derived(snapshot.state.outputs ?? []);
   const looks = $derived<LookConfig[]>(Object.values(snapshot.state.looks ?? {}));
+
+  function loadCalibrationFor(out: OutputConfig) {
+    calOutputId = out.id;
+    const c: OutputCalibration = out.calibration ?? {
+      edge_blend_left: 0,
+      edge_blend_right: 0,
+      edge_blend_top: 0,
+      edge_blend_bottom: 0,
+      edge_blend_gamma: 2.2,
+      brightness: 1.0,
+      contrast: 1.0,
+      gamma: 1.0,
+    };
+    calLeft = Math.round(c.edge_blend_left * 100);
+    calRight = Math.round(c.edge_blend_right * 100);
+    calTop = Math.round(c.edge_blend_top * 100);
+    calBottom = Math.round(c.edge_blend_bottom * 100);
+    calBlendGamma = c.edge_blend_gamma;
+    calBrightness = c.brightness;
+    calContrast = c.contrast;
+    calGamma = c.gamma;
+  }
+
+  async function applyCalibration() {
+    const targetId = calOutputId || outputs[0]?.id;
+    if (!targetId) return;
+    errorMsg = null;
+    notice = null;
+    busy = true;
+    try {
+      const nextState = await invoke<SceneState>("set_output_calibration", {
+        outputId: targetId,
+        calibration: {
+          edge_blend_left: Math.max(0, Math.min(0.45, Number(calLeft) / 100)),
+          edge_blend_right: Math.max(0, Math.min(0.45, Number(calRight) / 100)),
+          edge_blend_top: Math.max(0, Math.min(0.45, Number(calTop) / 100)),
+          edge_blend_bottom: Math.max(0, Math.min(0.45, Number(calBottom) / 100)),
+          edge_blend_gamma: Math.max(0.5, Math.min(4.0, Number(calBlendGamma))),
+          brightness: Math.max(0.2, Math.min(2.0, Number(calBrightness))),
+          contrast: Math.max(0.2, Math.min(2.0, Number(calContrast))),
+          gamma: Math.max(0.4, Math.min(2.5, Number(calGamma))),
+        },
+      });
+      onSnapshotChange({ ...snapshot, state: nextState });
+      notice = "Applied GPU edge blend & color calibration live.";
+    } catch (err) {
+      errorMsg = `Failed to apply calibration: ${String(err)}`;
+    } finally {
+      busy = false;
+    }
+  }
 
   function getRegion(out: OutputConfig): MonitorRegion | null {
     if (out.placement && typeof out.placement === "object" && "Region" in out.placement) {
@@ -521,7 +584,7 @@
                 </div>
               </div>
               <div class="out-actions">
-                <button class="btn sm" onclick={() => startEditing(out)}>Edit</button>
+                <button class="btn sm" onclick={() => { startEditing(out); loadCalibrationFor(out); }}>Edit</button>
                 <button class="btn sm danger" disabled={busy} onclick={() => void removeScreen(out)}>
                   Remove
                 </button>
@@ -532,6 +595,67 @@
       {/if}
     </div>
   </div>
+
+  {#if outputs.length > 0}
+    <div class="section-card">
+      <div class="card-head">
+        <h3>Multi-Projector Soft-Edge Blending & Color Calibration (GPU)</h3>
+        <select
+          aria-label="Calibration Output"
+          value={calOutputId || outputs[0].id}
+          onchange={(e) => {
+            const found = outputs.find((o) => o.id === e.currentTarget.value);
+            if (found) loadCalibrationFor(found);
+          }}
+        >
+          {#each outputs as out (out.id)}
+            <option value={out.id}>{out.name}</option>
+          {/each}
+        </select>
+      </div>
+      <div class="coords-row">
+        <label>
+          Left Blend (%)
+          <input aria-label="Edge Blend Left" type="number" min="0" max="45" bind:value={calLeft} />
+        </label>
+        <label>
+          Right Blend (%)
+          <input aria-label="Edge Blend Right" type="number" min="0" max="45" bind:value={calRight} />
+        </label>
+        <label>
+          Top Blend (%)
+          <input aria-label="Edge Blend Top" type="number" min="0" max="45" bind:value={calTop} />
+        </label>
+        <label>
+          Bottom Blend (%)
+          <input aria-label="Edge Blend Bottom" type="number" min="0" max="45" bind:value={calBottom} />
+        </label>
+      </div>
+      <div class="coords-row">
+        <label>
+          Blend Gamma
+          <input aria-label="Blend Gamma" type="number" step="0.1" min="0.5" max="4" bind:value={calBlendGamma} />
+        </label>
+        <label>
+          Brightness
+          <input aria-label="Calibration Brightness" type="number" step="0.05" min="0.2" max="2" bind:value={calBrightness} />
+        </label>
+        <label>
+          Contrast
+          <input aria-label="Calibration Contrast" type="number" step="0.05" min="0.2" max="2" bind:value={calContrast} />
+        </label>
+        <label>
+          Output Gamma
+          <input aria-label="Calibration Gamma" type="number" step="0.05" min="0.4" max="2.5" bind:value={calGamma} />
+        </label>
+      </div>
+      <div class="form-footer">
+        <button class="btn primary" disabled={busy} onclick={() => void applyCalibration()}>
+          Apply Calibration Live
+        </button>
+      </div>
+    </div>
+  {/if}
 </section>
 
 <style>

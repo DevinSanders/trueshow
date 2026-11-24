@@ -149,6 +149,9 @@ describe("ScreensPanel (Multi-Screen, Fullscreen & Split-Monitor Regions)", () =
             : [...current.state.outputs, out];
         return { ...current, state: { ...current.state, outputs: nextOutputs } };
       }
+      if (cmd === "set_output_calibration") {
+        return current.state;
+      }
       if (cmd === "split_monitor_into_screens") {
         const monIdx = Number(payload.monitorIndex);
         return {
@@ -236,11 +239,20 @@ describe("ScreensPanel (Multi-Screen, Fullscreen & Split-Monitor Regions)", () =
     );
     await rerender({ snapshot: current, onSnapshotChange });
 
-    // 4. Edit existing screen and Remove a screen
+    // 4. Edit existing screen, apply GPU edge-blend calibration, and Remove a screen
     const editButtons = screen.getAllByText("Edit");
     await fireEvent.click(editButtons[0]);
     await fireEvent.click(screen.getByText("Apply Changes Live"));
     await waitFor(() => expect(screen.getByRole("status").textContent).toContain("Updated screen"));
+
+    await fireEvent.change(screen.getByLabelText("Calibration Output"), {
+      target: { value: current.state.outputs[0].id },
+    });
+    await fireEvent.input(screen.getByLabelText("Edge Blend Left"), { target: { value: "15" } });
+    await fireEvent.click(screen.getByText("Apply Calibration Live"));
+    await waitFor(() =>
+      expect(screen.getByRole("status").textContent).toContain("Applied GPU edge blend"),
+    );
 
     const removeButtons = screen.getAllByText("Remove");
     await fireEvent.click(removeButtons[0]);

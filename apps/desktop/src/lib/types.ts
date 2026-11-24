@@ -222,6 +222,17 @@ export interface StageLayoutConfig {
   message_rect: RectF;
 }
 
+export interface OutputCalibration {
+  edge_blend_left: number;
+  edge_blend_right: number;
+  edge_blend_top: number;
+  edge_blend_bottom: number;
+  edge_blend_gamma: number;
+  brightness: number;
+  contrast: number;
+  gamma: number;
+}
+
 export interface OutputConfig {
   id: string;
   name: string;
@@ -233,6 +244,7 @@ export interface OutputConfig {
   placement?: OutputPlacement;
   look_id: string;
   stage_layout?: StageLayoutConfig | null;
+  calibration?: OutputCalibration;
 }
 
 export type MediaFitMode = "Fill" | "Contain" | "Stretch";

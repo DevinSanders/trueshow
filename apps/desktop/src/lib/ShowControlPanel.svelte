@@ -51,7 +51,10 @@
     | "propresenter_xml"
   >("chordpro");
   let importPayload = $state("{title: Amazing Grace}\n{ccli: 22025}\n[G]Amazing [C]grace! How sweet the sound");
+  let importFilePath = $state("");
   let importResult = $state<ImportSummary | null>(null);
+  let backupPath = $state("");
+  let backupStatus = $state<string | null>(null);
   let ccliCsv = $state<string | null>(null);
   let panelError = $state<string | null>(null);
 
@@ -206,6 +209,53 @@
     }
   }
 
+  async function importFromFile() {
+    panelError = null;
+    importResult = null;
+    if (!importFilePath.trim()) {
+      panelError = "Enter a local file path (.pptx, .show, .pro6, .xml, .cho, .usr)";
+      return;
+    }
+    try {
+      importResult = await invoke<ImportSummary>("import_worship_file", {
+        format: "auto",
+        filePath: importFilePath.trim(),
+      });
+    } catch (err) {
+      panelError = String(err);
+    }
+  }
+
+  async function exportBackup() {
+    panelError = null;
+    backupStatus = null;
+    try {
+      const res = await invoke<{ bundle_path: string; item_count: number }>("export_library_backup");
+      backupPath = res.bundle_path;
+      backupStatus = `Exported ${res.item_count} library items to ${res.bundle_path}`;
+    } catch (err) {
+      panelError = String(err);
+    }
+  }
+
+  async function restoreBackup() {
+    panelError = null;
+    backupStatus = null;
+    if (!backupPath.trim()) {
+      panelError = "Provide a .opbundle backup file path to restore";
+      return;
+    }
+    try {
+      const res = await invoke<{ bundle_path: string; item_count: number }>("import_library_backup", {
+        filePath: backupPath.trim(),
+      });
+      backupStatus = `Restored ${res.item_count} library items from ${res.bundle_path}`;
+      await refreshAutomation();
+    } catch (err) {
+      panelError = String(err);
+    }
+  }
+
   onMount(() => {
     void refreshAutomation();
     const handle = setInterval(() => {
@@ -317,6 +367,14 @@
       <button class="btn primary" onclick={runImport}>Import to Local Library</button>
     </div>
     <textarea aria-label="Import Content" rows="4" bind:value={importPayload}></textarea>
+    <div class="row">
+      <input
+        aria-label="Import File Path"
+        placeholder="Local file path (.pptx, .show, .pro6, .xml, .cho, .usr)"
+        bind:value={importFilePath}
+      />
+      <button class="btn" onclick={() => void importFromFile()}>Import File</button>
+    </div>
     {#if importResult}
       <div class="alert ok" role="status">
         Imported "{importResult.title}" ({importResult.slide_count} item(s), {importResult.source_format})
@@ -324,12 +382,32 @@
     {/if}
   </div>
 
-  <div class="section">
-    <h3>CCLI Reporting (Local Usage Log -> CSV)</h3>
-    <button class="btn" onclick={exportCcliReport}>Export CCLI CSV Report</button>
-    {#if ccliCsv}
-      <pre class="csv-box" data-testid="ccli-csv">{ccliCsv}</pre>
-    {/if}
+  <div class="two-col">
+    <div class="section">
+      <h3>Portable Full Library Backup (.opbundle)</h3>
+      <div class="row">
+        <button class="btn primary" onclick={() => void exportBackup()}>Export .opbundle Backup</button>
+      </div>
+      <div class="row">
+        <input
+          aria-label="Backup Bundle Path"
+          placeholder="Path to .opbundle file to restore"
+          bind:value={backupPath}
+        />
+        <button class="btn" onclick={() => void restoreBackup()}>Restore</button>
+      </div>
+      {#if backupStatus}
+        <div class="alert ok" role="status">{backupStatus}</div>
+      {/if}
+    </div>
+
+    <div class="section">
+      <h3>CCLI Reporting (Local Usage Log -> CSV)</h3>
+      <button class="btn" onclick={exportCcliReport}>Export CCLI CSV Report</button>
+      {#if ccliCsv}
+        <pre class="csv-box" data-testid="ccli-csv">{ccliCsv}</pre>
+      {/if}
+    </div>
   </div>
 </div>
 

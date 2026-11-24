@@ -63,6 +63,8 @@ struct CompositorUniforms {
     _pad0: u32,
     _pad1: u32,
     _pad2: u32,
+    edge_blend: [f32; 4],
+    color_cal: [f32; 4],
 }
 
 /// Thread-safe engine state shared between the GPU compositor thread and the IPC server.
@@ -333,6 +335,9 @@ impl SharedEngineState {
         if has_bg_image {
             flags |= 1 << 7;
         }
+        if guard.scene.video_input_active && look.is_layer_enabled(LayerKind::VideoInput) {
+            flags |= 1 << 8;
+        }
 
         let (c1, c2, ca, cs) = background_colors(guard.scene.active_background.as_ref(), curr);
         let (p1, p2, pa, ps) = background_colors(
@@ -345,6 +350,14 @@ impl SharedEngineState {
         } else {
             MaskStyle::None as u32
         };
+
+        let cal = guard
+            .scene
+            .outputs
+            .iter()
+            .find(|o| o.id == output_id)
+            .map(|o| o.calibration)
+            .unwrap_or_default();
 
         CompositorUniforms {
             time_sec: elapsed_sec,
@@ -365,6 +378,13 @@ impl SharedEngineState {
             _pad0: 0,
             _pad1: 0,
             _pad2: 0,
+            edge_blend: [
+                cal.edge_blend_left,
+                cal.edge_blend_right,
+                cal.edge_blend_top,
+                cal.edge_blend_bottom,
+            ],
+            color_cal: [cal.brightness, cal.contrast, cal.gamma, cal.edge_blend_gamma],
         }
     }
 }

@@ -44,6 +44,20 @@ describe("ShowControlPanel M3 UI (Happy & Failure Paths)", () => {
           source_format: "ChordPro",
         };
       }
+      if (cmd === "import_worship_file") {
+        return {
+          title: "Sunday Sermon",
+          slide_count: 4,
+          ccli_number: null,
+          source_format: "PowerPoint OOXML (.pptx)",
+        };
+      }
+      if (cmd === "export_library_backup") {
+        return { bundle_path: "C:/backups/openpresenter.opbundle", item_count: 18 };
+      }
+      if (cmd === "import_library_backup") {
+        return { bundle_path: "C:/backups/openpresenter.opbundle", item_count: 18 };
+      }
       if (cmd === "export_ccli_csv_report") {
         return "ProjectedAt,ServiceProfile,SongTitle,CCLINumber,Author,DisplaySeconds\n2026-11-24,Sunday,Amazing Grace,22025,John Newton,180\n";
       }
@@ -68,6 +82,23 @@ describe("ShowControlPanel M3 UI (Happy & Failure Paths)", () => {
     await fireEvent.click(screen.getByText("Import to Local Library"));
     await waitFor(() =>
       expect(screen.getAllByRole("status").some((el) => el.textContent?.includes('Imported "Amazing Grace"'))).toBe(true),
+    );
+
+    await fireEvent.input(screen.getByLabelText("Import File Path"), {
+      target: { value: "C:/sermons/sunday.pptx" },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Import File" }));
+    await waitFor(() =>
+      expect(screen.getAllByRole("status").some((el) => el.textContent?.includes('Imported "Sunday Sermon"'))).toBe(true),
+    );
+
+    await fireEvent.click(screen.getByRole("button", { name: "Export .opbundle Backup" }));
+    await waitFor(() =>
+      expect(screen.getAllByRole("status").some((el) => el.textContent?.includes("Exported 18 library items"))).toBe(true),
+    );
+    await fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+    await waitFor(() =>
+      expect(screen.getAllByRole("status").some((el) => el.textContent?.includes("Restored 18 library items"))).toBe(true),
     );
 
     await fireEvent.click(screen.getByText("Export CCLI CSV Report"));
