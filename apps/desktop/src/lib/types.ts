@@ -119,13 +119,35 @@ export interface Slide {
   elements: SlideElement[];
 }
 
+export interface TemplateConfig {
+  id: string;
+  name: string;
+  category: string;
+  text_bounds: RectF;
+  subtitle_bounds?: RectF | null;
+  text_style: TextStyle;
+  subtitle_style?: TextStyle | null;
+  accent_bar_color?: ColorRgba | null;
+  default_mask: MaskStyle;
+}
+
 export interface LookConfig {
   id: string;
   name: string;
+  description?: string;
   enabled_layers: LayerKind[];
   lower_third_mode: boolean;
   transparent_background: boolean;
   slide_blend_mode: string;
+  template_id?: string | null;
+  mask_override?: MaskStyle | null;
+}
+
+export interface LookPresetRecord {
+  id: string;
+  name: string;
+  assignments: Record<string, string>;
+  updated_at: string;
 }
 
 export interface MonitorRegion {
@@ -169,6 +191,7 @@ export interface SceneState {
   stage_message: string | null;
   timer_readout: string | null;
   looks: Record<string, LookConfig>;
+  templates?: Record<string, TemplateConfig>;
   outputs: OutputConfig[];
   deck: Slide[];
 }

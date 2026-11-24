@@ -8,8 +8,9 @@
 //! content hash so the `wgpu` compositor runs 60 fps transitions and scaling at 0% CPU.
 
 use core_scene::{
-    ColorRgba, RectF, Slide, SlideElement, SlideElementKind, StageLayoutConfig, TextAlign,
-    TextStyle, VIRTUAL_CANVAS_HEIGHT, VIRTUAL_CANVAS_WIDTH, VerticalAlign,
+    ColorRgba, RectF, Slide, SlideElement, SlideElementKind, StageLayoutConfig, TemplateConfig,
+    TextAlign, TextStyle, VIRTUAL_CANVAS_HEIGHT, VIRTUAL_CANVAS_WIDTH, VerticalAlign,
+    apply_template_to_slide_mut,
 };
 use cosmic_text::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Style, SwashCache, Weight};
 use std::collections::{HashMap, VecDeque};
@@ -41,6 +42,23 @@ pub trait Vector2DRasterizer {
         target_width: u32,
         target_height: u32,
         lower_third_override: bool,
+    ) -> RasterizedLayer {
+        self.rasterize_slide_with_template(
+            slide,
+            target_width,
+            target_height,
+            lower_third_override,
+            None,
+        )
+    }
+
+    fn rasterize_slide_with_template(
+        &mut self,
+        slide: &Slide,
+        target_width: u32,
+        target_height: u32,
+        lower_third_override: bool,
+        template_override: Option<&TemplateConfig>,
     ) -> RasterizedLayer;
 
     #[allow(clippy::too_many_arguments)]
@@ -480,16 +498,26 @@ fn hash_slide_key(slide: &Slide, w: u32, h: u32, lower_third: bool) -> [u8; 32] 
 }
 
 impl Vector2DRasterizer for BroadcastRasterizer {
-    fn rasterize_slide(
+    fn rasterize_slide_with_template(
         &mut self,
         slide: &Slide,
         target_width: u32,
         target_height: u32,
         lower_third_override: bool,
+        template_override: Option<&TemplateConfig>,
     ) -> RasterizedLayer {
         let w = target_width.max(16);
         let h = target_height.max(16);
-        let key = hash_slide_key(slide, w, h, lower_third_override);
+
+        let effective_slide = if let Some(tpl) = template_override {
+            let mut themed = slide.clone();
+            apply_template_to_slide_mut(&mut themed, tpl);
+            std::borrow::Cow::Owned(themed)
+        } else {
+            std::borrow::Cow::Borrowed(slide)
+        };
+        let use_builtin_lower_third = template_override.is_none() && lower_third_override;
+        let key = hash_slide_key(&effective_slide, w, h, use_builtin_lower_third);
 
         if let Some(hit) = self.cache.get(&key) {
             return hit.clone();
@@ -502,8 +530,8 @@ impl Vector2DRasterizer for BroadcastRasterizer {
         let scale_x = w as f32 / VIRTUAL_CANVAS_WIDTH;
         let scale_y = h as f32 / VIRTUAL_CANVAS_HEIGHT;
 
-        if lower_third_override {
-            let text = slide.plain_text();
+        if use_builtin_lower_third {
+            let text = effective_slide.plain_text();
             let lt_bounds = RectF::new(120.0, 790.0, 1680.0, 200.0);
             let lt_style = TextStyle {
                 font_size: 54.0,
@@ -517,7 +545,7 @@ impl Vector2DRasterizer for BroadcastRasterizer {
             };
             self.render_text_box(&mut pixmap, lt_bounds, &text, &lt_style, 1.0, scale_x, scale_y);
         } else {
-            let mut sorted: Vec<&SlideElement> = slide.elements.iter().collect();
+            let mut sorted: Vec<&SlideElement> = effective_slide.elements.iter().collect();
             sorted.sort_by_key(|e| e.z_index);
 
             for el in sorted {
@@ -818,6 +846,14 @@ mod tests {
         assert_ne!(first.content_hash, lt.content_hash);
         assert!(lt.rgba_premul.iter().any(|&b| b > 0));
         assert_eq!(r.cached_count(), 2);
+
+        // Template override (e.g. Scripture Serif Card with accent bar) produces a distinct hash & renders non-empty pixels.
+        let tpl = &core_scene::default_templates()[2];
+        let themed = r.rasterize_slide_with_template(slide, 640, 360, false, Some(tpl));
+        assert_ne!(first.content_hash, themed.content_hash);
+        assert_ne!(lt.content_hash, themed.content_hash);
+        assert!(themed.rgba_premul.iter().any(|&b| b > 0));
+        assert_eq!(r.cached_count(), 3);
     }
 
     #[test]

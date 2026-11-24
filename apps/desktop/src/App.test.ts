@@ -408,6 +408,10 @@ describe("OpenPresenter Operator Control Surface UI (Happy & Failure Paths)", ()
     await fireEvent.click(screen.getByText("Screens"));
     await waitFor(() => expect(screen.getByTestId("screens-panel")).toBeTruthy());
 
+    // 5a2. Switch to Looks & Templates manager tab
+    await fireEvent.click(screen.getByText("Looks & Templates"));
+    await waitFor(() => expect(screen.getByTestId("looks-templates-panel")).toBeTruthy());
+
     // 5b. Switch to Diagnostics tab and verify global window error crash reporting hook
     await fireEvent.click(screen.getByText(/Diagnostics/));
     await waitFor(() => expect(screen.getByTestId("diagnostics-panel")).toBeTruthy());

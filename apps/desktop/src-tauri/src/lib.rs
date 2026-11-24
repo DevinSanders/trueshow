@@ -13,17 +13,18 @@ use core_ipc::{
     ShmPreviewReader, default_socket_name, read_frame, to_local_socket_name, write_frame,
 };
 use core_library::{
-    DEFAULT_LIBRARY_ID, LibraryStore, MediaAssetRecord, MediaBinRecord, PlaylistRecord,
-    PresentationLibraryRecord, SongRecord, infer_media_kind, slide_from_text,
+    DEFAULT_LIBRARY_ID, LibraryStore, LookPresetRecord, MediaAssetRecord, MediaBinRecord,
+    PlaylistRecord, PresentationLibraryRecord, SongRecord, infer_media_kind, slide_from_text,
 };
 use core_scene::{
     ActiveBackground, ColorRgba, ForegroundMedia, LOOK_AUDIENCE_FULL, LOOK_STAGE_CONFIDENCE,
-    LayerKind, LookId, MaskStyle, MediaCueRole, MonitorRegion, OutputConfig, OutputId, OutputKind,
-    OutputPlacement, SceneDiff, SceneState, ShaderMotionStyle, Slide, SlideElement, SlideId,
-    SlideMediaCue, StageLayoutConfig, TransitionSpec, split_monitor_regions,
+    LayerKind, LookConfig, LookId, MaskStyle, MediaCueRole, MonitorRegion, OutputConfig, OutputId,
+    OutputKind, OutputPlacement, SceneDiff, SceneState, ShaderMotionStyle, Slide, SlideElement,
+    SlideId, SlideMediaCue, StageLayoutConfig, TemplateConfig, TemplateId, TransitionSpec,
+    split_monitor_regions,
 };
 use interprocess::local_socket::tokio::{Stream, prelude::*};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -230,7 +231,23 @@ async fn connect_engine(
         Err(_) => bridge.request(EngineCommand::GetSnapshot, true).await?,
     };
     match event {
-        EngineEvent::Snapshot(snap) => {
+        EngineEvent::Snapshot(mut snap) => {
+            // Hydrate persisted SQLite custom Looks & Templates into the engine on attach.
+            let persisted = bridge.library.lock().ok().and_then(|lib| {
+                let looks = lib.list_looks().ok()?;
+                let templates = lib.list_templates().ok()?;
+                Some((looks, templates))
+            });
+            if let Some((looks, templates)) = persisted
+                && (!looks.is_empty() || !templates.is_empty())
+                && let Ok(updated) = apply_scene_diff(
+                    &bridge,
+                    SceneDiff::SyncLooksAndTemplates { looks, templates },
+                )
+                .await
+            {
+                snap.state = updated;
+            }
             if let Ok(mut gpu) = bridge.last_gpu_summary.lock() {
                 *gpu = Some(format!(
                     "{} ({}) · PID {} · {} display(s)",
@@ -591,6 +608,195 @@ async fn set_output_look(
         },
     )
     .await
+}
+
+#[tauri::command]
+fn list_looks(bridge: State<'_, Arc<EngineBridgeState>>) -> Result<Vec<LookConfig>, String> {
+    let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    lib.list_looks().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn upsert_look(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    mut look: LookConfig,
+) -> Result<SceneState, String> {
+    look.name = look.name.trim().to_string();
+    if look.name.is_empty() {
+        return Err("Look name cannot be empty".to_string());
+    }
+    let state = apply_scene_diff(&bridge, SceneDiff::UpsertLook(look.clone())).await?;
+    if let Some(canonical) = state.looks.get(&look.id) {
+        let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+        lib.upsert_look(canonical).map_err(|e| e.to_string())?;
+    }
+    Ok(state)
+}
+
+#[tauri::command]
+async fn delete_look(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    look_id: String,
+) -> Result<SceneState, String> {
+    let lid = LookId(Uuid::parse_str(&look_id).map_err(|e| e.to_string())?);
+    if lid == LOOK_AUDIENCE_FULL || lid == LOOK_STAGE_CONFIDENCE {
+        return Err("Cannot delete built-in Audience Full or Stage Confidence Looks".to_string());
+    }
+    let state = apply_scene_diff(&bridge, SceneDiff::RemoveLook(lid)).await?;
+    let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    let _ = lib.delete_look(lid).map_err(|e| e.to_string())?;
+    Ok(state)
+}
+
+#[tauri::command]
+fn list_templates(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+) -> Result<Vec<TemplateConfig>, String> {
+    let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    lib.list_templates().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn upsert_template(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    mut template: TemplateConfig,
+) -> Result<SceneState, String> {
+    template.name = template.name.trim().to_string();
+    if template.name.is_empty() {
+        return Err("Template name cannot be empty".to_string());
+    }
+    let state = apply_scene_diff(&bridge, SceneDiff::UpsertTemplate(template.clone())).await?;
+    if let Some(canonical) = state.templates.get(&template.id) {
+        let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+        lib.upsert_template(canonical).map_err(|e| e.to_string())?;
+    }
+    Ok(state)
+}
+
+#[tauri::command]
+async fn delete_template(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    template_id: String,
+) -> Result<SceneState, String> {
+    let tid = TemplateId(Uuid::parse_str(&template_id).map_err(|e| e.to_string())?);
+    let state = apply_scene_diff(&bridge, SceneDiff::RemoveTemplate(tid)).await?;
+    let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    let _ = lib.delete_template(tid).map_err(|e| e.to_string())?;
+    // Persist any looks whose template_id was cleared by removing this template.
+    for look in state.looks.values() {
+        let _ = lib.upsert_look(look);
+    }
+    Ok(state)
+}
+
+#[tauri::command]
+async fn apply_template_to_slide(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    slide_id: String,
+    template_id: String,
+) -> Result<SceneState, String> {
+    let sid = SlideId(Uuid::parse_str(&slide_id).map_err(|e| e.to_string())?);
+    let tid = TemplateId(Uuid::parse_str(&template_id).map_err(|e| e.to_string())?);
+    apply_scene_diff(
+        &bridge,
+        SceneDiff::ApplyTemplateToSlide {
+            slide_id: sid,
+            template_id: tid,
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+async fn apply_template_to_deck(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    template_id: String,
+) -> Result<SceneState, String> {
+    let tid = TemplateId(Uuid::parse_str(&template_id).map_err(|e| e.to_string())?);
+    apply_scene_diff(&bridge, SceneDiff::ApplyTemplateToDeck { template_id: tid }).await
+}
+
+#[tauri::command]
+fn list_look_presets(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+) -> Result<Vec<LookPresetRecord>, String> {
+    let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    lib.list_look_presets().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn save_look_preset(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    id: Option<String>,
+    name: String,
+    assignments: BTreeMap<String, String>,
+) -> Result<Vec<LookPresetRecord>, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("Look Preset name cannot be empty".to_string());
+    }
+    let rec = LookPresetRecord {
+        id: id
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| Uuid::new_v4().to_string()),
+        name: trimmed.to_string(),
+        assignments,
+        updated_at: chrono::Utc::now(),
+    };
+    let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    lib.upsert_look_preset(&rec).map_err(|e| e.to_string())?;
+    lib.list_look_presets().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_look_preset(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    preset_id: String,
+) -> Result<Vec<LookPresetRecord>, String> {
+    let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    let _ = lib
+        .delete_look_preset(&preset_id)
+        .map_err(|e| e.to_string())?;
+    lib.list_look_presets().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn apply_look_preset(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    preset_id: String,
+) -> Result<SceneState, String> {
+    let preset = {
+        let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+        lib.list_look_presets()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|p| p.id == preset_id)
+            .ok_or_else(|| format!("Look Preset '{preset_id}' not found"))?
+    };
+    let mut pairs = Vec::with_capacity(preset.assignments.len());
+    for (oid_str, lid_str) in preset.assignments {
+        if let (Ok(oid), Ok(lid)) = (Uuid::parse_str(&oid_str), Uuid::parse_str(&lid_str)) {
+            pairs.push((OutputId(oid), LookId(lid)));
+        }
+    }
+    if pairs.is_empty() {
+        return Err("Preset contains no valid output-to-look assignments".to_string());
+    }
+    apply_scene_diff(&bridge, SceneDiff::ApplyLookRouting { assignments: pairs }).await
+}
+
+#[tauri::command]
+async fn apply_look_routing(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    assignments: BTreeMap<String, String>,
+) -> Result<SceneState, String> {
+    let mut pairs = Vec::with_capacity(assignments.len());
+    for (oid_str, lid_str) in assignments {
+        let oid = OutputId(Uuid::parse_str(&oid_str).map_err(|e| e.to_string())?);
+        let lid = LookId(Uuid::parse_str(&lid_str).map_err(|e| e.to_string())?);
+        pairs.push((oid, lid));
+    }
+    apply_scene_diff(&bridge, SceneDiff::ApplyLookRouting { assignments: pairs }).await
 }
 
 #[tauri::command]
@@ -1520,6 +1726,19 @@ pub fn run() {
             set_mask,
             set_stage_message,
             set_output_look,
+            list_looks,
+            upsert_look,
+            delete_look,
+            list_templates,
+            upsert_template,
+            delete_template,
+            apply_template_to_slide,
+            apply_template_to_deck,
+            list_look_presets,
+            save_look_preset,
+            delete_look_preset,
+            apply_look_preset,
+            apply_look_routing,
             list_physical_displays,
             upsert_output_screen,
             remove_output_screen,

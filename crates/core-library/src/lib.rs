@@ -5,9 +5,13 @@
 //! audit logs, and CRDT delta persistence.
 
 use chrono::{DateTime, Utc};
-use core_scene::{Slide, SlideId};
+use core_scene::{
+    LOOK_AUDIENCE_FULL, LOOK_STAGE_CONFIDENCE, LookConfig, LookId, Slide, SlideId, TemplateConfig,
+    TemplateId, default_looks, default_templates,
+};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::Path;
 use thiserror::Error;
 use uuid::Uuid;
@@ -107,6 +111,16 @@ pub struct CcliUsageEntry {
     pub ccli_number: String,
     pub author: String,
     pub display_seconds: u32,
+}
+
+/// Named multi-screen Look routing snapshot (e.g. "Worship Mode", "Sermon Lower-Third").
+/// Maps `output_id` (UUID string) → `look_id` (UUID string).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LookPresetRecord {
+    pub id: String,
+    pub name: String,
+    pub assignments: BTreeMap<String, String>,
+    pub updated_at: DateTime<Utc>,
 }
 
 /// Authoritative offline SQLite repository.
@@ -226,6 +240,28 @@ impl LibraryStore {
             CREATE TABLE IF NOT EXISTS crdt_snapshots (
                 doc_id TEXT PRIMARY KEY,
                 snapshot_blob BLOB NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS looks (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                config_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS templates (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                category TEXT NOT NULL DEFAULT 'Custom',
+                config_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS look_presets (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                assignments_json TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
             "#,
@@ -898,10 +934,191 @@ impl LibraryStore {
             .map_err(LibraryError::from)
     }
 
+    pub fn upsert_look(&self, look: &LookConfig) -> Result<(), LibraryError> {
+        let json = serde_json::to_string(look)?;
+        self.conn.execute(
+            r#"
+            INSERT INTO looks (id, name, config_json, updated_at)
+            VALUES (?1, ?2, ?3, ?4)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                config_json = excluded.config_json,
+                updated_at = excluded.updated_at
+            "#,
+            params![look.id.0.to_string(), look.name, json, Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_looks(&self) -> Result<Vec<LookConfig>, LibraryError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT config_json FROM looks ORDER BY name COLLATE NOCASE ASC")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for r in rows {
+            let json = r?;
+            if let Ok(look) = serde_json::from_str::<LookConfig>(&json) {
+                out.push(look);
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn delete_look(&self, id: LookId) -> Result<bool, LibraryError> {
+        if id == LOOK_AUDIENCE_FULL || id == LOOK_STAGE_CONFIDENCE {
+            return Ok(false);
+        }
+        let removed = self
+            .conn
+            .execute("DELETE FROM looks WHERE id = ?1", params![id.0.to_string()])?;
+        Ok(removed > 0)
+    }
+
+    pub fn upsert_template(&self, tpl: &TemplateConfig) -> Result<(), LibraryError> {
+        let json = serde_json::to_string(tpl)?;
+        self.conn.execute(
+            r#"
+            INSERT INTO templates (id, name, category, config_json, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                category = excluded.category,
+                config_json = excluded.config_json,
+                updated_at = excluded.updated_at
+            "#,
+            params![
+                tpl.id.0.to_string(),
+                tpl.name,
+                tpl.category,
+                json,
+                Utc::now().to_rfc3339()
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_templates(&self) -> Result<Vec<TemplateConfig>, LibraryError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT config_json FROM templates ORDER BY category COLLATE NOCASE ASC, name COLLATE NOCASE ASC")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for r in rows {
+            let json = r?;
+            if let Ok(tpl) = serde_json::from_str::<TemplateConfig>(&json) {
+                out.push(tpl);
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn delete_template(&self, id: TemplateId) -> Result<bool, LibraryError> {
+        let removed = self.conn.execute(
+            "DELETE FROM templates WHERE id = ?1",
+            params![id.0.to_string()],
+        )?;
+        Ok(removed > 0)
+    }
+
+    pub fn upsert_look_preset(&self, preset: &LookPresetRecord) -> Result<(), LibraryError> {
+        let json = serde_json::to_string(&preset.assignments)?;
+        self.conn.execute(
+            r#"
+            INSERT INTO look_presets (id, name, assignments_json, updated_at)
+            VALUES (?1, ?2, ?3, ?4)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                assignments_json = excluded.assignments_json,
+                updated_at = excluded.updated_at
+            "#,
+            params![
+                preset.id,
+                preset.name,
+                json,
+                preset.updated_at.to_rfc3339()
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_look_presets(&self) -> Result<Vec<LookPresetRecord>, LibraryError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, assignments_json, updated_at FROM look_presets ORDER BY name COLLATE NOCASE ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let assignments_json: String = row.get(2)?;
+            let updated_str: String = row.get(3)?;
+            Ok(LookPresetRecord {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                assignments: serde_json::from_str(&assignments_json).unwrap_or_default(),
+                updated_at: DateTime::parse_from_rfc3339(&updated_str)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now()),
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    pub fn delete_look_preset(&self, id: &str) -> Result<bool, LibraryError> {
+        let removed = self
+            .conn
+            .execute("DELETE FROM look_presets WHERE id = ?1", params![id])?;
+        Ok(removed > 0)
+    }
+
     /// Seeds default presentation libraries, media bins, starter media backgrounds,
-    /// demo presentations, and a Sunday Morning Service playlist if empty.
+    /// looks, templates, demo presentations, and a Sunday Morning Service playlist if empty.
     pub fn seed_demo_if_empty(&self) -> Result<(), LibraryError> {
         let now = Utc::now();
+        if self.list_templates()?.is_empty() {
+            for tpl in default_templates() {
+                self.upsert_template(&tpl)?;
+            }
+        }
+        if self.list_looks()?.is_empty() {
+            for look in default_looks() {
+                self.upsert_look(&look)?;
+            }
+        }
+        if self.list_look_presets()?.is_empty() {
+            let mut worship_map = BTreeMap::new();
+            worship_map.insert(
+                core_scene::OUTPUT_AUDIENCE_MAIN.0.to_string(),
+                LOOK_AUDIENCE_FULL.0.to_string(),
+            );
+            worship_map.insert(
+                core_scene::OUTPUT_STAGE_MAIN.0.to_string(),
+                LOOK_STAGE_CONFIDENCE.0.to_string(),
+            );
+            self.upsert_look_preset(&LookPresetRecord {
+                id: "preset-worship-full".to_string(),
+                name: "Worship Full Sanctuary".to_string(),
+                assignments: worship_map,
+                updated_at: now,
+            })?;
+
+            let mut broadcast_map = BTreeMap::new();
+            broadcast_map.insert(
+                core_scene::OUTPUT_AUDIENCE_MAIN.0.to_string(),
+                core_scene::LOOK_BROADCAST_LOWER_THIRD.0.to_string(),
+            );
+            broadcast_map.insert(
+                core_scene::OUTPUT_STAGE_MAIN.0.to_string(),
+                LOOK_STAGE_CONFIDENCE.0.to_string(),
+            );
+            self.upsert_look_preset(&LookPresetRecord {
+                id: "preset-broadcast-lower-third".to_string(),
+                name: "Livestream Lower-Third".to_string(),
+                assignments: broadcast_map,
+                updated_at: now,
+            })?;
+        }
         if self.list_libraries()?.is_empty() {
             for (id, name) in [
                 (DEFAULT_LIBRARY_ID, "Default Library"),
@@ -1306,6 +1523,43 @@ mod tests {
         let slide = slide_from_text("Test Song", "Chorus", "Line 1\nLine 2", Some("12345".into()));
         assert_eq!(slide.ccli_number.as_deref(), Some("12345"));
         assert!(slide.plain_text().contains("Line 2"));
+
+        // Looks, Templates, and Look Presets persistence CRUD
+        assert_eq!(store.list_looks().expect("seeded looks").len(), 3);
+        assert_eq!(store.list_templates().expect("seeded templates").len(), 4);
+        assert_eq!(store.list_look_presets().expect("seeded presets").len(), 2);
+
+        let mut custom_tpl = default_templates()[0].clone();
+        custom_tpl.id = TemplateId::new();
+        custom_tpl.name = "Custom Youth Overlay".into();
+        custom_tpl.category = "Custom".into();
+        store.upsert_template(&custom_tpl).expect("upsert tpl");
+        assert_eq!(store.list_templates().expect("list tpls").len(), 5);
+
+        let mut custom_look = default_looks()[0].clone();
+        custom_look.id = LookId::new();
+        custom_look.name = "Youth Room".into();
+        custom_look.template_id = Some(custom_tpl.id);
+        store.upsert_look(&custom_look).expect("upsert look");
+        assert_eq!(store.list_looks().expect("list looks").len(), 4);
+
+        assert!(!store.delete_look(LOOK_AUDIENCE_FULL).expect("protect audience"));
+        assert!(!store.delete_look(LOOK_STAGE_CONFIDENCE).expect("protect stage"));
+        assert!(store.delete_look(custom_look.id).expect("delete custom look"));
+        assert!(store.delete_template(custom_tpl.id).expect("delete custom tpl"));
+
+        let preset = LookPresetRecord {
+            id: "preset-sermon".into(),
+            name: "Sermon Mode".into(),
+            assignments: BTreeMap::from([(
+                core_scene::OUTPUT_AUDIENCE_MAIN.0.to_string(),
+                LOOK_AUDIENCE_FULL.0.to_string(),
+            )]),
+            updated_at: Utc::now(),
+        };
+        store.upsert_look_preset(&preset).expect("upsert preset");
+        assert_eq!(store.list_look_presets().expect("presets").len(), 3);
+        assert!(store.delete_look_preset("preset-sermon").expect("delete preset"));
 
         drop(store);
         let _ = std::fs::remove_dir_all(db_path.parent().expect("parent"));

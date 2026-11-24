@@ -6,6 +6,7 @@
   import DiagnosticsPanel from "./lib/DiagnosticsPanel.svelte";
   import LayerManager from "./lib/LayerManager.svelte";
   import LibraryPlaylistDrawer from "./lib/LibraryPlaylistDrawer.svelte";
+  import LooksTemplatesPanel from "./lib/LooksTemplatesPanel.svelte";
   import MediaBinDrawer from "./lib/MediaBinDrawer.svelte";
   import ScreensPanel from "./lib/ScreensPanel.svelte";
   import ShowControlPanel from "./lib/ShowControlPanel.svelte";
@@ -25,7 +26,7 @@
   let telemetry = $state<EngineTelemetry | null>(null);
   let statusMessage = $state("Connecting to openpresenter-engine sidecar...");
   let errorText = $state<string | null>(null);
-  let activeTab = $state<"show" | "screens" | "editor" | "broadcast" | "ecosystem" | "diagnostics">("show");
+  let activeTab = $state<"show" | "screens" | "looks" | "editor" | "broadcast" | "ecosystem" | "diagnostics">("show");
   let crashCount = $state(0);
   let showLibraryDrawer = $state(true);
   let showLayerDock = $state(true);
@@ -307,6 +308,9 @@
         <button class="tab" class:active={activeTab === "screens"} onclick={() => (activeTab = "screens")}>
           Screens
         </button>
+        <button class="tab" class:active={activeTab === "looks"} onclick={() => (activeTab = "looks")}>
+          Looks & Templates
+        </button>
         <button class="tab" class:active={activeTab === "editor"} onclick={() => (activeTab = "editor")}>
           Slide Editor
         </button>
@@ -396,6 +400,17 @@
           onSnapshotChange={(next) => {
             snapshot = next;
             telemetry = next.telemetry;
+          }}
+        />
+      {:else if activeTab === "looks" && scene}
+        <LooksTemplatesPanel
+          {scene}
+          onSceneChange={(next) => {
+            errorText = null;
+            if (snapshot) snapshot = { ...snapshot, state: next };
+          }}
+          onError={(msg) => {
+            errorText = msg;
           }}
         />
       {:else if activeTab === "broadcast"}
@@ -533,7 +548,10 @@
     <aside class="monitor-pane">
       <div class="pane-header">
         <h2>Native GPU Monitors</h2>
-        <button class="btn" onclick={() => (activeTab = "screens")}>Configure</button>
+        <div class="monitor-head-actions">
+          <button class="btn" onclick={() => (activeTab = "looks")}>Manage Looks</button>
+          <button class="btn" onclick={() => (activeTab = "screens")}>Configure</button>
+        </div>
       </div>
 
       {#if scene}
@@ -670,7 +688,8 @@
     color: var(--text-0);
   }
 
-  .top-actions {
+  .top-actions,
+  .monitor-head-actions {
     display: flex;
     gap: 8px;
   }

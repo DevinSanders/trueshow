@@ -33,8 +33,35 @@ impl Default for OutputId {
 pub struct LookId(pub Uuid);
 
 impl LookId {
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
     pub const fn from_u128(v: u128) -> Self {
         Self(Uuid::from_u128(v))
+    }
+}
+
+impl Default for LookId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct TemplateId(pub Uuid);
+
+impl TemplateId {
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+    pub const fn from_u128(v: u128) -> Self {
+        Self(Uuid::from_u128(v))
+    }
+}
+
+impl Default for TemplateId {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -407,15 +434,44 @@ pub enum OutputKind {
     Stage,
 }
 
-/// Per-output Look defining layer visibility, blend modes, and broadcast keying behavior.
+/// Reusable slide/output visual Template defining typography, safe-area bounds, backdrop pill,
+/// optional subtitle band, accent bar, and default mask.
+///
+/// Templates can be applied directly to slides/decks OR attached to a [`LookConfig`] so each
+/// physical/broadcast output renders the same live slide deck with a different layout simultaneously.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TemplateConfig {
+    pub id: TemplateId,
+    pub name: String,
+    #[serde(default)]
+    pub category: String,
+    pub text_bounds: RectF,
+    #[serde(default)]
+    pub subtitle_bounds: Option<RectF>,
+    pub text_style: TextStyle,
+    #[serde(default)]
+    pub subtitle_style: Option<TextStyle>,
+    #[serde(default)]
+    pub accent_bar_color: Option<ColorRgba>,
+    #[serde(default)]
+    pub default_mask: MaskStyle,
+}
+
+/// Per-output Look defining layer visibility, optional template override, blend modes, and broadcast keying behavior.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LookConfig {
     pub id: LookId,
     pub name: String,
+    #[serde(default)]
+    pub description: String,
     pub enabled_layers: Vec<LayerKind>,
     pub lower_third_mode: bool,
     pub transparent_background: bool,
     pub slide_blend_mode: BlendMode,
+    #[serde(default)]
+    pub template_id: Option<TemplateId>,
+    #[serde(default)]
+    pub mask_override: Option<MaskStyle>,
 }
 
 impl LookConfig {
@@ -560,6 +616,8 @@ pub struct SceneState {
     pub stage_message: Option<String>,
     pub timer_readout: Option<String>,
     pub looks: BTreeMap<LookId, LookConfig>,
+    #[serde(default)]
+    pub templates: BTreeMap<TemplateId, TemplateConfig>,
     pub outputs: Vec<OutputConfig>,
     pub deck: Vec<Slide>,
 }
@@ -595,6 +653,24 @@ pub enum SceneDiff {
         output_id: OutputId,
         look_id: LookId,
     },
+    UpsertLook(LookConfig),
+    RemoveLook(LookId),
+    UpsertTemplate(TemplateConfig),
+    RemoveTemplate(TemplateId),
+    ApplyTemplateToSlide {
+        slide_id: SlideId,
+        template_id: TemplateId,
+    },
+    ApplyTemplateToDeck {
+        template_id: TemplateId,
+    },
+    ApplyLookRouting {
+        assignments: Vec<(OutputId, LookId)>,
+    },
+    SyncLooksAndTemplates {
+        looks: Vec<LookConfig>,
+        templates: Vec<TemplateConfig>,
+    },
     UpsertOutput(OutputConfig),
     RemoveOutput(OutputId),
     SetOutputStageLayout {
@@ -613,46 +689,263 @@ pub const LOOK_AUDIENCE_FULL: LookId = LookId::from_u128(1);
 pub const LOOK_STAGE_CONFIDENCE: LookId = LookId::from_u128(2);
 pub const LOOK_BROADCAST_LOWER_THIRD: LookId = LookId::from_u128(3);
 
+pub const TEMPLATE_SANCTUARY_CENTER: TemplateId = TemplateId::from_u128(1);
+pub const TEMPLATE_LOWER_THIRD_BAR: TemplateId = TemplateId::from_u128(2);
+pub const TEMPLATE_SCRIPTURE_CARD: TemplateId = TemplateId::from_u128(3);
+pub const TEMPLATE_BOLD_MODERN: TemplateId = TemplateId::from_u128(4);
+
 pub const OUTPUT_AUDIENCE_MAIN: OutputId = OutputId::from_u128(101);
 pub const OUTPUT_STAGE_MAIN: OutputId = OutputId::from_u128(102);
 
+/// Built-in default slide/output templates shared by `SceneState` and `core-library`.
+pub fn default_templates() -> Vec<TemplateConfig> {
+    vec![
+        TemplateConfig {
+            id: TEMPLATE_SANCTUARY_CENTER,
+            name: "Sanctuary Full Center".to_string(),
+            category: "Lyrics".to_string(),
+            text_bounds: RectF::new(160.0, 230.0, 1600.0, 500.0),
+            subtitle_bounds: Some(RectF::new(260.0, 770.0, 1400.0, 140.0)),
+            text_style: TextStyle::default(),
+            subtitle_style: Some(TextStyle {
+                font_size: 46.0,
+                bold: false,
+                stroke_width: 2.5,
+                color: ColorRgba::rgba(0.90, 0.94, 1.0, 0.95),
+                ..TextStyle::default()
+            }),
+            accent_bar_color: None,
+            default_mask: MaskStyle::None,
+        },
+        TemplateConfig {
+            id: TEMPLATE_LOWER_THIRD_BAR,
+            name: "Broadcast Lower Third (Bar)".to_string(),
+            category: "Lower Third".to_string(),
+            text_bounds: RectF::new(120.0, 790.0, 1680.0, 200.0),
+            subtitle_bounds: None,
+            text_style: TextStyle {
+                font_size: 54.0,
+                bold: true,
+                backdrop_color: ColorRgba::rgba(0.05, 0.08, 0.14, 0.88),
+                backdrop_radius: 18.0,
+                backdrop_padding: 26.0,
+                stroke_width: 2.0,
+                h_align: TextAlign::Center,
+                v_align: VerticalAlign::Middle,
+                ..TextStyle::default()
+            },
+            subtitle_style: None,
+            accent_bar_color: Some(ColorRgba::rgba(0.22, 0.62, 1.0, 0.96)),
+            default_mask: MaskStyle::None,
+        },
+        TemplateConfig {
+            id: TEMPLATE_SCRIPTURE_CARD,
+            name: "Scripture Serif Card".to_string(),
+            category: "Scripture".to_string(),
+            text_bounds: RectF::new(180.0, 220.0, 1560.0, 520.0),
+            subtitle_bounds: Some(RectF::new(180.0, 760.0, 1560.0, 110.0)),
+            text_style: TextStyle {
+                font_family: "serif".to_string(),
+                font_size: 64.0,
+                bold: false,
+                italic: false,
+                line_height: 1.32,
+                color: ColorRgba::rgba(0.98, 0.97, 0.93, 1.0),
+                stroke_width: 1.5,
+                backdrop_color: ColorRgba::rgba(0.05, 0.07, 0.12, 0.78),
+                backdrop_radius: 22.0,
+                backdrop_padding: 36.0,
+                h_align: TextAlign::Left,
+                v_align: VerticalAlign::Middle,
+                ..TextStyle::default()
+            },
+            subtitle_style: Some(TextStyle {
+                font_family: "sans-serif".to_string(),
+                font_size: 40.0,
+                bold: true,
+                color: ColorRgba::rgba(0.96, 0.80, 0.36, 0.98),
+                stroke_width: 1.5,
+                h_align: TextAlign::Right,
+                v_align: VerticalAlign::Middle,
+                ..TextStyle::default()
+            }),
+            accent_bar_color: Some(ColorRgba::rgba(0.95, 0.78, 0.35, 0.95)),
+            default_mask: MaskStyle::SoftVignette,
+        },
+        TemplateConfig {
+            id: TEMPLATE_BOLD_MODERN,
+            name: "Modern Left-Aligned Bold".to_string(),
+            category: "Lyrics".to_string(),
+            text_bounds: RectF::new(140.0, 180.0, 1280.0, 620.0),
+            subtitle_bounds: Some(RectF::new(140.0, 820.0, 1280.0, 100.0)),
+            text_style: TextStyle {
+                font_family: "sans-serif".to_string(),
+                font_size: 92.0,
+                bold: true,
+                line_height: 1.15,
+                color: ColorRgba::WHITE,
+                stroke_width: 3.0,
+                h_align: TextAlign::Left,
+                v_align: VerticalAlign::Middle,
+                ..TextStyle::default()
+            },
+            subtitle_style: Some(TextStyle {
+                font_size: 42.0,
+                bold: false,
+                color: ColorRgba::rgba(0.75, 0.87, 1.0, 0.92),
+                stroke_width: 2.0,
+                h_align: TextAlign::Left,
+                v_align: VerticalAlign::Middle,
+                ..TextStyle::default()
+            }),
+            accent_bar_color: None,
+            default_mask: MaskStyle::None,
+        },
+    ]
+}
+
+/// Built-in default Looks shared by `SceneState` and `core-library`.
+pub fn default_looks() -> Vec<LookConfig> {
+    vec![
+        LookConfig {
+            id: LOOK_AUDIENCE_FULL,
+            name: "Audience Full".to_string(),
+            description: "Full 7-layer sanctuary presentation output".to_string(),
+            enabled_layers: LayerKind::ALL.to_vec(),
+            lower_third_mode: false,
+            transparent_background: false,
+            slide_blend_mode: BlendMode::Normal,
+            template_id: None,
+            mask_override: None,
+        },
+        LookConfig {
+            id: LOOK_STAGE_CONFIDENCE,
+            name: "Stage Confidence".to_string(),
+            description: "High-contrast lyrics, chords, next-slide cue, and timer for stage".to_string(),
+            enabled_layers: vec![LayerKind::Slide, LayerKind::MessagesAndTimers],
+            lower_third_mode: false,
+            transparent_background: false,
+            slide_blend_mode: BlendMode::Normal,
+            template_id: None,
+            mask_override: None,
+        },
+        LookConfig {
+            id: LOOK_BROADCAST_LOWER_THIRD,
+            name: "Broadcast Lower Third (Alpha)".to_string(),
+            description: "Transparent alpha lower-third lyric bar for livestream / NDI / SDI key+fill".to_string(),
+            enabled_layers: vec![LayerKind::Slide, LayerKind::PropsAndOverlays],
+            lower_third_mode: true,
+            transparent_background: true,
+            slide_blend_mode: BlendMode::Normal,
+            template_id: Some(TEMPLATE_LOWER_THIRD_BAR),
+            mask_override: None,
+        },
+    ]
+}
+
+/// Applies a [`TemplateConfig`]'s layout, typography, optional subtitle styling, and optional
+/// accent bar directly onto a [`Slide`]'s elements.
+pub fn apply_template_to_slide_mut(slide: &mut Slide, template: &TemplateConfig) {
+    let mut text_indices = Vec::new();
+    for (idx, el) in slide.elements.iter().enumerate() {
+        if matches!(el.kind, SlideElementKind::TextBox { .. }) {
+            text_indices.push(idx);
+        }
+    }
+
+    let primary_text = text_indices
+        .first()
+        .and_then(|&i| match &slide.elements[i].kind {
+            SlideElementKind::TextBox { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| {
+            if slide.body.trim().is_empty() {
+                slide.headline.clone()
+            } else {
+                format!("{}\n{}", slide.headline, slide.body)
+            }
+        });
+
+    let secondary_text = text_indices
+        .get(1)
+        .and_then(|&i| match &slide.elements[i].kind {
+            SlideElementKind::TextBox { text, .. } => Some(text.clone()),
+            _ => None,
+        });
+
+    let mut new_elements = Vec::new();
+
+    if let Some(accent) = template.accent_bar_color {
+        let b = template.text_bounds;
+        new_elements.push(SlideElement {
+            id: ElementId::from_u128(template.id.0.as_u128() ^ 0xA55E_7BA8_0000_0001),
+            name: "Template Accent Bar".to_string(),
+            bounds: RectF::new(b.x, b.y, 12.0, b.height),
+            opacity: 1.0,
+            z_index: 8,
+            kind: SlideElementKind::ShapeRect {
+                fill: accent,
+                stroke: ColorRgba::TRANSPARENT,
+                stroke_width: 0.0,
+                corner_radius: 6.0,
+            },
+        });
+    }
+
+    let primary_id = text_indices
+        .first()
+        .map(|&i| slide.elements[i].id)
+        .unwrap_or_else(ElementId::new);
+    new_elements.push(SlideElement {
+        id: primary_id,
+        name: "Primary Lyrics".to_string(),
+        bounds: template.text_bounds,
+        opacity: 1.0,
+        z_index: 10,
+        kind: SlideElementKind::TextBox {
+            text: primary_text,
+            style: template.text_style.clone(),
+        },
+    });
+
+    if let (Some(sub_bounds), Some(sub_text)) = (template.subtitle_bounds, secondary_text) {
+        let sub_id = text_indices
+            .get(1)
+            .map(|&i| slide.elements[i].id)
+            .unwrap_or_else(ElementId::new);
+        let sub_style = template.subtitle_style.clone().unwrap_or_else(|| TextStyle {
+            font_size: (template.text_style.font_size * 0.55).max(28.0),
+            bold: false,
+            ..template.text_style.clone()
+        });
+        new_elements.push(SlideElement {
+            id: sub_id,
+            name: "Reference / Subtitle".to_string(),
+            bounds: sub_bounds,
+            opacity: 0.92,
+            z_index: 11,
+            kind: SlideElementKind::TextBox {
+                text: sub_text,
+                style: sub_style,
+            },
+        });
+    }
+
+    slide.elements = new_elements;
+}
+
 impl SceneState {
-    /// Creates a ready-to-run demonstration state with 2 outputs, 3 Looks, and rich worship slides.
+    /// Creates a ready-to-run demonstration state with 2 outputs, 3 Looks, 4 Templates, and rich worship slides.
     pub fn demo_m0(output_count: usize) -> Self {
         let mut looks = BTreeMap::new();
-        looks.insert(
-            LOOK_AUDIENCE_FULL,
-            LookConfig {
-                id: LOOK_AUDIENCE_FULL,
-                name: "Audience Full".to_string(),
-                enabled_layers: LayerKind::ALL.to_vec(),
-                lower_third_mode: false,
-                transparent_background: false,
-                slide_blend_mode: BlendMode::Normal,
-            },
-        );
-        looks.insert(
-            LOOK_STAGE_CONFIDENCE,
-            LookConfig {
-                id: LOOK_STAGE_CONFIDENCE,
-                name: "Stage Confidence".to_string(),
-                enabled_layers: vec![LayerKind::Slide, LayerKind::MessagesAndTimers],
-                lower_third_mode: false,
-                transparent_background: false,
-                slide_blend_mode: BlendMode::Normal,
-            },
-        );
-        looks.insert(
-            LOOK_BROADCAST_LOWER_THIRD,
-            LookConfig {
-                id: LOOK_BROADCAST_LOWER_THIRD,
-                name: "Broadcast Lower Third (Alpha)".to_string(),
-                enabled_layers: vec![LayerKind::Slide, LayerKind::PropsAndOverlays],
-                lower_third_mode: true,
-                transparent_background: true,
-                slide_blend_mode: BlendMode::Normal,
-            },
-        );
+        for look in default_looks() {
+            looks.insert(look.id, look);
+        }
+        let mut templates = BTreeMap::new();
+        for tpl in default_templates() {
+            templates.insert(tpl.id, tpl);
+        }
 
         let mut outputs = vec![OutputConfig {
             id: OUTPUT_AUDIENCE_MAIN,
@@ -712,6 +1005,7 @@ impl SceneState {
             stage_message: None,
             timer_readout: Some("05:00".to_string()),
             looks,
+            templates,
             outputs,
             deck,
         }
@@ -941,6 +1235,140 @@ impl SceneState {
                     false
                 }
             }
+            SceneDiff::UpsertLook(mut look) => {
+                look.name = look.name.trim().to_string();
+                if look.name.is_empty() {
+                    return false;
+                }
+                if let Some(tid) = look.template_id
+                    && !self.templates.contains_key(&tid)
+                {
+                    look.template_id = None;
+                }
+                self.looks.insert(look.id, look);
+                self.revision += 1;
+                true
+            }
+            SceneDiff::RemoveLook(look_id) => {
+                // Always preserve core Audience & Stage fallback Looks.
+                if look_id == LOOK_AUDIENCE_FULL || look_id == LOOK_STAGE_CONFIDENCE {
+                    return false;
+                }
+                if self.looks.remove(&look_id).is_some() {
+                    for out in &mut self.outputs {
+                        if out.look_id == look_id {
+                            out.look_id = match out.kind {
+                                OutputKind::Audience => LOOK_AUDIENCE_FULL,
+                                OutputKind::Stage => LOOK_STAGE_CONFIDENCE,
+                            };
+                        }
+                    }
+                    self.revision += 1;
+                    true
+                } else {
+                    false
+                }
+            }
+            SceneDiff::UpsertTemplate(mut tpl) => {
+                tpl.name = tpl.name.trim().to_string();
+                if tpl.name.is_empty()
+                    || tpl.text_bounds.width <= 0.0
+                    || tpl.text_bounds.height <= 0.0
+                {
+                    return false;
+                }
+                if tpl.category.trim().is_empty() {
+                    tpl.category = "Custom".to_string();
+                }
+                self.templates.insert(tpl.id, tpl);
+                self.revision += 1;
+                true
+            }
+            SceneDiff::RemoveTemplate(template_id) => {
+                if self.templates.remove(&template_id).is_some() {
+                    for look in self.looks.values_mut() {
+                        if look.template_id == Some(template_id) {
+                            look.template_id = None;
+                        }
+                    }
+                    self.revision += 1;
+                    true
+                } else {
+                    false
+                }
+            }
+            SceneDiff::ApplyTemplateToSlide {
+                slide_id,
+                template_id,
+            } => {
+                let Some(tpl) = self.templates.get(&template_id).cloned() else {
+                    return false;
+                };
+                if let Some(slide) = self.deck.iter_mut().find(|s| s.id == slide_id) {
+                    apply_template_to_slide_mut(slide, &tpl);
+                    if self.active_slide.as_ref().map(|s| s.id) == Some(slide_id) {
+                        self.active_slide = Some(slide.clone());
+                    }
+                    if self.next_slide_preview.as_ref().map(|s| s.id) == Some(slide_id) {
+                        self.next_slide_preview = Some(slide.clone());
+                    }
+                    self.revision += 1;
+                    true
+                } else {
+                    false
+                }
+            }
+            SceneDiff::ApplyTemplateToDeck { template_id } => {
+                let Some(tpl) = self.templates.get(&template_id).cloned() else {
+                    return false;
+                };
+                for slide in &mut self.deck {
+                    apply_template_to_slide_mut(slide, &tpl);
+                }
+                if let Some(active_id) = self.active_slide.as_ref().map(|s| s.id) {
+                    if let Some(updated) = self.deck.iter().find(|s| s.id == active_id).cloned() {
+                        self.active_slide = Some(updated);
+                    } else if let Some(active) = self.active_slide.as_mut() {
+                        apply_template_to_slide_mut(active, &tpl);
+                    }
+                }
+                if let Some(next_id) = self.next_slide_preview.as_ref().map(|s| s.id)
+                    && let Some(updated) = self.deck.iter().find(|s| s.id == next_id).cloned()
+                {
+                    self.next_slide_preview = Some(updated);
+                }
+                self.revision += 1;
+                true
+            }
+            SceneDiff::ApplyLookRouting { assignments } => {
+                let mut changed = false;
+                for (oid, lid) in assignments {
+                    if self.looks.contains_key(&lid)
+                        && let Some(out) = self.outputs.iter_mut().find(|o| o.id == oid)
+                    {
+                        out.look_id = lid;
+                        changed = true;
+                    }
+                }
+                if changed {
+                    self.revision += 1;
+                }
+                changed
+            }
+            SceneDiff::SyncLooksAndTemplates { looks, templates } => {
+                for tpl in templates {
+                    if !tpl.name.trim().is_empty() {
+                        self.templates.insert(tpl.id, tpl);
+                    }
+                }
+                for look in looks {
+                    if !look.name.trim().is_empty() {
+                        self.looks.insert(look.id, look);
+                    }
+                }
+                self.revision += 1;
+                true
+            }
             SceneDiff::UpsertOutput(mut cfg) => {
                 if cfg.name.trim().is_empty() || cfg.width == 0 || cfg.height == 0 {
                     return false;
@@ -1032,6 +1460,11 @@ impl SceneState {
     pub fn look_for_output(&self, output_id: OutputId) -> Option<&LookConfig> {
         let output = self.outputs.iter().find(|o| o.id == output_id)?;
         self.looks.get(&output.look_id)
+    }
+
+    pub fn template_for_look(&self, look: &LookConfig) -> Option<&TemplateConfig> {
+        let tid = look.template_id?;
+        self.templates.get(&tid)
     }
 }
 
@@ -1502,5 +1935,149 @@ mod tests {
         assert!(state.apply(SceneDiff::ClearLayer(LayerKind::MediaBackground)));
         assert!(state.active_background.is_none());
         assert!(state.slide_layer_active);
+    }
+
+    #[test]
+    fn manages_custom_looks_templates_routing_and_slide_application() {
+        let mut state = SceneState::demo_m0(2);
+        assert_eq!(state.templates.len(), 4);
+        assert_eq!(state.looks.len(), 3);
+        let _ = LookId::default();
+        let _ = TemplateId::default();
+
+        // 1. Upsert custom Template (happy path + validation failures)
+        let custom_tpl_id = TemplateId::new();
+        let custom_tpl = TemplateConfig {
+            id: custom_tpl_id,
+            name: "  Livestream Lower Bar  ".to_string(),
+            category: "   ".to_string(),
+            text_bounds: RectF::new(100.0, 800.0, 1720.0, 180.0),
+            subtitle_bounds: Some(RectF::new(100.0, 990.0, 1720.0, 60.0)),
+            text_style: TextStyle {
+                font_family: "serif".to_string(),
+                font_size: 52.0,
+                backdrop_color: ColorRgba::rgba(0.05, 0.08, 0.14, 0.88),
+                ..TextStyle::default()
+            },
+            subtitle_style: None,
+            accent_bar_color: Some(ColorRgba::rgb(0.2, 0.6, 1.0)),
+            default_mask: MaskStyle::LowerThirdBand,
+        };
+        assert!(state.apply(SceneDiff::UpsertTemplate(custom_tpl.clone())));
+        let stored_tpl = state.templates.get(&custom_tpl_id).expect("stored tpl");
+        assert_eq!(stored_tpl.name, "Livestream Lower Bar");
+        assert_eq!(stored_tpl.category, "Custom");
+
+        // Failure paths for UpsertTemplate
+        let mut bad_tpl = custom_tpl.clone();
+        bad_tpl.name = "  ".into();
+        assert!(!state.apply(SceneDiff::UpsertTemplate(bad_tpl)));
+        let mut bad_w_tpl = custom_tpl.clone();
+        bad_w_tpl.text_bounds.width = 0.0;
+        assert!(!state.apply(SceneDiff::UpsertTemplate(bad_w_tpl)));
+
+        // 2. Upsert custom Look referencing custom Template
+        let custom_look_id = LookId::new();
+        let custom_look = LookConfig {
+            id: custom_look_id,
+            name: "  Livestream Custom  ".to_string(),
+            description: "Key + Fill with serif bar".to_string(),
+            enabled_layers: vec![LayerKind::Slide, LayerKind::Masks],
+            lower_third_mode: true,
+            transparent_background: true,
+            slide_blend_mode: BlendMode::Screen,
+            template_id: Some(custom_tpl_id),
+            mask_override: Some(MaskStyle::LowerThirdBand),
+        };
+        assert!(state.apply(SceneDiff::UpsertLook(custom_look.clone())));
+        assert_eq!(
+            state
+                .template_for_look(state.looks.get(&custom_look_id).expect("look"))
+                .map(|t| t.id),
+            Some(custom_tpl_id)
+        );
+
+        // Failure path: blank look name & unknown template_id sanitized to None
+        let mut bad_look = custom_look.clone();
+        bad_look.name = " ".into();
+        assert!(!state.apply(SceneDiff::UpsertLook(bad_look)));
+        let mut unknown_tpl_look = custom_look.clone();
+        unknown_tpl_look.id = LookId::new();
+        unknown_tpl_look.template_id = Some(TemplateId::new());
+        assert!(state.apply(SceneDiff::UpsertLook(unknown_tpl_look.clone())));
+        assert!(state.looks.get(&unknown_tpl_look.id).expect("sanitized").template_id.is_none());
+
+        // 3. Apply Look Routing atomically across outputs
+        assert!(state.apply(SceneDiff::ApplyLookRouting {
+            assignments: vec![
+                (OUTPUT_AUDIENCE_MAIN, custom_look_id),
+                (OUTPUT_STAGE_MAIN, LOOK_STAGE_CONFIDENCE),
+            ],
+        }));
+        assert_eq!(
+            state.look_for_output(OUTPUT_AUDIENCE_MAIN).map(|l| l.id),
+            Some(custom_look_id)
+        );
+        assert!(!state.apply(SceneDiff::ApplyLookRouting {
+            assignments: vec![(OutputId::new(), LookId::new())],
+        }));
+
+        // 4. Apply Template directly to a single slide & to the entire deck
+        let first_id = state.deck[0].id;
+        assert!(state.apply(SceneDiff::ApplyTemplateToSlide {
+            slide_id: first_id,
+            template_id: custom_tpl_id,
+        }));
+        assert!(
+            state
+                .active_slide
+                .as_ref()
+                .expect("active")
+                .elements
+                .iter()
+                .any(|e| e.name == "Template Accent Bar")
+        );
+        assert!(!state.apply(SceneDiff::ApplyTemplateToSlide {
+            slide_id: SlideId::new(),
+            template_id: custom_tpl_id,
+        }));
+        assert!(!state.apply(SceneDiff::ApplyTemplateToSlide {
+            slide_id: first_id,
+            template_id: TemplateId::new(),
+        }));
+
+        assert!(state.apply(SceneDiff::ApplyTemplateToDeck {
+            template_id: TEMPLATE_SCRIPTURE_CARD,
+        }));
+        assert!(state.deck.iter().all(|s| {
+            s.elements
+                .iter()
+                .any(|e| matches!(&e.kind, SlideElementKind::TextBox { style, .. } if style.font_family == "serif"))
+        }));
+        assert!(!state.apply(SceneDiff::ApplyTemplateToDeck {
+            template_id: TemplateId::new(),
+        }));
+
+        // 5. Removing Template clears look.template_id; Removing Look resets output fallback; Built-ins protected
+        assert!(state.apply(SceneDiff::RemoveTemplate(custom_tpl_id)));
+        assert!(!state.apply(SceneDiff::RemoveTemplate(custom_tpl_id)));
+        assert!(state.looks.get(&custom_look_id).expect("look").template_id.is_none());
+
+        assert!(!state.apply(SceneDiff::RemoveLook(LOOK_AUDIENCE_FULL)));
+        assert!(!state.apply(SceneDiff::RemoveLook(LOOK_STAGE_CONFIDENCE)));
+        assert!(state.apply(SceneDiff::RemoveLook(custom_look_id)));
+        assert!(!state.apply(SceneDiff::RemoveLook(custom_look_id)));
+        assert_eq!(
+            state.look_for_output(OUTPUT_AUDIENCE_MAIN).map(|l| l.id),
+            Some(LOOK_AUDIENCE_FULL)
+        );
+
+        // 6. SyncLooksAndTemplates hydrates persisted records
+        assert!(state.apply(SceneDiff::SyncLooksAndTemplates {
+            looks: vec![custom_look],
+            templates: vec![custom_tpl],
+        }));
+        assert!(state.looks.contains_key(&custom_look_id));
+        assert!(state.templates.contains_key(&custom_tpl_id));
     }
 }

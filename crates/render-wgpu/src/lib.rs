@@ -233,10 +233,13 @@ impl SharedEngineState {
             LookConfig {
                 id: core_scene::LOOK_AUDIENCE_FULL,
                 name: "Fallback".to_string(),
+                description: String::new(),
                 enabled_layers: LayerKind::ALL.to_vec(),
                 lower_third_mode: false,
                 transparent_background: false,
                 slide_blend_mode: BlendMode::Normal,
+                template_id: None,
+                mask_override: None,
             },
         );
 
@@ -291,7 +294,7 @@ impl SharedEngineState {
         );
 
         let mask_style = if look.is_layer_enabled(LayerKind::Masks) {
-            guard.scene.mask_style as u32
+            look.mask_override.unwrap_or(guard.scene.mask_style) as u32
         } else {
             MaskStyle::None as u32
         };
@@ -513,6 +516,7 @@ impl CompositorApp {
         let snap = self.shared.snapshot();
         let look = snap.state.look_for_output(out.config_meta.id);
         let lower_third = look.map(|l| l.lower_third_mode).unwrap_or(false);
+        let template_override = look.and_then(|l| snap.state.template_for_look(l));
         let fg_active = snap.state.active_foreground_media.as_ref().filter(|fg| {
             look.map(|l| l.is_layer_enabled(fg.target_layer))
                 .unwrap_or(true)
@@ -573,8 +577,13 @@ impl CompositorApp {
             self.rasterizer
                 .rasterize_slide(&fg_slide, LAYER_TEX_WIDTH, LAYER_TEX_HEIGHT, lower_third)
         } else if let Some(slide) = snap.state.active_slide.as_ref() {
-            self.rasterizer
-                .rasterize_slide(slide, LAYER_TEX_WIDTH, LAYER_TEX_HEIGHT, lower_third)
+            self.rasterizer.rasterize_slide_with_template(
+                slide,
+                LAYER_TEX_WIDTH,
+                LAYER_TEX_HEIGHT,
+                lower_third,
+                template_override,
+            )
         } else {
             render_text::RasterizedLayer {
                 width: LAYER_TEX_WIDTH,
