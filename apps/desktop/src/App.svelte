@@ -4,6 +4,8 @@
   import PreviewCanvas from "./lib/PreviewCanvas.svelte";
   import BroadcastPanel from "./lib/BroadcastPanel.svelte";
   import DiagnosticsPanel from "./lib/DiagnosticsPanel.svelte";
+  import LibraryPlaylistDrawer from "./lib/LibraryPlaylistDrawer.svelte";
+  import MediaBinDrawer from "./lib/MediaBinDrawer.svelte";
   import ScreensPanel from "./lib/ScreensPanel.svelte";
   import ShowControlPanel from "./lib/ShowControlPanel.svelte";
   import SlideEditor from "./lib/SlideEditor.svelte";
@@ -15,7 +17,6 @@
     MaskStyle,
     SceneState,
     SlideElement,
-    SongRecord,
   } from "./lib/types";
 
   let snapshot = $state<EngineSnapshot | null>(null);
@@ -24,12 +25,12 @@
   let errorText = $state<string | null>(null);
   let activeTab = $state<"show" | "screens" | "editor" | "broadcast" | "ecosystem" | "diagnostics">("show");
   let crashCount = $state(0);
+  let showLibraryDrawer = $state(true);
+  let showMediaDrawer = $state(true);
 
   let transitionKind = $state<"Cut" | "Dissolve" | "PushLeft" | "WipeRight">("Dissolve");
   let dissolveMs = $state(450);
   let stageMessageInput = $state("");
-  let libraryQuery = $state("");
-  let librarySongs = $state<SongRecord[]>([]);
 
   const connected = $derived(snapshot !== null);
   const scene = $derived(snapshot?.state ?? null);
@@ -44,20 +45,9 @@
       snapshot = snap;
       telemetry = snap.telemetry;
       statusMessage = `Attached to engine PID ${snap.engine_pid}`;
-      await runLibrarySearch();
     } catch (err) {
       errorText = String(err);
       statusMessage = "Engine unreachable";
-    }
-  }
-
-  async function runLibrarySearch() {
-    try {
-      librarySongs = await invoke<SongRecord[]>("search_library_songs", {
-        query: libraryQuery,
-      });
-    } catch (err) {
-      errorText = `Library search failed: ${String(err)}`;
     }
   }
 
@@ -280,6 +270,20 @@
     </div>
 
     <div class="top-actions">
+      <button
+        class="btn"
+        class:toggled={showLibraryDrawer}
+        onclick={() => (showLibraryDrawer = !showLibraryDrawer)}
+      >
+        Libraries Drawer
+      </button>
+      <button
+        class="btn"
+        class:toggled={showMediaDrawer}
+        onclick={() => (showMediaDrawer = !showMediaDrawer)}
+      >
+        Media Bin
+      </button>
       <button class="btn" onclick={attachEngine}>Reconnect</button>
       <button class="btn" onclick={reloadUiKeepLive}>Reload UI (Keep Live)</button>
       <button class="btn danger" onclick={shutdownEngine} disabled={!connected}>
@@ -292,32 +296,19 @@
     <div class="error-banner" role="alert">{errorText}</div>
   {/if}
 
-  <main class="workspace">
-    <aside class="library-pane">
-      <div class="pane-header">
-        <h2>Offline Library</h2>
-      </div>
-      <div class="search-row">
-        <input
-          aria-label="Search songs"
-          placeholder="Search lyrics or CCLI #..."
-          bind:value={libraryQuery}
-          oninput={() => void runLibrarySearch()}
-        />
-      </div>
-      <ul class="song-list">
-        {#each librarySongs as song (song.id)}
-          <li>
-            <strong>{song.title}</strong>
-            <span class="song-meta">
-              {song.author}{song.ccli_number ? ` · CCLI #${song.ccli_number}` : ""}
-            </span>
-          </li>
-        {:else}
-          <li class="muted-li">No matching songs in SQLite library</li>
-        {/each}
-      </ul>
-    </aside>
+  <main class="workspace" class:no-library={!showLibraryDrawer}>
+    {#if showLibraryDrawer}
+      <LibraryPlaylistDrawer
+        onDeckLoaded={(next) => {
+          errorText = null;
+          if (snapshot) snapshot = { ...snapshot, state: next };
+          activeTab = "show";
+        }}
+        onError={(msg) => {
+          errorText = msg;
+        }}
+      />
+    {/if}
 
     <section class="deck-pane">
       {#if activeTab === "screens" && snapshot}
@@ -476,6 +467,18 @@
       {/if}
     </aside>
   </main>
+
+  {#if showMediaDrawer}
+    <MediaBinDrawer
+      onMediaTriggered={(next) => {
+        errorText = null;
+        if (snapshot) snapshot = { ...snapshot, state: next };
+      }}
+      onError={(msg) => {
+        errorText = msg;
+      }}
+    />
+  {/if}
 </div>
 
 <style>
@@ -573,21 +576,14 @@
   .workspace {
     flex: 1;
     display: grid;
-    grid-template-columns: 230px 1fr 370px;
+    grid-template-columns: 270px 1fr 360px;
     min-height: 0;
   }
 
-  .library-pane {
-    border-right: 1px solid var(--border);
-    background: #0d1119;
-    padding: 12px;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    overflow-y: auto;
+  .workspace.no-library {
+    grid-template-columns: 1fr 360px;
   }
 
-  .search-row input,
   .stage-msg-bar input {
     width: 100%;
     background: var(--bg-0);
@@ -596,32 +592,6 @@
     border-radius: 6px;
     padding: 6px 8px;
     font-size: 12px;
-  }
-
-  .song-list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-
-  .song-list li {
-    background: var(--bg-1);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 7px 9px;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    font-size: 12px;
-  }
-
-  .song-meta,
-  .muted-li {
-    font-size: 11px;
-    color: var(--text-1);
   }
 
   .deck-pane {

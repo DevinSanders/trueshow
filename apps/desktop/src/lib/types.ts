@@ -186,8 +186,35 @@ export interface EngineSnapshot {
   telemetry: EngineTelemetry;
 }
 
+export interface PresentationLibraryRecord {
+  id: string;
+  name: string;
+  updated_at: string;
+}
+
+export interface MediaBinRecord {
+  id: string;
+  name: string;
+  category: string;
+  updated_at: string;
+}
+
+export interface MediaAssetRecord {
+  blake3_hash: string;
+  bin_id: string;
+  file_name: string;
+  local_path: string;
+  kind: string;
+  width: number | null;
+  height: number | null;
+  duration_ms: number | null;
+  has_alpha: boolean;
+  size_bytes: number;
+}
+
 export interface SongRecord {
   id: string;
+  library_id?: string;
   title: string;
   author: string;
   copyright: string;

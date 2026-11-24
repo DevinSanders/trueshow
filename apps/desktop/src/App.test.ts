@@ -172,6 +172,44 @@ describe("OpenPresenter Operator Control Surface UI (Happy & Failure Paths)", ()
           return { ...snap, state: structuredClone(currentState) };
         case "get_telemetry":
           return snap.telemetry;
+        case "list_libraries":
+          return [{ id: "default", name: "Default Library", updated_at: "2026-11-24T00:00:00Z" }];
+        case "list_playlists":
+          return [
+            {
+              id: "pl-1",
+              name: "Sunday Morning",
+              item_song_ids: ["song-1"],
+              updated_at: "2026-11-24T00:00:00Z",
+            },
+          ];
+        case "list_media_bins":
+          return [
+            {
+              id: "backgrounds",
+              name: "Motion Backgrounds",
+              category: "background",
+              updated_at: "2026-11-24T00:00:00Z",
+            },
+          ];
+        case "list_media_assets":
+          return [
+            {
+              blake3_hash: "h-bg-1",
+              bin_id: "backgrounds",
+              file_name: "Aurora Wave (GPU Motion)",
+              local_path: "builtin://motion/aurora-wave",
+              kind: "background",
+              width: 1920,
+              height: 1080,
+              duration_ms: null,
+              has_alpha: false,
+              size_bytes: 0,
+            },
+          ];
+        case "load_presentation_to_deck":
+        case "trigger_media_asset":
+          return structuredClone(currentState);
         case "search_library_songs":
           return sampleSongs;
         case "poll_preview_frame":
@@ -249,9 +287,28 @@ describe("OpenPresenter Operator Control Surface UI (Happy & Failure Paths)", ()
 
     render(App);
 
-    // 1. Engine attaches and displays GPU + offline library song
+    // 1. Engine attaches and displays GPU + offline library & media drawers
     await waitFor(() => expect(screen.getByText(/Test GPU D3D12/)).toBeTruthy());
-    expect(screen.getByText("Amazing Grace")).toBeTruthy();
+    await waitFor(() => expect(screen.getByText("Amazing Grace")).toBeTruthy());
+    expect(screen.getByTestId("library-playlist-drawer")).toBeTruthy();
+    expect(screen.getByTestId("media-bin-drawer")).toBeTruthy();
+
+    // Toggle collapsible Libraries Drawer and Media Bin Drawer closed and open
+    await fireEvent.click(screen.getByText("Libraries Drawer"));
+    expect(screen.queryByTestId("library-playlist-drawer")).toBeNull();
+    await fireEvent.click(screen.getByText("Libraries Drawer"));
+    expect(screen.getByTestId("library-playlist-drawer")).toBeTruthy();
+
+    await fireEvent.click(screen.getByText("Media Bin"));
+    expect(screen.queryByTestId("media-bin-drawer")).toBeNull();
+    await fireEvent.click(screen.getByText("Media Bin"));
+    expect(screen.getByTestId("media-bin-drawer")).toBeTruthy();
+
+    // Load presentation from Libraries drawer and trigger a background from Media Bin drawer
+    await waitFor(() => expect(screen.getByText("Amazing Grace")).toBeTruthy());
+    await fireEvent.click(screen.getByText("Amazing Grace"));
+    await waitFor(() => expect(screen.getByText("Aurora Wave (GPU Motion)")).toBeTruthy());
+    await fireEvent.click(screen.getByText("Aurora Wave (GPU Motion)"));
 
     // 2. Trigger slide 2
     await fireEvent.click(screen.getByText("02 — Amazing Grace"));
@@ -318,8 +375,14 @@ describe("OpenPresenter Operator Control Surface UI (Happy & Failure Paths)", ()
         }
         return snap;
       }
+      if (cmd === "list_libraries" || cmd === "list_playlists" || cmd === "list_media_bins" || cmd === "list_media_assets") {
+        return [];
+      }
       if (cmd === "search_library_songs") {
-        throw new Error("sqlite busy");
+        if (!shouldFailConnect) {
+          throw new Error("sqlite busy");
+        }
+        return [];
       }
       if (cmd === "set_blackout") {
         throw new Error("engine socket disconnected");
@@ -339,9 +402,10 @@ describe("OpenPresenter Operator Control Surface UI (Happy & Failure Paths)", ()
     await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("sidecar pipe refused"));
     expect(screen.getByText("Launch / Attach Engine")).toBeTruthy();
 
-    // 2. Recover via Reconnect button -> library search failure surfaces clearly
+    // 2. Recover via Reconnect button and verify search failure surfaces cleanly
     shouldFailConnect = false;
     await fireEvent.click(screen.getByText("Launch / Attach Engine"));
+    await fireEvent.input(screen.getByLabelText("Search songs"), { target: { value: "grace" } });
     await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("sqlite busy"));
 
     // 3. Blackout IPC failure surfaces alert banner without crashing UI

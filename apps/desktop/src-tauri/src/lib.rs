@@ -12,11 +12,14 @@ use core_ipc::{
     DisplayInfo, EngineCommand, EngineEvent, EngineSnapshot, EngineTelemetry, PreviewBusDescriptor,
     ShmPreviewReader, default_socket_name, read_frame, to_local_socket_name, write_frame,
 };
-use core_library::{LibraryStore, PlaylistRecord, SongRecord};
+use core_library::{
+    DEFAULT_LIBRARY_ID, LibraryStore, MediaAssetRecord, MediaBinRecord, PlaylistRecord,
+    PresentationLibraryRecord, SongRecord, infer_media_kind, slide_from_text,
+};
 use core_scene::{
     LOOK_AUDIENCE_FULL, LOOK_STAGE_CONFIDENCE, LayerKind, LookId, MaskStyle, MonitorRegion,
-    OutputConfig, OutputId, OutputKind, OutputPlacement, SceneDiff, SceneState, Slide,
-    SlideElement, SlideId, StageLayoutConfig, TransitionSpec, split_monitor_regions,
+    OutputConfig, OutputId, OutputKind, OutputPlacement, SceneDiff, SceneState, ShaderMotionStyle,
+    Slide, SlideElement, SlideId, StageLayoutConfig, TransitionSpec, split_monitor_regions,
 };
 use interprocess::local_socket::tokio::{Stream, prelude::*};
 use std::collections::HashMap;
@@ -590,12 +593,150 @@ async fn set_output_look(
 }
 
 #[tauri::command]
+fn list_libraries(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+) -> Result<Vec<PresentationLibraryRecord>, String> {
+    let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    lib.list_libraries().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn create_library(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    name: String,
+) -> Result<Vec<PresentationLibraryRecord>, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("Library name cannot be empty".to_string());
+    }
+    let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    lib.upsert_library(&PresentationLibraryRecord {
+        id: Uuid::new_v4().to_string(),
+        name: trimmed.to_string(),
+        updated_at: chrono::Utc::now(),
+    })
+    .map_err(|e| e.to_string())?;
+    lib.list_libraries().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_library(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    library_id: String,
+) -> Result<Vec<PresentationLibraryRecord>, String> {
+    let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    if !lib.delete_library(&library_id).map_err(|e| e.to_string())? {
+        return Err("Cannot delete the default library or library not found".to_string());
+    }
+    lib.list_libraries().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn search_library_songs(
     bridge: State<'_, Arc<EngineBridgeState>>,
     query: String,
+    library_id: Option<String>,
 ) -> Result<Vec<SongRecord>, String> {
     let lib = bridge.library.lock().map_err(|e| e.to_string())?;
-    lib.search_songs(&query, 50).map_err(|e| e.to_string())
+    let lib_filter = library_id
+        .as_deref()
+        .filter(|id| !id.is_empty() && *id != "all");
+    lib.search_songs_in_library(lib_filter, &query, 100)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn create_presentation(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    library_id: String,
+    title: String,
+    body_text: String,
+    author: Option<String>,
+    ccli_number: Option<String>,
+) -> Result<SongRecord, String> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err("Presentation title cannot be empty".to_string());
+    }
+    let stanzas: Vec<&str> = body_text
+        .split("\n\n")
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    let slides: Vec<Slide> = if stanzas.is_empty() {
+        vec![slide_from_text(title, "Slide 1", title, ccli_number.clone())]
+    } else {
+        stanzas
+            .into_iter()
+            .enumerate()
+            .map(|(idx, stanza)| {
+                slide_from_text(
+                    &format!("{title} ({})", idx + 1),
+                    &format!("Slide {}", idx + 1),
+                    stanza,
+                    ccli_number.clone(),
+                )
+            })
+            .collect()
+    };
+    let rec = SongRecord {
+        id: Uuid::new_v4().to_string(),
+        library_id: if library_id.trim().is_empty() || library_id == "all" {
+            DEFAULT_LIBRARY_ID.to_string()
+        } else {
+            library_id
+        },
+        title: title.to_string(),
+        author: author.unwrap_or_default(),
+        copyright: String::new(),
+        ccli_number,
+        key_signature: None,
+        bpm: None,
+        lyrics_plain: slides
+            .iter()
+            .map(|s| s.plain_text())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        slides,
+        updated_at: chrono::Utc::now(),
+    };
+    let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    lib.upsert_song(&rec).map_err(|e| e.to_string())?;
+    Ok(rec)
+}
+
+#[tauri::command]
+fn delete_presentation(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    song_id: String,
+) -> Result<bool, String> {
+    let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    lib.delete_song(&song_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn load_presentation_to_deck(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    song_id: String,
+) -> Result<SceneState, String> {
+    let slides = {
+        let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+        let song = lib
+            .get_song(&song_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("presentation '{song_id}' not found"))?;
+        if song.slides.is_empty() {
+            vec![slide_from_text(
+                &song.title,
+                "Slide 1",
+                &song.lyrics_plain,
+                song.ccli_number,
+            )]
+        } else {
+            song.slides
+        }
+    };
+    apply_scene_diff(&bridge, SceneDiff::ReplaceDeck(slides)).await
 }
 
 #[tauri::command]
@@ -604,6 +745,172 @@ fn list_playlists(
 ) -> Result<Vec<PlaylistRecord>, String> {
     let lib = bridge.library.lock().map_err(|e| e.to_string())?;
     lib.list_playlists().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn upsert_playlist(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    id: Option<String>,
+    name: String,
+    item_song_ids: Vec<String>,
+) -> Result<Vec<PlaylistRecord>, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("Playlist name cannot be empty".to_string());
+    }
+    let rec = PlaylistRecord {
+        id: id
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| Uuid::new_v4().to_string()),
+        name: trimmed.to_string(),
+        item_song_ids,
+        updated_at: chrono::Utc::now(),
+    };
+    let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    lib.upsert_playlist(&rec).map_err(|e| e.to_string())?;
+    lib.list_playlists().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_playlist(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    playlist_id: String,
+) -> Result<Vec<PlaylistRecord>, String> {
+    let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    let _ = lib.delete_playlist(&playlist_id).map_err(|e| e.to_string())?;
+    lib.list_playlists().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_media_bins(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+) -> Result<Vec<MediaBinRecord>, String> {
+    let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    lib.list_media_bins().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn create_media_bin(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    name: String,
+    category: String,
+) -> Result<Vec<MediaBinRecord>, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("Media bin name cannot be empty".to_string());
+    }
+    let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    lib.upsert_media_bin(&MediaBinRecord {
+        id: Uuid::new_v4().to_string(),
+        name: trimmed.to_string(),
+        category,
+        updated_at: chrono::Utc::now(),
+    })
+    .map_err(|e| e.to_string())?;
+    lib.list_media_bins().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_media_bin(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    bin_id: String,
+) -> Result<Vec<MediaBinRecord>, String> {
+    let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    if !lib.delete_media_bin(&bin_id).map_err(|e| e.to_string())? {
+        return Err("Cannot delete the default Motion Backgrounds bin".to_string());
+    }
+    lib.list_media_bins().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_media_assets(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    kind: Option<String>,
+    bin_id: Option<String>,
+) -> Result<Vec<MediaAssetRecord>, String> {
+    let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    lib.list_media_assets_filtered(kind.as_deref(), bin_id.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn add_media_file(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    file_path: String,
+    bin_id: Option<String>,
+    kind: Option<String>,
+    has_alpha: Option<bool>,
+) -> Result<MediaAssetRecord, String> {
+    let trimmed = file_path.trim();
+    if trimmed.is_empty() {
+        return Err("Media file path cannot be empty".to_string());
+    }
+    let path = std::path::Path::new(trimmed);
+    if !path.exists() {
+        return Err(format!("Media file not found: {trimmed}"));
+    }
+    let resolved_kind = kind
+        .filter(|k| !k.trim().is_empty() && k != "auto")
+        .unwrap_or_else(|| infer_media_kind(path).to_string());
+    let resolved_bin = bin_id.unwrap_or_else(|| match resolved_kind.as_str() {
+        "image" => "images".to_string(),
+        "video" => "videos".to_string(),
+        "audio" => "audio".to_string(),
+        _ => "backgrounds".to_string(),
+    });
+    let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    lib.register_media_file_in_bin(
+        path,
+        &resolved_bin,
+        &resolved_kind,
+        None,
+        None,
+        None,
+        has_alpha.unwrap_or(false),
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_media_asset(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    blake3_hash: String,
+) -> Result<bool, String> {
+    let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    lib.delete_media_asset(&blake3_hash)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn trigger_media_asset(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    blake3_hash: String,
+) -> Result<SceneState, String> {
+    let asset = {
+        let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+        lib.list_media_assets()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|a| a.blake3_hash == blake3_hash)
+            .ok_or_else(|| format!("media asset '{blake3_hash}' not found"))?
+    };
+
+    let mut slide = core_scene::demo_deck()[0].clone();
+    slide.id = SlideId::new();
+    slide.label = asset.file_name.clone();
+    slide.group = format!("Media · {}", asset.kind.to_uppercase());
+    slide.headline = asset.file_name.clone();
+    slide.body = asset.local_path.clone();
+    slide.media_path = Some(asset.local_path.clone());
+    slide.elements.clear();
+    slide.motion_style = match asset.local_path.as_str() {
+        "builtin://motion/sanctuary-glow" => ShaderMotionStyle::SanctuaryGlow,
+        "builtin://motion/broadcast-grid" => ShaderMotionStyle::BroadcastGrid,
+        "builtin://motion/lower-third-alpha" => ShaderMotionStyle::LowerThirdAlpha,
+        _ if asset.kind == "video" => ShaderMotionStyle::SanctuaryGlow,
+        _ => ShaderMotionStyle::AuroraWave,
+    };
+    apply_scene_diff(&bridge, SceneDiff::TriggerCustomSlide { slide }).await
 }
 
 #[derive(serde::Serialize)]
@@ -695,6 +1002,7 @@ fn import_worship_document(
             let slide_count = song.slides.len();
             let rec = SongRecord {
                 id: Uuid::new_v4().to_string(),
+                library_id: DEFAULT_LIBRARY_ID.to_string(),
                 title: song.title.clone(),
                 author: song.author,
                 copyright: song.copyright,
@@ -718,6 +1026,7 @@ fn import_worship_document(
             let slide_count = song.slides.len();
             let rec = SongRecord {
                 id: Uuid::new_v4().to_string(),
+                library_id: DEFAULT_LIBRARY_ID.to_string(),
                 title: song.title.clone(),
                 author: song.author,
                 copyright: song.copyright,
@@ -1029,8 +1338,23 @@ pub fn run() {
             upsert_output_screen,
             remove_output_screen,
             split_monitor_into_screens,
+            list_libraries,
+            create_library,
+            delete_library,
             search_library_songs,
+            create_presentation,
+            delete_presentation,
+            load_presentation_to_deck,
             list_playlists,
+            upsert_playlist,
+            delete_playlist,
+            list_media_bins,
+            create_media_bin,
+            delete_media_bin,
+            list_media_assets,
+            add_media_file,
+            delete_media_asset,
+            trigger_media_asset,
             get_broadcast_capabilities,
             create_countdown_timer,
             import_worship_document,

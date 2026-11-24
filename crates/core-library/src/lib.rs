@@ -22,9 +22,37 @@ pub enum LibraryError {
     Io(#[from] std::io::Error),
 }
 
+pub const DEFAULT_LIBRARY_ID: &str = "default";
+pub const DEFAULT_MEDIA_BIN_ID: &str = "backgrounds";
+
+fn default_library_id() -> String {
+    DEFAULT_LIBRARY_ID.to_string()
+}
+
+fn default_media_bin_id() -> String {
+    DEFAULT_MEDIA_BIN_ID.to_string()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PresentationLibraryRecord {
+    pub id: String,
+    pub name: String,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MediaBinRecord {
+    pub id: String,
+    pub name: String,
+    pub category: String,
+    pub updated_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SongRecord {
     pub id: String,
+    #[serde(default = "default_library_id")]
+    pub library_id: String,
     pub title: String,
     pub author: String,
     pub copyright: String,
@@ -47,6 +75,8 @@ pub struct PlaylistRecord {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MediaAssetRecord {
     pub blake3_hash: String,
+    #[serde(default = "default_media_bin_id")]
+    pub bin_id: String,
     pub file_name: String,
     pub local_path: String,
     pub kind: String,
@@ -109,8 +139,22 @@ impl LibraryStore {
             PRAGMA foreign_keys = ON;
             PRAGMA synchronous = NORMAL;
 
+            CREATE TABLE IF NOT EXISTS presentation_libraries (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS media_bins (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                category TEXT NOT NULL DEFAULT 'all',
+                updated_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS songs (
                 id TEXT PRIMARY KEY,
+                library_id TEXT NOT NULL DEFAULT 'default',
                 title TEXT NOT NULL,
                 author TEXT NOT NULL DEFAULT '',
                 copyright TEXT NOT NULL DEFAULT '',
@@ -139,6 +183,7 @@ impl LibraryStore {
 
             CREATE TABLE IF NOT EXISTS media_assets (
                 blake3_hash TEXT PRIMARY KEY,
+                bin_id TEXT NOT NULL DEFAULT 'backgrounds',
                 file_name TEXT NOT NULL,
                 local_path TEXT NOT NULL,
                 kind TEXT NOT NULL,
@@ -185,16 +230,80 @@ impl LibraryStore {
             );
             "#,
         )?;
+        // Forward-compatible column migrations for existing on-disk SQLite databases.
+        let _ = self.conn.execute(
+            "ALTER TABLE songs ADD COLUMN library_id TEXT NOT NULL DEFAULT 'default'",
+            [],
+        );
+        let _ = self.conn.execute(
+            "ALTER TABLE media_assets ADD COLUMN bin_id TEXT NOT NULL DEFAULT 'backgrounds'",
+            [],
+        );
         Ok(())
+    }
+
+    pub fn upsert_library(&self, lib: &PresentationLibraryRecord) -> Result<(), LibraryError> {
+        self.conn.execute(
+            r#"
+            INSERT INTO presentation_libraries (id, name, updated_at)
+            VALUES (?1, ?2, ?3)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                updated_at = excluded.updated_at
+            "#,
+            params![lib.id, lib.name, lib.updated_at.to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_libraries(&self) -> Result<Vec<PresentationLibraryRecord>, LibraryError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, updated_at FROM presentation_libraries ORDER BY name COLLATE NOCASE ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let updated_str: String = row.get(2)?;
+            Ok(PresentationLibraryRecord {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                updated_at: DateTime::parse_from_rfc3339(&updated_str)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now()),
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    pub fn delete_library(&self, id: &str) -> Result<bool, LibraryError> {
+        if id == DEFAULT_LIBRARY_ID {
+            return Ok(false);
+        }
+        self.conn.execute(
+            "UPDATE songs SET library_id = ?1 WHERE library_id = ?2",
+            params![DEFAULT_LIBRARY_ID, id],
+        )?;
+        let removed = self
+            .conn
+            .execute("DELETE FROM presentation_libraries WHERE id = ?1", params![id])?;
+        Ok(removed > 0)
     }
 
     pub fn upsert_song(&self, song: &SongRecord) -> Result<(), LibraryError> {
         let slides_json = serde_json::to_string(&song.slides)?;
+        let lib_id = if song.library_id.trim().is_empty() {
+            DEFAULT_LIBRARY_ID
+        } else {
+            song.library_id.as_str()
+        };
         self.conn.execute(
             r#"
-            INSERT INTO songs (id, title, author, copyright, ccli_number, key_signature, bpm, lyrics_plain, slides_json, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            INSERT INTO songs (id, library_id, title, author, copyright, ccli_number, key_signature, bpm, lyrics_plain, slides_json, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
             ON CONFLICT(id) DO UPDATE SET
+                library_id = excluded.library_id,
                 title = excluded.title,
                 author = excluded.author,
                 copyright = excluded.copyright,
@@ -207,6 +316,7 @@ impl LibraryStore {
             "#,
             params![
                 song.id,
+                lib_id,
                 song.title,
                 song.author,
                 song.copyright,
@@ -234,14 +344,40 @@ impl LibraryStore {
         Ok(())
     }
 
+    pub fn delete_song(&self, id: &str) -> Result<bool, LibraryError> {
+        self.conn
+            .execute("DELETE FROM songs_fts WHERE song_id = ?1", params![id])?;
+        let removed = self
+            .conn
+            .execute("DELETE FROM songs WHERE id = ?1", params![id])?;
+        Ok(removed > 0)
+    }
+
     pub fn list_songs(&self) -> Result<Vec<SongRecord>, LibraryError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, title, author, copyright, ccli_number, key_signature, bpm, lyrics_plain, slides_json, updated_at FROM songs ORDER BY title COLLATE NOCASE ASC",
-        )?;
-        let rows = stmt.query_map([], row_to_song)?;
+        self.list_songs_in_library(None)
+    }
+
+    pub fn list_songs_in_library(
+        &self,
+        library_id: Option<&str>,
+    ) -> Result<Vec<SongRecord>, LibraryError> {
         let mut out = Vec::new();
-        for row in rows {
-            out.push(row?);
+        if let Some(lib_id) = library_id {
+            let mut stmt = self.conn.prepare(
+                "SELECT id, library_id, title, author, copyright, ccli_number, key_signature, bpm, lyrics_plain, slides_json, updated_at FROM songs WHERE library_id = ?1 ORDER BY title COLLATE NOCASE ASC",
+            )?;
+            let rows = stmt.query_map(params![lib_id], row_to_song)?;
+            for row in rows {
+                out.push(row?);
+            }
+        } else {
+            let mut stmt = self.conn.prepare(
+                "SELECT id, library_id, title, author, copyright, ccli_number, key_signature, bpm, lyrics_plain, slides_json, updated_at FROM songs ORDER BY title COLLATE NOCASE ASC",
+            )?;
+            let rows = stmt.query_map([], row_to_song)?;
+            for row in rows {
+                out.push(row?);
+            }
         }
         Ok(out)
     }
@@ -249,7 +385,7 @@ impl LibraryStore {
     pub fn get_song(&self, id: &str) -> Result<Option<SongRecord>, LibraryError> {
         self.conn
             .query_row(
-                "SELECT id, title, author, copyright, ccli_number, key_signature, bpm, lyrics_plain, slides_json, updated_at FROM songs WHERE id = ?1",
+                "SELECT id, library_id, title, author, copyright, ccli_number, key_signature, bpm, lyrics_plain, slides_json, updated_at FROM songs WHERE id = ?1",
                 params![id],
                 row_to_song,
             )
@@ -259,25 +395,54 @@ impl LibraryStore {
 
     /// Full-text search across song titles, authors, CCLI numbers, and lyrics using SQLite FTS5.
     pub fn search_songs(&self, query: &str, limit: usize) -> Result<Vec<SongRecord>, LibraryError> {
+        self.search_songs_in_library(None, query, limit)
+    }
+
+    pub fn search_songs_in_library(
+        &self,
+        library_id: Option<&str>,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<SongRecord>, LibraryError> {
         let trimmed = query.trim();
         if trimmed.is_empty() {
-            return self.list_songs();
+            return self.list_songs_in_library(library_id);
         }
         let fts_query = sanitize_fts_query(trimmed);
-        let mut stmt = self.conn.prepare(
-            r#"
-            SELECT s.id, s.title, s.author, s.copyright, s.ccli_number, s.key_signature, s.bpm, s.lyrics_plain, s.slides_json, s.updated_at
-            FROM songs_fts f
-            JOIN songs s ON s.id = f.song_id
-            WHERE songs_fts MATCH ?1
-            ORDER BY rank
-            LIMIT ?2
-            "#,
-        )?;
-        let rows = stmt.query_map(params![fts_query, limit as i64], row_to_song)?;
+        if fts_query.is_empty() {
+            return self.list_songs_in_library(library_id);
+        }
         let mut out = Vec::new();
-        for row in rows {
-            out.push(row?);
+        if let Some(lib_id) = library_id {
+            let mut stmt = self.conn.prepare(
+                r#"
+                SELECT s.id, s.library_id, s.title, s.author, s.copyright, s.ccli_number, s.key_signature, s.bpm, s.lyrics_plain, s.slides_json, s.updated_at
+                FROM songs_fts f
+                JOIN songs s ON s.id = f.song_id
+                WHERE songs_fts MATCH ?1 AND s.library_id = ?2
+                ORDER BY rank
+                LIMIT ?3
+                "#,
+            )?;
+            let rows = stmt.query_map(params![fts_query, lib_id, limit as i64], row_to_song)?;
+            for row in rows {
+                out.push(row?);
+            }
+        } else {
+            let mut stmt = self.conn.prepare(
+                r#"
+                SELECT s.id, s.library_id, s.title, s.author, s.copyright, s.ccli_number, s.key_signature, s.bpm, s.lyrics_plain, s.slides_json, s.updated_at
+                FROM songs_fts f
+                JOIN songs s ON s.id = f.song_id
+                WHERE songs_fts MATCH ?1
+                ORDER BY rank
+                LIMIT ?2
+                "#,
+            )?;
+            let rows = stmt.query_map(params![fts_query, limit as i64], row_to_song)?;
+            for row in rows {
+                out.push(row?);
+            }
         }
         Ok(out)
     }
@@ -303,6 +468,13 @@ impl LibraryStore {
         Ok(())
     }
 
+    pub fn delete_playlist(&self, id: &str) -> Result<bool, LibraryError> {
+        let removed = self
+            .conn
+            .execute("DELETE FROM playlists WHERE id = ?1", params![id])?;
+        Ok(removed > 0)
+    }
+
     pub fn list_playlists(&self) -> Result<Vec<PlaylistRecord>, LibraryError> {
         let mut stmt = self
             .conn
@@ -326,10 +498,83 @@ impl LibraryStore {
         Ok(out)
     }
 
+    pub fn upsert_media_bin(&self, bin: &MediaBinRecord) -> Result<(), LibraryError> {
+        self.conn.execute(
+            r#"
+            INSERT INTO media_bins (id, name, category, updated_at)
+            VALUES (?1, ?2, ?3, ?4)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                category = excluded.category,
+                updated_at = excluded.updated_at
+            "#,
+            params![bin.id, bin.name, bin.category, bin.updated_at.to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_media_bins(&self) -> Result<Vec<MediaBinRecord>, LibraryError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, category, updated_at FROM media_bins ORDER BY name COLLATE NOCASE ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let updated_str: String = row.get(3)?;
+            Ok(MediaBinRecord {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                category: row.get(2)?,
+                updated_at: DateTime::parse_from_rfc3339(&updated_str)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now()),
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    pub fn delete_media_bin(&self, id: &str) -> Result<bool, LibraryError> {
+        if id == DEFAULT_MEDIA_BIN_ID {
+            return Ok(false);
+        }
+        self.conn.execute(
+            "UPDATE media_assets SET bin_id = ?1 WHERE bin_id = ?2",
+            params![DEFAULT_MEDIA_BIN_ID, id],
+        )?;
+        let removed = self
+            .conn
+            .execute("DELETE FROM media_bins WHERE id = ?1", params![id])?;
+        Ok(removed > 0)
+    }
+
     /// Computes BLAKE3 hash of a local media file and registers it in the content-addressed manifest.
     pub fn register_media_file(
         &self,
         path: impl AsRef<Path>,
+        kind: &str,
+        width: Option<u32>,
+        height: Option<u32>,
+        duration_ms: Option<u64>,
+        has_alpha: bool,
+    ) -> Result<MediaAssetRecord, LibraryError> {
+        self.register_media_file_in_bin(
+            path,
+            DEFAULT_MEDIA_BIN_ID,
+            kind,
+            width,
+            height,
+            duration_ms,
+            has_alpha,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn register_media_file_in_bin(
+        &self,
+        path: impl AsRef<Path>,
+        bin_id: &str,
         kind: &str,
         width: Option<u32>,
         height: Option<u32>,
@@ -346,6 +591,11 @@ impl LibraryStore {
 
         let record = MediaAssetRecord {
             blake3_hash: hash,
+            bin_id: if bin_id.trim().is_empty() {
+                DEFAULT_MEDIA_BIN_ID.to_string()
+            } else {
+                bin_id.to_string()
+            },
             file_name,
             local_path: path.to_string_lossy().into_owned(),
             kind: kind.to_string(),
@@ -360,11 +610,17 @@ impl LibraryStore {
     }
 
     pub fn upsert_media_asset(&self, asset: &MediaAssetRecord) -> Result<(), LibraryError> {
+        let bin_id = if asset.bin_id.trim().is_empty() {
+            DEFAULT_MEDIA_BIN_ID
+        } else {
+            asset.bin_id.as_str()
+        };
         self.conn.execute(
             r#"
-            INSERT INTO media_assets (blake3_hash, file_name, local_path, kind, width, height, duration_ms, has_alpha, size_bytes)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            INSERT INTO media_assets (blake3_hash, bin_id, file_name, local_path, kind, width, height, duration_ms, has_alpha, size_bytes)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
             ON CONFLICT(blake3_hash) DO UPDATE SET
+                bin_id = excluded.bin_id,
                 file_name = excluded.file_name,
                 local_path = excluded.local_path,
                 kind = excluded.kind,
@@ -376,6 +632,7 @@ impl LibraryStore {
             "#,
             params![
                 asset.blake3_hash,
+                bin_id,
                 asset.file_name,
                 asset.local_path,
                 asset.kind,
@@ -389,26 +646,58 @@ impl LibraryStore {
         Ok(())
     }
 
+    pub fn delete_media_asset(&self, blake3_hash: &str) -> Result<bool, LibraryError> {
+        let removed = self.conn.execute(
+            "DELETE FROM media_assets WHERE blake3_hash = ?1",
+            params![blake3_hash],
+        )?;
+        Ok(removed > 0)
+    }
+
     pub fn list_media_assets(&self) -> Result<Vec<MediaAssetRecord>, LibraryError> {
+        self.list_media_assets_filtered(None, None)
+    }
+
+    pub fn list_media_assets_filtered(
+        &self,
+        kind: Option<&str>,
+        bin_id: Option<&str>,
+    ) -> Result<Vec<MediaAssetRecord>, LibraryError> {
         let mut stmt = self.conn.prepare(
-            "SELECT blake3_hash, file_name, local_path, kind, width, height, duration_ms, has_alpha, size_bytes FROM media_assets ORDER BY file_name ASC",
+            "SELECT blake3_hash, bin_id, file_name, local_path, kind, width, height, duration_ms, has_alpha, size_bytes FROM media_assets ORDER BY file_name COLLATE NOCASE ASC",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(MediaAssetRecord {
                 blake3_hash: row.get(0)?,
-                file_name: row.get(1)?,
-                local_path: row.get(2)?,
-                kind: row.get(3)?,
-                width: row.get(4)?,
-                height: row.get(5)?,
-                duration_ms: row.get(6)?,
-                has_alpha: row.get::<_, i32>(7)? != 0,
-                size_bytes: row.get::<_, i64>(8)? as u64,
+                bin_id: row.get(1)?,
+                file_name: row.get(2)?,
+                local_path: row.get(3)?,
+                kind: row.get(4)?,
+                width: row.get(5)?,
+                height: row.get(6)?,
+                duration_ms: row.get(7)?,
+                has_alpha: row.get::<_, i32>(8)? != 0,
+                size_bytes: row.get::<_, i64>(9)? as u64,
             })
         })?;
         let mut out = Vec::new();
         for r in rows {
-            out.push(r?);
+            let item = r?;
+            if let Some(k) = kind
+                && !k.is_empty()
+                && k != "all"
+                && !item.kind.eq_ignore_ascii_case(k)
+            {
+                continue;
+            }
+            if let Some(b) = bin_id
+                && !b.is_empty()
+                && b != "all"
+                && item.bin_id != b
+            {
+                continue;
+            }
+            out.push(item);
         }
         Ok(out)
     }
@@ -575,14 +864,111 @@ impl LibraryStore {
             .map_err(LibraryError::from)
     }
 
-    /// Seeds initial demo song records if the local database is empty.
+    /// Seeds default presentation libraries, media bins, starter media backgrounds,
+    /// demo presentations, and a Sunday Morning Service playlist if empty.
     pub fn seed_demo_if_empty(&self) -> Result<(), LibraryError> {
+        let now = Utc::now();
+        if self.list_libraries()?.is_empty() {
+            for (id, name) in [
+                (DEFAULT_LIBRARY_ID, "Default Library"),
+                ("worship-songs", "Worship Songs"),
+                ("sermon-series", "Sermon & Announcements"),
+            ] {
+                self.upsert_library(&PresentationLibraryRecord {
+                    id: id.to_string(),
+                    name: name.to_string(),
+                    updated_at: now,
+                })?;
+            }
+        }
+
+        if self.list_media_bins()?.is_empty() {
+            for (id, name, category) in [
+                (DEFAULT_MEDIA_BIN_ID, "Motion Backgrounds", "background"),
+                ("images", "Still Images & Slides", "image"),
+                ("videos", "Videos & Countdowns", "video"),
+                ("audio", "Audio & Walk-In Music", "audio"),
+            ] {
+                self.upsert_media_bin(&MediaBinRecord {
+                    id: id.to_string(),
+                    name: name.to_string(),
+                    category: category.to_string(),
+                    updated_at: now,
+                })?;
+            }
+        }
+
+        if self.list_media_assets()?.is_empty() {
+            for (hash, bin_id, name, path, kind, has_alpha) in [
+                (
+                    "builtin-bg-aurora-wave",
+                    "backgrounds",
+                    "Aurora Wave (GPU Motion)",
+                    "builtin://motion/aurora-wave",
+                    "background",
+                    false,
+                ),
+                (
+                    "builtin-bg-sanctuary-glow",
+                    "backgrounds",
+                    "Sanctuary Glow (GPU Motion)",
+                    "builtin://motion/sanctuary-glow",
+                    "background",
+                    false,
+                ),
+                (
+                    "builtin-bg-broadcast-grid",
+                    "images",
+                    "Broadcast Safe-Area Test Card",
+                    "builtin://motion/broadcast-grid",
+                    "image",
+                    false,
+                ),
+                (
+                    "builtin-bg-lower-third-alpha",
+                    "videos",
+                    "Lower-Third Alpha Key Band",
+                    "builtin://motion/lower-third-alpha",
+                    "video",
+                    true,
+                ),
+            ] {
+                self.upsert_media_asset(&MediaAssetRecord {
+                    blake3_hash: hash.to_string(),
+                    bin_id: bin_id.to_string(),
+                    file_name: name.to_string(),
+                    local_path: path.to_string(),
+                    kind: kind.to_string(),
+                    width: Some(1920),
+                    height: Some(1080),
+                    duration_ms: None,
+                    has_alpha,
+                    size_bytes: 0,
+                })?;
+            }
+        }
+
         if !self.list_songs()?.is_empty() {
             return Ok(());
         }
+
         let deck = core_scene::demo_deck();
+        let welcome = SongRecord {
+            id: Uuid::from_u128(9000).to_string(),
+            library_id: "sermon-series".to_string(),
+            title: "Sunday Welcome & Announcements".to_string(),
+            author: "Production Team".to_string(),
+            copyright: String::new(),
+            ccli_number: None,
+            key_signature: None,
+            bpm: None,
+            lyrics_plain: deck[0].plain_text(),
+            slides: vec![deck[0].clone(), deck[3].clone(), deck[4].clone()],
+            updated_at: now,
+        };
         let song = SongRecord {
             id: Uuid::from_u128(9001).to_string(),
+            library_id: "worship-songs".to_string(),
             title: "Amazing Grace".to_string(),
             author: "John Newton".to_string(),
             copyright: "Public Domain".to_string(),
@@ -591,34 +977,65 @@ impl LibraryStore {
             bpm: Some(72.0),
             lyrics_plain: deck[1].plain_text(),
             slides: vec![deck[1].clone()],
-            updated_at: Utc::now(),
+            updated_at: now,
         };
+        let scripture = SongRecord {
+            id: Uuid::from_u128(9002).to_string(),
+            library_id: DEFAULT_LIBRARY_ID.to_string(),
+            title: "Psalm 100:1-2 (KJV)".to_string(),
+            author: "Scripture Reading".to_string(),
+            copyright: "Public Domain".to_string(),
+            ccli_number: None,
+            key_signature: None,
+            bpm: None,
+            lyrics_plain: deck[2].plain_text(),
+            slides: vec![deck[2].clone()],
+            updated_at: now,
+        };
+        self.upsert_song(&welcome)?;
         self.upsert_song(&song)?;
+        self.upsert_song(&scripture)?;
 
         let playlist = PlaylistRecord {
             id: Uuid::from_u128(9101).to_string(),
             name: "Sunday Morning Service".to_string(),
-            item_song_ids: vec![song.id],
-            updated_at: Utc::now(),
+            item_song_ids: vec![welcome.id, song.id, scripture.id],
+            updated_at: now,
         };
         self.upsert_playlist(&playlist)?;
         Ok(())
     }
 }
 
+/// Infers the media asset category (`background`, `image`, `video`, `audio`) from file extension.
+pub fn infer_media_kind(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("png" | "jpg" | "jpeg" | "webp" | "bmp" | "gif" | "svg" | "tif" | "tiff") => "image",
+        Some("mp3" | "wav" | "flac" | "ogg" | "m4a" | "aac" | "opus") => "audio",
+        Some("mp4" | "mov" | "webm" | "mkv" | "m4v" | "avi") => "video",
+        _ => "background",
+    }
+}
+
 fn row_to_song(row: &rusqlite::Row<'_>) -> rusqlite::Result<SongRecord> {
-    let slides_json: String = row.get(8)?;
-    let updated_str: String = row.get(9)?;
+    let slides_json: String = row.get(9)?;
+    let updated_str: String = row.get(10)?;
     let slides: Vec<Slide> = serde_json::from_str(&slides_json).unwrap_or_default();
     Ok(SongRecord {
         id: row.get(0)?,
-        title: row.get(1)?,
-        author: row.get(2)?,
-        copyright: row.get(3)?,
-        ccli_number: row.get(4)?,
-        key_signature: row.get(5)?,
-        bpm: row.get(6)?,
-        lyrics_plain: row.get(7)?,
+        library_id: row.get(1)?,
+        title: row.get(2)?,
+        author: row.get(3)?,
+        copyright: row.get(4)?,
+        ccli_number: row.get(5)?,
+        key_signature: row.get(6)?,
+        bpm: row.get(7)?,
+        lyrics_plain: row.get(8)?,
         slides,
         updated_at: DateTime::parse_from_rfc3339(&updated_str)
             .map(|dt| dt.with_timezone(&Utc))
@@ -763,12 +1180,69 @@ mod tests {
 
         // Empty query returns full song list; get_song works for hit and miss
         let all = store.search_songs("   ", 10).expect("empty search");
-        assert_eq!(all.len(), 1);
+        assert_eq!(all.len(), 3);
         assert!(store.get_song(&all[0].id).expect("get hit").is_some());
         assert!(store.get_song("nonexistent-id").expect("get miss").is_none());
 
+        // Libraries & playlists CRUD
+        let libs = store.list_libraries().expect("list libs");
+        assert_eq!(libs.len(), 3);
+        assert!(!store.delete_library(DEFAULT_LIBRARY_ID).expect("protect default"));
+        store
+            .upsert_library(&PresentationLibraryRecord {
+                id: "youth".into(),
+                name: "Youth Night".into(),
+                updated_at: Utc::now(),
+            })
+            .expect("add youth lib");
+        assert_eq!(
+            store
+                .search_songs_in_library(Some("worship-songs"), "wretch", 10)
+                .expect("lib search")
+                .len(),
+            1
+        );
+        assert!(store.delete_library("youth").expect("del youth lib"));
+
         let playlists = store.list_playlists().expect("list playlists");
         assert_eq!(playlists.len(), 1);
+        store
+            .upsert_playlist(&PlaylistRecord {
+                id: "pl-temp".into(),
+                name: "Midweek Prayer".into(),
+                item_song_ids: vec![],
+                updated_at: Utc::now(),
+            })
+            .expect("add playlist");
+        assert!(store.delete_playlist("pl-temp").expect("delete playlist"));
+
+        // Media bins & filtered media CRUD + extension inference
+        let bins = store.list_media_bins().expect("list bins");
+        assert_eq!(bins.len(), 4);
+        assert!(!store.delete_media_bin(DEFAULT_MEDIA_BIN_ID).expect("protect default bin"));
+        store
+            .upsert_media_bin(&MediaBinRecord {
+                id: "christmas".into(),
+                name: "Christmas Graphics".into(),
+                category: "image".into(),
+                updated_at: Utc::now(),
+            })
+            .expect("add bin");
+        assert_eq!(
+            store
+                .list_media_assets_filtered(Some("background"), Some("backgrounds"))
+                .expect("filter bg")
+                .len(),
+            2
+        );
+        assert!(store.delete_media_bin("christmas").expect("delete bin"));
+        assert!(store.delete_media_asset("builtin-bg-aurora-wave").expect("delete media"));
+        assert!(store.delete_song(&all[0].id).expect("delete song"));
+
+        assert_eq!(infer_media_kind(Path::new("slide.PNG")), "image");
+        assert_eq!(infer_media_kind(Path::new("loop.mp4")), "video");
+        assert_eq!(infer_media_kind(Path::new("walkin.mp3")), "audio");
+        assert_eq!(infer_media_kind(Path::new("shader.custom")), "background");
 
         // Bible search without translation filter & empty query
         store
