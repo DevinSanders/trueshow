@@ -350,6 +350,12 @@ impl LibraryStore {
                 enabled INTEGER NOT NULL DEFAULT 1,
                 updated_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
             "#,
         )?;
         // Forward-compatible column migrations for existing on-disk SQLite databases.
@@ -1443,6 +1449,32 @@ impl LibraryStore {
             .conn
             .execute("DELETE FROM scheduled_events WHERE id = ?1", params![id])?;
         Ok(removed > 0)
+    }
+
+    pub fn get_ccli_display_config(&self) -> Result<core_scene::CcliDisplayConfig, LibraryError> {
+        let raw: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT value_json FROM app_settings WHERE key = 'ccli_display_config'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(raw
+            .and_then(|json| serde_json::from_str(&json).ok())
+            .unwrap_or_default())
+    }
+
+    pub fn save_ccli_display_config(
+        &self,
+        cfg: &core_scene::CcliDisplayConfig,
+    ) -> Result<(), LibraryError> {
+        let json = serde_json::to_string(cfg)?;
+        self.conn.execute(
+            "INSERT INTO app_settings (key, value_json, updated_at) VALUES ('ccli_display_config', ?1, ?2) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at",
+            params![json, Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
     }
 
     /// Exports the complete local library (libraries, songs, playlists, media bins,
@@ -2568,5 +2600,14 @@ mod tests {
         assert_eq!(ag_after.arrangements[0].name, "Easter Choir");
         assert_eq!(ag_after.cue_tracks.len(), 1);
         assert_eq!(ag_after.cue_tracks[0].cues[0].delay_secs, 9.5);
+
+        // Persistent CCLI automated display config
+        let mut ccli_cfg = store.get_ccli_display_config().expect("default ccli");
+        ccli_cfg.church_license_number = "987654".into();
+        ccli_cfg.placement = core_scene::CcliDisplayPlacement::LastSlide;
+        store.save_ccli_display_config(&ccli_cfg).expect("save ccli");
+        let loaded_ccli = store.get_ccli_display_config().expect("load ccli");
+        assert_eq!(loaded_ccli.church_license_number, "987654");
+        assert_eq!(loaded_ccli.placement, core_scene::CcliDisplayPlacement::LastSlide);
     }
 }

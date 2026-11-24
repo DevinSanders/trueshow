@@ -296,6 +296,25 @@ export interface BibleVerseRecord {
   cached_at_epoch: number | null;
 }
 
+export type CcliDisplayPlacement =
+  | "Disabled"
+  | "FirstSlide"
+  | "LastSlide"
+  | "FirstAndLastSlide"
+  | "AllSlides";
+
+export interface CcliDisplayConfig {
+  enabled: boolean;
+  placement: CcliDisplayPlacement;
+  church_license_number: string;
+  template: string;
+  font_size: number;
+  text_color: ColorRgba;
+  background_color: ColorRgba;
+  bounds: RectF;
+  h_align: "Left" | "Center" | "Right";
+}
+
 export interface SceneState {
   revision: number;
   blackout: boolean;

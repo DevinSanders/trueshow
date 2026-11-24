@@ -416,6 +416,137 @@ pub struct AutoPlayTrack {
     pub cues: Vec<RecordedCue>,
 }
 
+/// Automated slide placement rule for CCLI license & song copyright attribution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum CcliDisplayPlacement {
+    Disabled,
+    #[default]
+    FirstSlide,
+    LastSlide,
+    FirstAndLastSlide,
+    AllSlides,
+}
+
+/// Configurable automated CCLI license & song attribution overlay template.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CcliDisplayConfig {
+    pub enabled: bool,
+    pub placement: CcliDisplayPlacement,
+    pub church_license_number: String,
+    /// Supports tokens: `{title}`, `{author}`, `{copyright}`, `{ccli_song}`, `{ccli_license}`.
+    pub template: String,
+    pub font_size: f32,
+    pub text_color: ColorRgba,
+    pub background_color: ColorRgba,
+    pub bounds: RectF,
+    pub h_align: TextAlign,
+}
+
+impl Default for CcliDisplayConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            placement: CcliDisplayPlacement::FirstSlide,
+            church_license_number: String::new(),
+            template: "{title} • {author}\n{copyright} • CCLI Song #{ccli_song} • CCLI License #{ccli_license}".to_string(),
+            font_size: 24.0,
+            text_color: ColorRgba::rgba(0.95, 0.97, 1.0, 0.92),
+            background_color: ColorRgba::rgba(0.03, 0.05, 0.09, 0.65),
+            bounds: RectF::new(80.0, 984.0, 1760.0, 76.0),
+            h_align: TextAlign::Center,
+        }
+    }
+}
+
+/// Evaluates whether the automated CCLI attribution footer should display for the current
+/// [`SceneState`] and renders the configured template cleanly (omitting blank token segments).
+pub fn render_ccli_attribution_for_scene(state: &SceneState) -> Option<String> {
+    let cfg = &state.ccli_display;
+    if !cfg.enabled || cfg.placement == CcliDisplayPlacement::Disabled || state.blackout {
+        return None;
+    }
+    let active = state.active_slide.as_ref()?;
+    let deck_len = state.deck.len();
+    let idx = state.deck.iter().position(|s| s.id == active.id).unwrap_or(0);
+    let is_first = idx == 0;
+    let is_last = deck_len > 0 && idx + 1 >= deck_len;
+
+    let should_show = match cfg.placement {
+        CcliDisplayPlacement::Disabled => false,
+        CcliDisplayPlacement::FirstSlide => is_first,
+        CcliDisplayPlacement::LastSlide => is_last,
+        CcliDisplayPlacement::FirstAndLastSlide => is_first || is_last,
+        CcliDisplayPlacement::AllSlides => true,
+    };
+    if !should_show {
+        return None;
+    }
+
+    let ccli_song = active
+        .ccli_number
+        .as_deref()
+        .or(state.active_song_ccli.as_deref())
+        .map(str::trim)
+        .unwrap_or("");
+    let author = state
+        .active_song_author
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("");
+    let copyright = state
+        .active_song_copyright
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("");
+    let license = cfg.church_license_number.trim();
+
+    // Only project CCLI attribution when the slide/song actually has song/CCLI attribution data.
+    if ccli_song.is_empty() && author.is_empty() && copyright.is_empty() {
+        return None;
+    }
+
+    let title = state
+        .active_presentation_title
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&active.label);
+
+    let mut rendered_lines = Vec::new();
+    for raw_line in cfg.template.lines() {
+        let mut parts = Vec::new();
+        for segment in raw_line.split('•') {
+            let trimmed_seg = segment.trim();
+            if (trimmed_seg.contains("{author}") && author.is_empty())
+                || (trimmed_seg.contains("{copyright}") && copyright.is_empty())
+                || (trimmed_seg.contains("{ccli_song}") && ccli_song.is_empty())
+                || (trimmed_seg.contains("{ccli_license}") && license.is_empty())
+            {
+                continue;
+            }
+            let substituted = trimmed_seg
+                .replace("{title}", title)
+                .replace("{author}", author)
+                .replace("{copyright}", copyright)
+                .replace("{ccli_song}", ccli_song)
+                .replace("{ccli_license}", license);
+            let clean = substituted.trim();
+            if !clean.is_empty() {
+                parts.push(clean.to_string());
+            }
+        }
+        if !parts.is_empty() {
+            rendered_lines.push(parts.join(" • "));
+        }
+    }
+
+    if rendered_lines.is_empty() {
+        None
+    } else {
+        Some(rendered_lines.join("\n"))
+    }
+}
+
 /// Expands a master slide list according to an optional [`Arrangement`], preserving
 /// slide content while allowing groups (e.g. Chorus) to repeat cleanly without duplicating data.
 pub fn expand_deck_by_arrangement(master: &[Slide], arrangement: Option<&Arrangement>) -> Vec<Slide> {
@@ -992,6 +1123,14 @@ pub struct SceneState {
     #[serde(default)]
     pub active_presentation_title: Option<String>,
     #[serde(default)]
+    pub active_song_author: Option<String>,
+    #[serde(default)]
+    pub active_song_copyright: Option<String>,
+    #[serde(default)]
+    pub active_song_ccli: Option<String>,
+    #[serde(default)]
+    pub ccli_display: CcliDisplayConfig,
+    #[serde(default)]
     pub active_arrangements: Vec<Arrangement>,
     #[serde(default)]
     pub active_arrangement_id: Option<String>,
@@ -1095,11 +1234,19 @@ pub enum SceneDiff {
     BatchSetSlideTimings {
         timings: Vec<(SlideId, Option<f32>, bool)>,
     },
-    /// Updates the currently loaded presentation's SQLite ID & display title metadata.
+    /// Updates the currently loaded presentation's SQLite ID, display title, and CCLI attribution metadata.
     SetActivePresentationMeta {
         id: Option<String>,
         title: Option<String>,
+        #[serde(default)]
+        author: Option<String>,
+        #[serde(default)]
+        copyright: Option<String>,
+        #[serde(default)]
+        ccli_number: Option<String>,
     },
+    /// Updates automated CCLI attribution placement, church license #, and visual template.
+    SetCcliDisplayConfig(CcliDisplayConfig),
     /// Replaces the saved auto-play cue tracks attached to the currently loaded presentation.
     SetCueTracks(Vec<AutoPlayTrack>),
     SyncOverlays(Vec<OverlayItem>),
@@ -1459,6 +1606,10 @@ impl SceneState {
             deck,
             active_presentation_id: None,
             active_presentation_title: Some("Sunday Demo Service".to_string()),
+            active_song_author: Some("John Newton".to_string()),
+            active_song_copyright: Some("Public Domain".to_string()),
+            active_song_ccli: Some("22025".to_string()),
+            ccli_display: CcliDisplayConfig::default(),
             active_arrangements: vec![
                 Arrangement {
                     id: "arr-demo-full".to_string(),
@@ -2163,9 +2314,23 @@ impl SceneState {
                 }
                 changed
             }
-            SceneDiff::SetActivePresentationMeta { id, title } => {
+            SceneDiff::SetActivePresentationMeta {
+                id,
+                title,
+                author,
+                copyright,
+                ccli_number,
+            } => {
                 self.active_presentation_id = id;
                 self.active_presentation_title = title;
+                self.active_song_author = author;
+                self.active_song_copyright = copyright;
+                self.active_song_ccli = ccli_number;
+                self.revision += 1;
+                true
+            }
+            SceneDiff::SetCcliDisplayConfig(cfg) => {
+                self.ccli_display = cfg;
                 self.revision += 1;
                 true
             }
@@ -3093,9 +3258,51 @@ mod tests {
         assert!(state.apply(SceneDiff::SetActivePresentationMeta {
             id: Some("song-9001".into()),
             title: Some("Amazing Grace".into()),
+            author: Some("John Newton".into()),
+            copyright: Some("Public Domain".into()),
+            ccli_number: Some("22025".into()),
         }));
         assert_eq!(state.active_presentation_id.as_deref(), Some("song-9001"));
         assert_eq!(state.active_presentation_title.as_deref(), Some("Amazing Grace"));
+
+        // Automated CCLI attribution placement: FirstSlide, LastSlide, FirstAndLastSlide, AllSlides, Disabled
+        let mut ccli_cfg = CcliDisplayConfig {
+            church_license_number: "1234567".into(),
+            placement: CcliDisplayPlacement::FirstSlide,
+            ..Default::default()
+        };
+        assert!(state.apply(SceneDiff::SetCcliDisplayConfig(ccli_cfg.clone())));
+        assert!(state.apply(SceneDiff::TriggerSlide {
+            slide_id: state.deck[0].id,
+            transition_override: None,
+        }));
+        let first_text = render_ccli_attribution_for_scene(&state).expect("first slide CCLI");
+        assert!(first_text.contains("Amazing Grace"));
+        assert!(first_text.contains("CCLI License #1234567"));
+
+        // Middle slide should NOT show when FirstSlide or LastSlide is chosen
+        assert!(state.apply(SceneDiff::TriggerSlide {
+            slide_id: state.deck[1].id,
+            transition_override: None,
+        }));
+        assert!(render_ccli_attribution_for_scene(&state).is_none());
+
+        ccli_cfg.placement = CcliDisplayPlacement::LastSlide;
+        assert!(state.apply(SceneDiff::SetCcliDisplayConfig(ccli_cfg.clone())));
+        let last_id = state.deck.last().expect("last").id;
+        assert!(state.apply(SceneDiff::TriggerSlide {
+            slide_id: last_id,
+            transition_override: None,
+        }));
+        assert!(render_ccli_attribution_for_scene(&state).is_some());
+
+        ccli_cfg.placement = CcliDisplayPlacement::AllSlides;
+        assert!(state.apply(SceneDiff::SetCcliDisplayConfig(ccli_cfg.clone())));
+        assert!(render_ccli_attribution_for_scene(&state).is_some());
+
+        ccli_cfg.placement = CcliDisplayPlacement::Disabled;
+        assert!(state.apply(SceneDiff::SetCcliDisplayConfig(ccli_cfg)));
+        assert!(render_ccli_attribution_for_scene(&state).is_none());
 
         assert!(state.apply(SceneDiff::SetCueTracks(vec![AutoPlayTrack {
             id: "track-1".into(),

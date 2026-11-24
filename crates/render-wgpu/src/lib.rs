@@ -758,6 +758,15 @@ impl CompositorApp {
                 snap.state.timer_readout.as_deref(),
                 "LIVE",
             );
+            if let Some(ccli_text) = core_scene::render_ccli_attribution_for_scene(&snap.state) {
+                self.rasterizer.composite_ccli_attribution(
+                    &mut raster.rgba_premul,
+                    LAYER_TEX_WIDTH,
+                    LAYER_TEX_HEIGHT,
+                    &ccli_text,
+                    &snap.state.ccli_display,
+                );
+            }
         }
 
         gpu.queue.write_texture(

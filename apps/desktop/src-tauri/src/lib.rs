@@ -259,14 +259,15 @@ async fn connect_engine(
     };
     match event {
         EngineEvent::Snapshot(mut snap) => {
-            // Hydrate persisted SQLite custom Looks, Templates & Overlays into the engine on attach.
+            // Hydrate persisted SQLite custom Looks, Templates, Overlays & CCLI display config on attach.
             let persisted = bridge.library.lock().ok().and_then(|lib| {
                 let looks = lib.list_looks().ok()?;
                 let templates = lib.list_templates().ok()?;
                 let overlays = lib.list_overlays().ok().unwrap_or_default();
-                Some((looks, templates, overlays))
+                let ccli_cfg = lib.get_ccli_display_config().ok().unwrap_or_default();
+                Some((looks, templates, overlays, ccli_cfg))
             });
-            if let Some((looks, templates, overlays)) = persisted {
+            if let Some((looks, templates, overlays, ccli_cfg)) = persisted {
                 if (!looks.is_empty() || !templates.is_empty())
                     && let Ok(updated) = apply_scene_diff(
                         &bridge,
@@ -278,6 +279,11 @@ async fn connect_engine(
                 }
                 if !overlays.is_empty()
                     && let Ok(updated) = apply_scene_diff(&bridge, SceneDiff::SyncOverlays(overlays)).await
+                {
+                    snap.state = updated;
+                }
+                if let Ok(updated) =
+                    apply_scene_diff(&bridge, SceneDiff::SetCcliDisplayConfig(ccli_cfg)).await
                 {
                     snap.state = updated;
                 }
@@ -662,6 +668,9 @@ async fn parse_and_save_quick_lyrics(
             SceneDiff::SetActivePresentationMeta {
                 id: Some(rec.id),
                 title: Some(rec.title),
+                author: (!rec.author.is_empty()).then_some(rec.author),
+                copyright: (!rec.copyright.is_empty()).then_some(rec.copyright),
+                ccli_number: rec.ccli_number,
             },
         )
         .await?;
@@ -1242,7 +1251,7 @@ async fn load_presentation_to_deck(
     bridge: State<'_, Arc<EngineBridgeState>>,
     song_id: String,
 ) -> Result<SceneState, String> {
-    let (title, slides, arrangements, cue_tracks) = {
+    let (title, author, copyright, ccli_number, slides, arrangements, cue_tracks) = {
         let lib = bridge.library.lock().map_err(|e| e.to_string())?;
         let song = lib
             .get_song(&song_id)
@@ -1253,12 +1262,20 @@ async fn load_presentation_to_deck(
                 &song.title,
                 "Slide 1",
                 &song.lyrics_plain,
-                song.ccli_number,
+                song.ccli_number.clone(),
             )]
         } else {
             song.slides
         };
-        (song.title, s, song.arrangements, song.cue_tracks)
+        (
+            song.title,
+            (!song.author.is_empty()).then_some(song.author),
+            (!song.copyright.is_empty()).then_some(song.copyright),
+            song.ccli_number,
+            s,
+            song.arrangements,
+            song.cue_tracks,
+        )
     };
     if let Ok(mut g) = bridge.active_song_id.lock() {
         *g = Some(song_id.clone());
@@ -1279,6 +1296,9 @@ async fn load_presentation_to_deck(
         SceneDiff::SetActivePresentationMeta {
             id: Some(song_id),
             title: Some(title),
+            author,
+            copyright,
+            ccli_number,
         },
     )
     .await
@@ -2620,6 +2640,9 @@ async fn persist_parsed_pdf_song(
             SceneDiff::SetActivePresentationMeta {
                 id: Some(song_id.clone()),
                 title: Some(parsed.title.clone()),
+                author: (!rec.author.is_empty()).then_some(rec.author),
+                copyright: (!rec.copyright.is_empty()).then_some(rec.copyright),
+                ccli_number: rec.ccli_number,
             },
         )
         .await?;
@@ -2898,6 +2921,142 @@ async fn pco_import_attachment(
             attachment.filename
         )),
     }
+}
+
+#[tauri::command]
+fn get_ccli_display_config(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+) -> Result<core_scene::CcliDisplayConfig, String> {
+    let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    lib.get_ccli_display_config().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn save_ccli_display_config(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    config: core_scene::CcliDisplayConfig,
+) -> Result<SceneState, String> {
+    {
+        let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+        lib.save_ccli_display_config(&config)
+            .map_err(|e| e.to_string())?;
+    }
+    apply_scene_diff(&bridge, SceneDiff::SetCcliDisplayConfig(config)).await
+}
+
+#[tauri::command]
+async fn import_local_presentation_file(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    file_path: String,
+    library_id: String,
+    load_to_deck: bool,
+) -> Result<PdfImportResultDto, String> {
+    let trimmed = file_path.trim();
+    if trimmed.is_empty() {
+        return Err(
+            "Provide a local file or folder path (.pdf, .pptx, .key, images, .show, .pro6, .xml, .cho, .usr)"
+                .to_string(),
+        );
+    }
+
+    // Support semicolon or newline separated list of image files as well as a single file or folder.
+    let raw_paths: Vec<PathBuf> = trimmed
+        .split(['\n', ';'])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .collect();
+    let first = raw_paths
+        .first()
+        .ok_or_else(|| "Provide a valid file path".to_string())?;
+    let stem = first
+        .file_stem()
+        .or_else(|| first.file_name())
+        .and_then(|s| s.to_str())
+        .unwrap_or("Imported Presentation")
+        .to_string();
+    let ext = first
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+
+    // 1. PDF Lyric Sheet / Presentation
+    if raw_paths.len() == 1 && ext == "pdf" {
+        let bytes = std::fs::read(first)
+            .map_err(|e| format!("failed to read PDF '{}': {e}", first.display()))?;
+        let parsed = integrations::import_lyric_sheet_pdf(&bytes, Some(&stem))
+            .map_err(|e| e.to_string())?;
+        return persist_parsed_pdf_song(&bridge, parsed, &library_id, load_to_deck).await;
+    }
+
+    // 2. Images (single image, multiple image paths, or a folder of slide images)
+    let is_image_import = first.is_dir()
+        || raw_paths.len() > 1
+        || matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "bmp" | "webp" | "gif");
+    let imported = if is_image_import {
+        integrations::import_images_as_presentation(&stem, &raw_paths, &managed_imported_media_dir())
+            .map_err(|e| e.to_string())?
+    } else if ext == "pptx" {
+        // 3. PowerPoint (.pptx)
+        let bytes = std::fs::read(first)
+            .map_err(|e| format!("failed to read '{}': {e}", first.display()))?;
+        integrations::import_pptx_bytes(&stem, &bytes).map_err(|e| e.to_string())?
+    } else if ext == "key" {
+        // 4. Apple Keynote (.key)
+        let bytes = std::fs::read(first)
+            .map_err(|e| format!("failed to read '{}': {e}", first.display()))?;
+        integrations::import_keynote_bytes(&stem, &bytes, &managed_imported_media_dir())
+            .map_err(|e| e.to_string())?
+    } else {
+        // 5. Text / XML / JSON worship formats
+        let content = std::fs::read_to_string(first)
+            .map_err(|e| format!("failed to read '{}': {e}", first.display()))?;
+        match ext.as_str() {
+            "show" | "json" => integrations::import_freeshow_json(&content).map_err(|e| e.to_string())?,
+            "pro6" | "pro5" => integrations::import_pro6_xml(&content).map_err(|e| e.to_string())?,
+            "cho" | "chopro" => {
+                let s = integrations::parse_chordpro(&content)?;
+                integrations::PresentationImportResult {
+                    title: s.title,
+                    ccli_number: s.ccli_number,
+                    source_format: "ChordPro".into(),
+                    slides: s.slides,
+                }
+            }
+            "usr" => {
+                let s = integrations::parse_songselect_usr(&content)?;
+                integrations::PresentationImportResult {
+                    title: s.title,
+                    ccli_number: s.ccli_number,
+                    source_format: "SongSelect (.usr)".into(),
+                    slides: s.slides,
+                }
+            }
+            "xml" => {
+                if content.contains("<RVPresentationDocument") {
+                    integrations::import_pro6_xml(&content).map_err(|e| e.to_string())?
+                } else if content.contains("<lyrics>") && content.contains("<ccli>") {
+                    integrations::import_opensong_xml(&content).map_err(|e| e.to_string())?
+                } else {
+                    integrations::import_openlyrics_xml(&content).map_err(|e| e.to_string())?
+                }
+            }
+            _ => integrations::import_plain_text_song(&stem, &content).map_err(|e| e.to_string())?,
+        }
+    };
+
+    let parsed = integrations::ParsedLyricSheet {
+        title: imported.title,
+        author: String::new(),
+        copyright: String::new(),
+        ccli_number: imported.ccli_number,
+        key_signature: None,
+        slides: imported.slides,
+        arrangements: Vec::new(),
+        raw_text_preview: String::new(),
+    };
+    persist_parsed_pdf_song(&bridge, parsed, &library_id, load_to_deck).await
 }
 
 #[derive(serde::Serialize)]
@@ -3313,8 +3472,11 @@ pub fn run() {
             dispatch_control_command,
             import_worship_document,
             import_worship_file,
+            import_local_presentation_file,
             import_lyric_sheet_pdf_file,
             import_media_file_safe,
+            get_ccli_display_config,
+            save_ccli_display_config,
             pco_list_plans,
             pco_list_plan_attachments,
             pco_import_attachment,

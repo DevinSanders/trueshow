@@ -221,6 +221,47 @@ impl BroadcastRasterizer {
         }
     }
 
+    /// Composites automated CCLI license & song attribution text directly onto an Audience layer.
+    pub fn composite_ccli_attribution(
+        &mut self,
+        rgba_premul: &mut [u8],
+        width: u32,
+        height: u32,
+        ccli_text: &str,
+        cfg: &core_scene::CcliDisplayConfig,
+    ) {
+        if ccli_text.trim().is_empty() || width < 16 || height < 16 {
+            return;
+        }
+        let Some(mut pixmap) = Pixmap::new(width, height) else {
+            return;
+        };
+        if pixmap.data().len() == rgba_premul.len() {
+            pixmap.data_mut().copy_from_slice(rgba_premul);
+        }
+        let scale_x = width as f32 / VIRTUAL_CANVAS_WIDTH;
+        let scale_y = height as f32 / VIRTUAL_CANVAS_HEIGHT;
+        let style = TextStyle {
+            font_size: cfg.font_size.clamp(14.0, 56.0),
+            bold: false,
+            italic: false,
+            line_height: 1.18,
+            color: cfg.text_color,
+            stroke_color: ColorRgba::rgba(0.0, 0.0, 0.0, 0.75),
+            stroke_width: 1.0,
+            backdrop_color: cfg.background_color,
+            backdrop_radius: 10.0,
+            backdrop_padding: 12.0,
+            h_align: cfg.h_align,
+            v_align: VerticalAlign::Middle,
+            ..TextStyle::default()
+        };
+        self.render_text_box(&mut pixmap, cfg.bounds, ccli_text, &style, 1.0, scale_x, scale_y);
+        if pixmap.data().len() == rgba_premul.len() {
+            rgba_premul.copy_from_slice(pixmap.data());
+        }
+    }
+
     fn insert_cache(&mut self, key: [u8; 32], layer: RasterizedLayer) {
         if self.cache.contains_key(&key) {
             return;
@@ -1127,6 +1168,17 @@ mod tests {
         );
         assert_eq!(out.rgba_premul.len(), 640 * 360 * 4);
         assert!(out.rgba_premul.iter().any(|&b| b > 0));
+
+        // Automated CCLI attribution GPU compositing
+        let mut ccli_buf = vec![0u8; 640 * 360 * 4];
+        r.composite_ccli_attribution(
+            &mut ccli_buf,
+            640,
+            360,
+            "Amazing Grace • John Newton\nCCLI Song #22025 • CCLI License #123456",
+            &core_scene::CcliDisplayConfig::default(),
+        );
+        assert!(ccli_buf.iter().any(|&b| b > 0));
     }
 
     #[test]

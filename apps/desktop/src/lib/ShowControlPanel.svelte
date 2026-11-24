@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
+  import CcliDisplaySettingsPanel from "./CcliDisplaySettingsPanel.svelte";
   import PcoPdfImporterPanel from "./PcoPdfImporterPanel.svelte";
   import type { MacroRecord, SceneState, ScheduledEventRecord } from "./types";
 
@@ -352,6 +353,8 @@
       </div>
     </div>
   </div>
+
+  <CcliDisplaySettingsPanel {onSceneChange} />
 
   <PcoPdfImporterPanel {onSceneChange} />
 

@@ -602,6 +602,258 @@ pub fn import_opensong_xml(xml: &str) -> Result<PresentationImportResult, Import
     })
 }
 
+/// Imports one or more local image files (or an entire folder of exported slide images)
+/// into a multi-slide presentation, staging every image with a collision-proof BLAKE3 filename.
+pub fn import_images_as_presentation(
+    title: &str,
+    input_paths: &[std::path::PathBuf],
+    staged_dir: &Path,
+) -> Result<PresentationImportResult, ImporterError> {
+    let mut resolved_images: Vec<std::path::PathBuf> = Vec::new();
+    for p in input_paths {
+        if p.is_dir() {
+            let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(p)?
+                .filter_map(|e| e.ok().map(|de| de.path()))
+                .filter(|path| path.is_file() && is_supported_image_ext(path))
+                .collect();
+            entries.sort();
+            resolved_images.extend(entries);
+        } else if p.is_file() && is_supported_image_ext(p) {
+            resolved_images.push(p.clone());
+        }
+    }
+
+    if resolved_images.is_empty() {
+        return Err(ImporterError::InvalidInput(
+            "no supported image files (.png, .jpg, .jpeg, .bmp, .webp) found".into(),
+        ));
+    }
+
+    let clean_title = if title.trim().is_empty() {
+        "Imported Image Deck"
+    } else {
+        title.trim()
+    };
+
+    let mut slides = Vec::with_capacity(resolved_images.len());
+    for (idx, img_path) in resolved_images.iter().enumerate() {
+        let orig_name = img_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("slide.png");
+        let bytes = std::fs::read(img_path)?;
+        let staged = crate::pco::stage_imported_media_bytes(staged_dir, clean_title, orig_name, &bytes)
+            .map_err(|e| ImporterError::InvalidInput(e.to_string()))?;
+
+        let mut slide = core_library::slide_from_text(
+            &format!("{clean_title} — Slide {}", idx + 1),
+            "Image Slide",
+            "",
+            None,
+        );
+        slide.headline = staged.display_name.clone();
+        slide.body = format!("Image Slide {}", idx + 1);
+        slide.elements.clear();
+        slide.media_path = Some(staged.disk_path.to_string_lossy().into_owned());
+        slide.media_cue = Some(core_scene::SlideMediaCue {
+            label: staged.display_name,
+            media_path: staged.disk_path.to_string_lossy().into_owned(),
+            kind: "image".to_string(),
+            role: core_scene::MediaCueRole::Foreground,
+            motion_style: core_scene::ShaderMotionStyle::AuroraWave,
+            primary_color: slide.primary_color,
+            secondary_color: slide.secondary_color,
+            accent_color: slide.accent_color,
+        });
+        slides.push(slide);
+    }
+
+    Ok(PresentationImportResult {
+        title: clean_title.to_string(),
+        ccli_number: None,
+        source_format: "Image Presentation".into(),
+        slides,
+    })
+}
+
+fn is_supported_image_ext(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .is_some_and(|ext| matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "bmp" | "webp" | "gif"))
+}
+
+/// Clean-room Apple Keynote (`.key`) ZIP archive importer.
+///
+/// Extracts editable text slides from `index.apxl` XML (when present) or stages embedded
+/// slide preview/media images (`Data/*.png|*.jpg`, `preview.jpg`) as visual slides.
+pub fn import_keynote_bytes(
+    title: &str,
+    keynote_bytes: &[u8],
+    staged_dir: &Path,
+) -> Result<PresentationImportResult, ImporterError> {
+    let mut archive = ZipArchive::new(Cursor::new(keynote_bytes))?;
+    let clean_title = if title.trim().is_empty() {
+        "Imported Keynote Presentation"
+    } else {
+        title.trim()
+    };
+
+    // 1. Check for Keynote `index.apxl` XML containing editable slide text runs.
+    let apxl_name = (0..archive.len()).find_map(|i| {
+        let name = archive.by_index(i).ok()?.name().to_string();
+        if name.eq_ignore_ascii_case("index.apxl") || name.ends_with("/index.apxl") {
+            Some(name)
+        } else {
+            None
+        }
+    });
+
+    if let Some(apxl) = apxl_name {
+        let mut entry = archive.by_name(&apxl)?;
+        let mut xml = String::new();
+        entry.read_to_string(&mut xml)?;
+        let slides = parse_keynote_apxl_slides(clean_title, &xml)?;
+        if !slides.is_empty() {
+            return Ok(PresentationImportResult {
+                title: clean_title.to_string(),
+                ccli_number: None,
+                source_format: "Apple Keynote (.key XML)".into(),
+                slides,
+            });
+        }
+    }
+
+    // 2. Fall back to embedded slide media/preview images inside modern `.key` ZIP archives.
+    let mut image_entries: Vec<String> = (0..archive.len())
+        .filter_map(|i| {
+            let name = archive.by_index(i).ok()?.name().to_string();
+            let lower = name.to_ascii_lowercase();
+            let is_img = lower.ends_with(".png")
+                || lower.ends_with(".jpg")
+                || lower.ends_with(".jpeg");
+            let is_thumb = lower.contains("preview-micro") || lower.contains("thumbnail");
+            if is_img && !is_thumb {
+                Some(name)
+            } else {
+                None
+            }
+        })
+        .collect();
+    image_entries.sort();
+
+    if !image_entries.is_empty() {
+        let mut slides = Vec::new();
+        for (idx, entry_name) in image_entries.iter().enumerate() {
+            let mut entry = archive.by_name(entry_name)?;
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes)?;
+            if bytes.is_empty() {
+                continue;
+            }
+            let base_name = Path::new(entry_name)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("keynote-slide.jpg");
+            let staged = crate::pco::stage_imported_media_bytes(
+                staged_dir,
+                clean_title,
+                base_name,
+                &bytes,
+            )
+            .map_err(|e| ImporterError::InvalidInput(e.to_string()))?;
+
+            let mut slide = core_library::slide_from_text(
+                &format!("{clean_title} — Slide {}", idx + 1),
+                "Keynote",
+                "",
+                None,
+            );
+            slide.headline = staged.display_name.clone();
+            slide.body = format!("Keynote Slide {}", idx + 1);
+            slide.elements.clear();
+            slide.media_path = Some(staged.disk_path.to_string_lossy().into_owned());
+            slide.media_cue = Some(core_scene::SlideMediaCue {
+                label: staged.display_name,
+                media_path: staged.disk_path.to_string_lossy().into_owned(),
+                kind: "image".to_string(),
+                role: core_scene::MediaCueRole::Foreground,
+                motion_style: core_scene::ShaderMotionStyle::AuroraWave,
+                primary_color: slide.primary_color,
+                secondary_color: slide.secondary_color,
+                accent_color: slide.accent_color,
+            });
+            slides.push(slide);
+        }
+        if !slides.is_empty() {
+            return Ok(PresentationImportResult {
+                title: clean_title.to_string(),
+                ccli_number: None,
+                source_format: "Apple Keynote (.key Archive)".into(),
+                slides,
+            });
+        }
+    }
+
+    Err(ImporterError::InvalidInput(
+        "Keynote archive contained no readable index.apxl or slide images; export to PDF or PPTX in Keynote".into(),
+    ))
+}
+
+fn parse_keynote_apxl_slides(title: &str, xml: &str) -> Result<Vec<Slide>, ImporterError> {
+    let mut reader = Reader::from_str(xml);
+    let mut in_slide = false;
+    let mut in_p = false;
+    let mut current_lines: Vec<String> = Vec::new();
+    let mut slides = Vec::new();
+
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) => {
+                let name = e.name();
+                let n = name.as_ref();
+                if n.ends_with(b":slide") || n == b"slide" {
+                    in_slide = true;
+                    current_lines.clear();
+                } else if in_slide && (n.ends_with(b":p") || n == b"p") {
+                    in_p = true;
+                }
+            }
+            Ok(Event::Text(t)) if in_slide && in_p => {
+                let txt = t
+                    .unescape()
+                    .map_err(|e| ImporterError::Xml(e.to_string()))?
+                    .trim()
+                    .to_string();
+                if !txt.is_empty() {
+                    current_lines.push(txt);
+                }
+            }
+            Ok(Event::End(e)) => {
+                let name = e.name();
+                let n = name.as_ref();
+                if n.ends_with(b":p") || n == b"p" {
+                    in_p = false;
+                } else if n.ends_with(b":slide") || n == b"slide" {
+                    in_slide = false;
+                    if !current_lines.is_empty() {
+                        slides.push(core_library::slide_from_text(
+                            &format!("{title} — Slide {}", slides.len() + 1),
+                            "Keynote",
+                            &current_lines.join("\n"),
+                            None,
+                        ));
+                    }
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(err) => return Err(ImporterError::Xml(err.to_string())),
+            _ => {}
+        }
+    }
+    Ok(slides)
+}
+
 /// Builds headless LibreOffice conversion arguments with isolated user profile for visual `.pptx` PDF/SVG export.
 pub fn build_libreoffice_pdf_args(input_pptx: &Path, output_dir: &Path, profile_dir: &Path) -> Vec<String> {
     vec![
@@ -746,5 +998,45 @@ mod tests {
         assert_eq!(ros.slides[0].group, "Verse 1");
         assert_eq!(ros.slides[1].group, "Chorus");
         assert!(import_opensong_xml("<other/>").is_err());
+
+        // Image Presentation Importer (folder + single file)
+        let img_dir = std::env::temp_dir().join(format!("op-img-imp-{}", uuid::Uuid::new_v4()));
+        let stage_dir = std::env::temp_dir().join(format!("op-img-stage-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&img_dir).expect("mkdir");
+        std::fs::write(img_dir.join("01_welcome.png"), b"\x89PNG\r\n\x1a\nfake1").expect("w1");
+        std::fs::write(img_dir.join("02_sermon.jpg"), b"\xFF\xD8\xFFfake2").expect("w2");
+        let rimg = import_images_as_presentation("Sunday Slides", std::slice::from_ref(&img_dir), &stage_dir)
+            .expect("image deck");
+        assert_eq!(rimg.slides.len(), 2);
+        assert!(rimg.slides[0].media_cue.is_some());
+        assert!(import_images_as_presentation("Empty", &[], &stage_dir).is_err());
+
+        // Apple Keynote (.key) ZIP with index.apxl XML
+        let mut key_xml_buf = Cursor::new(Vec::new());
+        {
+            let mut zw = zip::ZipWriter::new(&mut key_xml_buf);
+            zw.start_file("index.apxl", SimpleFileOptions::default()).expect("start");
+            zw.write_all(b"<key:presentation xmlns:key=\"k\" xmlns:sf=\"s\"><key:slide><sf:p>Keynote Slide One</sf:p></key:slide></key:presentation>").expect("write");
+            zw.finish().expect("finish");
+        }
+        let rkey1 = import_keynote_bytes("Sermon Key", key_xml_buf.get_ref(), &stage_dir).expect("keynote xml");
+        assert_eq!(rkey1.slides.len(), 1);
+        assert!(rkey1.slides[0].plain_text().contains("Keynote Slide One"));
+
+        // Apple Keynote (.key) ZIP with embedded preview/slide images
+        let mut key_img_buf = Cursor::new(Vec::new());
+        {
+            let mut zw = zip::ZipWriter::new(&mut key_img_buf);
+            zw.start_file("Data/slide1.png", SimpleFileOptions::default()).expect("start");
+            zw.write_all(b"\x89PNG\r\n\x1a\nkeyslide").expect("write");
+            zw.finish().expect("finish");
+        }
+        let rkey2 = import_keynote_bytes("Visual Key", key_img_buf.get_ref(), &stage_dir).expect("keynote img");
+        assert_eq!(rkey2.slides.len(), 1);
+        assert!(rkey2.slides[0].media_cue.is_some());
+        assert!(import_keynote_bytes("Bad", b"not-a-zip", &stage_dir).is_err());
+
+        let _ = std::fs::remove_dir_all(&img_dir);
+        let _ = std::fs::remove_dir_all(&stage_dir);
     }
 }

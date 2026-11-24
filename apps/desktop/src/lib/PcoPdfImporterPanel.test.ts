@@ -28,7 +28,7 @@ describe("PcoPdfImporterPanel (Lyric Sheet PDF, Collision-Safe Media & PCO Servi
           { id: "videos", name: "Videos & Countdowns", category: "video", updated_at: "2026-11-24T00:00:00Z" },
         ];
       }
-      if (cmd === "import_lyric_sheet_pdf_file") {
+      if (cmd === "import_local_presentation_file") {
         lastPdfArgs = p;
         return {
           song_id: "song-pdf-1",
@@ -112,13 +112,13 @@ describe("PcoPdfImporterPanel (Lyric Sheet PDF, Collision-Safe Media & PCO Servi
       target: { value: "videos" },
     });
 
-    // 1. Local Lyric Sheet PDF import into selected library
-    await fireEvent.input(screen.getByLabelText("Lyric Sheet PDF Path"), {
+    // 1. Local Lyric Sheet PDF / PPTX / Keynote / Images import into selected library
+    await fireEvent.input(screen.getByLabelText("Local Presentation File Path"), {
       target: { value: "C:/Songs/GoodnessOfGod.pdf" },
     });
-    await fireEvent.click(screen.getByRole("button", { name: "Import Lyric PDF" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Import Presentation / Lyrics" }));
     await waitFor(() =>
-      expect(screen.getByRole("status").textContent).toContain('Imported PDF "Goodness Of God"'),
+      expect(screen.getByRole("status").textContent).toContain('Imported "Goodness Of God"'),
     );
     expect(lastPdfArgs.libraryId).toBe("worship-songs");
 
@@ -161,14 +161,14 @@ describe("PcoPdfImporterPanel (Lyric Sheet PDF, Collision-Safe Media & PCO Servi
   it("validates blank fields and surfaces backend errors cleanly", async () => {
     mockIPC((cmd) => {
       if (cmd === "list_libraries" || cmd === "list_media_bins") return [];
-      if (cmd === "import_lyric_sheet_pdf_file") throw new Error("invalid PDF header");
+      if (cmd === "import_local_presentation_file") throw new Error("invalid PDF header");
       return null;
     });
 
     render(PcoPdfImporterPanel);
 
-    await fireEvent.click(screen.getByRole("button", { name: "Import Lyric PDF" }));
-    expect(screen.getByRole("alert").textContent).toContain("PDF file path");
+    await fireEvent.click(screen.getByRole("button", { name: "Import Presentation / Lyrics" }));
+    expect(screen.getByRole("alert").textContent).toContain("file or folder path");
 
     await fireEvent.click(screen.getByRole("button", { name: "Import Media Safely" }));
     expect(screen.getByRole("alert").textContent).toContain("media file path");
@@ -176,10 +176,10 @@ describe("PcoPdfImporterPanel (Lyric Sheet PDF, Collision-Safe Media & PCO Servi
     await fireEvent.click(screen.getByRole("button", { name: "Fetch Plans" }));
     expect(screen.getByRole("alert").textContent).toContain("Planning Center App ID");
 
-    await fireEvent.input(screen.getByLabelText("Lyric Sheet PDF Path"), {
+    await fireEvent.input(screen.getByLabelText("Local Presentation File Path"), {
       target: { value: "C:/bad.pdf" },
     });
-    await fireEvent.click(screen.getByRole("button", { name: "Import Lyric PDF" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Import Presentation / Lyrics" }));
     await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("invalid PDF header"));
   });
 });

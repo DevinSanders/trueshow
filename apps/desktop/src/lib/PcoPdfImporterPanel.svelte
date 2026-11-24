@@ -105,23 +105,23 @@
     }
   }
 
-  async function importLocalPdf() {
+  async function importLocalFile() {
     errorMsg = null;
     statusMsg = null;
     if (!pdfFilePath.trim()) {
-      errorMsg = "Enter a local Lyric Sheet PDF file path (.pdf)";
+      errorMsg = "Enter a local file or folder path (.pdf, .pptx, .key, images, .show, .pro6, .cho)";
       return;
     }
     busy = true;
     try {
-      const res = await invoke<PdfImportResult>("import_lyric_sheet_pdf_file", {
+      const res = await invoke<PdfImportResult>("import_local_presentation_file", {
         filePath: pdfFilePath.trim(),
         libraryId: targetLibraryId,
         loadToDeck: loadPdfToDeck,
       });
       if (res.scene) onSceneChange?.(res.scene);
       const ccliText = res.ccli_number ? `, CCLI #${res.ccli_number}` : "";
-      statusMsg = `Imported PDF "${res.title}" (${res.slide_count} slides${ccliText}) into library "${res.library_id}"`;
+      statusMsg = `Imported "${res.title}" (${res.slide_count} slides${ccliText}) into library "${res.library_id}"`;
     } catch (err) {
       errorMsg = String(err);
     } finally {
@@ -298,15 +298,15 @@
   </div>
 
   <div class="sub-card">
-    <div class="sub-head">1. Local SongSelect / PCO Lyric Sheet PDF & Safe Media Import</div>
+    <div class="sub-head">1. Local Presentation & Lyrics Import (PDF, Images / Folder, PowerPoint .pptx, Keynote .key) & Safe Media</div>
     <div class="row">
       <input
-        aria-label="Lyric Sheet PDF Path"
-        placeholder="Local .pdf path (SongSelect / PCO Lyric or Chord Sheet PDF)"
+        aria-label="Local Presentation File Path"
+        placeholder="Local file or image folder path (.pdf, .pptx, .key, .png/.jpg, folder, .show, .pro6)"
         bind:value={pdfFilePath}
       />
-      <button class="btn primary" disabled={busy} onclick={() => void importLocalPdf()}>
-        Import Lyric PDF
+      <button class="btn primary" disabled={busy} onclick={() => void importLocalFile()}>
+        Import Presentation / Lyrics
       </button>
     </div>
     <div class="row">
