@@ -8,6 +8,7 @@
   import LibraryPlaylistDrawer from "./lib/LibraryPlaylistDrawer.svelte";
   import LooksTemplatesPanel from "./lib/LooksTemplatesPanel.svelte";
   import MediaBinDrawer from "./lib/MediaBinDrawer.svelte";
+  import OverlaysMessagesPanel from "./lib/OverlaysMessagesPanel.svelte";
   import QuickLyricsPanel from "./lib/QuickLyricsPanel.svelte";
   import ScreensPanel from "./lib/ScreensPanel.svelte";
   import ScriptureDrawer from "./lib/ScriptureDrawer.svelte";
@@ -30,8 +31,10 @@
   let statusMessage = $state("Connecting to openpresenter-engine sidecar...");
   let errorText = $state<string | null>(null);
   let activeTab = $state<
-    "show" | "scripture" | "lyrics" | "screens" | "looks" | "editor" | "broadcast" | "ecosystem" | "diagnostics"
+    "show" | "scripture" | "lyrics" | "overlays" | "screens" | "looks" | "editor" | "broadcast" | "ecosystem" | "diagnostics"
   >("show");
+  let autoLoopActive = $state(false);
+  let autoLoopSecs = $state(8);
   let crashCount = $state(0);
   let showLibraryDrawer = $state(true);
   let showLayerDock = $state(true);
@@ -46,6 +49,20 @@
   const scene = $derived(snapshot?.state ?? null);
   const looksList = $derived(scene ? Object.values(scene.looks) : []);
   const editableSlide = $derived(scene?.active_slide ?? scene?.deck[0] ?? null);
+
+  function applySceneState(next: SceneState) {
+    errorText = null;
+    if (snapshot) snapshot = { ...snapshot, state: next };
+  }
+
+  function applyDeckLoaded(next: SceneState) {
+    applySceneState(next);
+    activeTab = "show";
+  }
+
+  function setError(msg: string) {
+    errorText = msg;
+  }
 
   async function attachEngine() {
     errorText = null;
@@ -410,7 +427,22 @@
 
     let consecutiveErrors = 0;
     let telemetryInFlight = false;
+    let loopTicks = 0;
     const timer = setInterval(async () => {
+      if (autoLoopActive && scene && scene.deck.length > 1) {
+        loopTicks += 1;
+        if (loopTicks >= Math.max(1, Number(autoLoopSecs))) {
+          loopTicks = 0;
+          const curIdx = scene.active_slide
+            ? scene.deck.findIndex((s) => s.id === scene.active_slide?.id)
+            : -1;
+          const nextIdx = (curIdx + 1) % scene.deck.length;
+          const target = scene.deck[nextIdx];
+          if (target) void triggerSlide(target.id);
+        }
+      } else {
+        loopTicks = 0;
+      }
       if (!snapshot || telemetryInFlight) return;
       telemetryInFlight = true;
       try {
@@ -450,6 +482,9 @@
         </button>
         <button class="tab" class:active={activeTab === "lyrics"} onclick={() => (activeTab = "lyrics")}>
           Quick Lyrics
+        </button>
+        <button class="tab" class:active={activeTab === "overlays"} onclick={() => (activeTab = "overlays")}>
+          Overlays & Msgs
         </button>
         <button class="tab" class:active={activeTab === "screens"} onclick={() => (activeTab = "screens")}>
           Screens
@@ -542,16 +577,7 @@
 
   <main class="workspace" class:no-library={!showLibraryDrawer}>
     {#if showLibraryDrawer}
-      <LibraryPlaylistDrawer
-        onDeckLoaded={(next) => {
-          errorText = null;
-          if (snapshot) snapshot = { ...snapshot, state: next };
-          activeTab = "show";
-        }}
-        onError={(msg) => {
-          errorText = msg;
-        }}
-      />
+      <LibraryPlaylistDrawer onDeckLoaded={applyDeckLoaded} onError={setError} />
     {/if}
 
     <section class="deck-pane">
@@ -564,42 +590,17 @@
           }}
         />
       {:else if activeTab === "scripture"}
-        <ScriptureDrawer
-          onDeckLoaded={(next) => {
-            errorText = null;
-            if (snapshot) snapshot = { ...snapshot, state: next };
-            activeTab = "show";
-          }}
-          onError={(msg) => {
-            errorText = msg;
-          }}
-        />
+        <ScriptureDrawer onDeckLoaded={applyDeckLoaded} onError={setError} />
       {:else if activeTab === "lyrics" && scene}
-        <QuickLyricsPanel
-          {scene}
-          onSceneChange={(next) => {
-            errorText = null;
-            if (snapshot) snapshot = { ...snapshot, state: next };
-          }}
-          onError={(msg) => {
-            errorText = msg;
-          }}
-        />
+        <QuickLyricsPanel {scene} onSceneChange={applySceneState} onError={setError} />
+      {:else if activeTab === "overlays" && scene}
+        <OverlaysMessagesPanel {scene} onSceneChange={applySceneState} onError={setError} />
       {:else if activeTab === "looks" && scene}
-        <LooksTemplatesPanel
-          {scene}
-          onSceneChange={(next) => {
-            errorText = null;
-            if (snapshot) snapshot = { ...snapshot, state: next };
-          }}
-          onError={(msg) => {
-            errorText = msg;
-          }}
-        />
+        <LooksTemplatesPanel {scene} onSceneChange={applySceneState} onError={setError} />
       {:else if activeTab === "broadcast"}
         <BroadcastPanel />
       {:else if activeTab === "ecosystem"}
-        <ShowControlPanel />
+        <ShowControlPanel onSceneChange={applySceneState} />
       {:else if activeTab === "diagnostics"}
         <DiagnosticsPanel />
       {:else if activeTab === "editor" && editableSlide}
@@ -630,6 +631,10 @@
               />
             </label>
             {#if scene}
+              <label>
+                <input type="checkbox" bind:checked={autoLoopActive} />
+                Loop ({autoLoopSecs}s)
+              </label>
               <label>
                 Media Fit:
                 <select
@@ -801,15 +806,7 @@
   {/if}
 
   {#if showMediaDrawer}
-    <MediaBinDrawer
-      onMediaTriggered={(next) => {
-        errorText = null;
-        if (snapshot) snapshot = { ...snapshot, state: next };
-      }}
-      onError={(msg) => {
-        errorText = msg;
-      }}
-    />
+    <MediaBinDrawer onMediaTriggered={applySceneState} onError={setError} />
   {/if}
 </div>
 

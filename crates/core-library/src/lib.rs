@@ -6,8 +6,9 @@
 
 use chrono::{DateTime, Utc};
 use core_scene::{
-    Arrangement, LOOK_AUDIENCE_FULL, LOOK_STAGE_CONFIDENCE, LookConfig, LookId, Slide, SlideId,
-    TemplateConfig, TemplateId, default_looks, default_templates,
+    Arrangement, LOOK_AUDIENCE_FULL, LOOK_STAGE_CONFIDENCE, LookConfig, LookId, MessageTemplate,
+    OverlayItem, Slide, SlideId, TemplateConfig, TemplateId, default_looks,
+    default_message_templates, default_overlays, default_templates,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -122,6 +123,26 @@ pub struct LookPresetRecord {
     pub id: String,
     pub name: String,
     pub assignments: BTreeMap<String, String>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Reusable automation Macro storing ordered command strings (e.g. `"clear:all"`, `"blackout:off"`, `"overlay:show:overlay-speaker-lt"`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MacroRecord {
+    pub id: String,
+    pub name: String,
+    pub steps: Vec<String>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Recurring wall-clock calendar schedule entry triggering a Macro at `trigger_hhmm` (24h `HH:MM`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScheduledEventRecord {
+    pub id: String,
+    pub name: String,
+    pub trigger_hhmm: String,
+    pub macro_id: String,
+    pub enabled: bool,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -265,6 +286,36 @@ impl LibraryStore {
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 assignments_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS overlays (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                config_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS message_templates (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                config_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS macros (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                steps_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS scheduled_events (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                trigger_hhmm TEXT NOT NULL,
+                macro_id TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
                 updated_at TEXT NOT NULL
             );
             "#,
@@ -1172,6 +1223,149 @@ impl LibraryStore {
         Ok(removed > 0)
     }
 
+    pub fn upsert_overlay(&self, ov: &OverlayItem) -> Result<(), LibraryError> {
+        let json = serde_json::to_string(ov)?;
+        self.conn.execute(
+            "INSERT INTO overlays (id, name, config_json, updated_at) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(id) DO UPDATE SET name = excluded.name, config_json = excluded.config_json, updated_at = excluded.updated_at",
+            params![ov.id, ov.name, json, Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_overlays(&self) -> Result<Vec<OverlayItem>, LibraryError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT config_json FROM overlays ORDER BY name COLLATE NOCASE ASC")?;
+        let mut out = Vec::new();
+        for r in stmt.query_map([], |row| row.get::<_, String>(0))? {
+            if let Ok(item) = serde_json::from_str::<OverlayItem>(&r?) {
+                out.push(item);
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn delete_overlay(&self, id: &str) -> Result<bool, LibraryError> {
+        let removed = self
+            .conn
+            .execute("DELETE FROM overlays WHERE id = ?1", params![id])?;
+        Ok(removed > 0)
+    }
+
+    pub fn upsert_message_template(&self, tpl: &MessageTemplate) -> Result<(), LibraryError> {
+        let json = serde_json::to_string(tpl)?;
+        self.conn.execute(
+            "INSERT INTO message_templates (id, name, config_json, updated_at) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(id) DO UPDATE SET name = excluded.name, config_json = excluded.config_json, updated_at = excluded.updated_at",
+            params![tpl.id, tpl.name, json, Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_message_templates(&self) -> Result<Vec<MessageTemplate>, LibraryError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT config_json FROM message_templates ORDER BY name COLLATE NOCASE ASC")?;
+        let mut out = Vec::new();
+        for r in stmt.query_map([], |row| row.get::<_, String>(0))? {
+            if let Ok(item) = serde_json::from_str::<MessageTemplate>(&r?) {
+                out.push(item);
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn delete_message_template(&self, id: &str) -> Result<bool, LibraryError> {
+        let removed = self
+            .conn
+            .execute("DELETE FROM message_templates WHERE id = ?1", params![id])?;
+        Ok(removed > 0)
+    }
+
+    pub fn upsert_macro(&self, rec: &MacroRecord) -> Result<(), LibraryError> {
+        let json = serde_json::to_string(&rec.steps)?;
+        self.conn.execute(
+            "INSERT INTO macros (id, name, steps_json, updated_at) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(id) DO UPDATE SET name = excluded.name, steps_json = excluded.steps_json, updated_at = excluded.updated_at",
+            params![rec.id, rec.name, json, rec.updated_at.to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_macros(&self) -> Result<Vec<MacroRecord>, LibraryError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, name, steps_json, updated_at FROM macros ORDER BY name COLLATE NOCASE ASC")?;
+        let rows = stmt.query_map([], |row| {
+            let steps_json: String = row.get(2)?;
+            let updated_str: String = row.get(3)?;
+            Ok(MacroRecord {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                steps: serde_json::from_str(&steps_json).unwrap_or_default(),
+                updated_at: DateTime::parse_from_rfc3339(&updated_str)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now()),
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    pub fn delete_macro(&self, id: &str) -> Result<bool, LibraryError> {
+        let removed = self
+            .conn
+            .execute("DELETE FROM macros WHERE id = ?1", params![id])?;
+        Ok(removed > 0)
+    }
+
+    pub fn upsert_scheduled_event(&self, ev: &ScheduledEventRecord) -> Result<(), LibraryError> {
+        self.conn.execute(
+            "INSERT INTO scheduled_events (id, name, trigger_hhmm, macro_id, enabled, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT(id) DO UPDATE SET name = excluded.name, trigger_hhmm = excluded.trigger_hhmm, macro_id = excluded.macro_id, enabled = excluded.enabled, updated_at = excluded.updated_at",
+            params![
+                ev.id,
+                ev.name,
+                ev.trigger_hhmm,
+                ev.macro_id,
+                i32::from(ev.enabled),
+                ev.updated_at.to_rfc3339()
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_scheduled_events(&self) -> Result<Vec<ScheduledEventRecord>, LibraryError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, trigger_hhmm, macro_id, enabled, updated_at FROM scheduled_events ORDER BY trigger_hhmm ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let updated_str: String = row.get(5)?;
+            Ok(ScheduledEventRecord {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                trigger_hhmm: row.get(2)?,
+                macro_id: row.get(3)?,
+                enabled: row.get::<_, i32>(4)? != 0,
+                updated_at: DateTime::parse_from_rfc3339(&updated_str)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now()),
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    pub fn delete_scheduled_event(&self, id: &str) -> Result<bool, LibraryError> {
+        let removed = self
+            .conn
+            .execute("DELETE FROM scheduled_events WHERE id = ?1", params![id])?;
+        Ok(removed > 0)
+    }
+
     /// Seeds default presentation libraries, media bins, starter media backgrounds,
     /// looks, templates, demo presentations, and a Sunday Morning Service playlist if empty.
     pub fn seed_demo_if_empty(&self) -> Result<(), LibraryError> {
@@ -1297,6 +1491,45 @@ impl LibraryStore {
                     size_bytes: 0,
                 })?;
             }
+        }
+
+        if self.list_overlays()?.is_empty() {
+            for ov in default_overlays() {
+                self.upsert_overlay(&ov)?;
+            }
+        }
+        if self.list_message_templates()?.is_empty() {
+            for mt in default_message_templates() {
+                self.upsert_message_template(&mt)?;
+            }
+        }
+        if self.list_macros()?.is_empty() {
+            self.upsert_macro(&MacroRecord {
+                id: "macro-worship-start".to_string(),
+                name: "Start Worship Service".to_string(),
+                steps: vec![
+                    "blackout:off".to_string(),
+                    "overlay:show:overlay-church-bug".to_string(),
+                    "mask:None".to_string(),
+                ],
+                updated_at: now,
+            })?;
+            self.upsert_macro(&MacroRecord {
+                id: "macro-clear-reset".to_string(),
+                name: "Clear All & Reset".to_string(),
+                steps: vec!["clear:all".to_string(), "blackout:off".to_string()],
+                updated_at: now,
+            })?;
+        }
+        if self.list_scheduled_events()?.is_empty() {
+            self.upsert_scheduled_event(&ScheduledEventRecord {
+                id: "sched-sunday-worship".to_string(),
+                name: "Sunday 10:00 AM Worship Start".to_string(),
+                trigger_hhmm: "10:00".to_string(),
+                macro_id: "macro-worship-start".to_string(),
+                enabled: false,
+                updated_at: now,
+            })?;
         }
 
         if self.list_bible_translations()?.is_empty() {
@@ -2030,5 +2263,42 @@ mod tests {
 
         let (empty_slides, _) = parse_quick_lyrics("Blank", "   ", 4, None);
         assert_eq!(empty_slides.len(), 1);
+
+        // Overlays, Message Templates, Macros, and Scheduled Events persistence CRUD
+        assert_eq!(store.list_overlays().expect("seeded overlays").len(), 2);
+        let mut ov = default_overlays()[0].clone();
+        ov.id = "ov-test".into();
+        store.upsert_overlay(&ov).expect("upsert ov");
+        assert!(store.delete_overlay("ov-test").expect("del ov"));
+
+        assert_eq!(store.list_message_templates().expect("seeded msgs").len(), 2);
+        let mut mt = default_message_templates()[0].clone();
+        mt.id = "mt-test".into();
+        store.upsert_message_template(&mt).expect("upsert mt");
+        assert!(store.delete_message_template("mt-test").expect("del mt"));
+
+        assert_eq!(store.list_macros().expect("seeded macros").len(), 2);
+        store
+            .upsert_macro(&MacroRecord {
+                id: "m-test".into(),
+                name: "Test Macro".into(),
+                steps: vec!["blackout:on".into()],
+                updated_at: Utc::now(),
+            })
+            .expect("upsert macro");
+        assert!(store.delete_macro("m-test").expect("del macro"));
+
+        assert_eq!(store.list_scheduled_events().expect("seeded sched").len(), 1);
+        store
+            .upsert_scheduled_event(&ScheduledEventRecord {
+                id: "ev-test".into(),
+                name: "Midweek".into(),
+                trigger_hhmm: "19:00".into(),
+                macro_id: "macro-worship-start".into(),
+                enabled: true,
+                updated_at: Utc::now(),
+            })
+            .expect("upsert sched");
+        assert!(store.delete_scheduled_event("ev-test").expect("del sched"));
     }
 }

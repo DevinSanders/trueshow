@@ -101,6 +101,49 @@ export interface ForegroundMedia {
   target_layer: LayerKind;
 }
 
+export interface OverlayItem {
+  id: string;
+  name: string;
+  text: string;
+  bounds: RectF;
+  style: TextStyle;
+  accent_color?: ColorRgba | null;
+  locked: boolean;
+  auto_clear_secs?: number | null;
+}
+
+export interface MessageTemplate {
+  id: string;
+  name: string;
+  template_text: string;
+  show_on_audience: boolean;
+  show_on_stage: boolean;
+  auto_clear_secs?: number | null;
+}
+
+export interface ActiveMessage {
+  template_id: string | null;
+  rendered_text: string;
+  show_on_audience: boolean;
+  show_on_stage: boolean;
+}
+
+export interface MacroRecord {
+  id: string;
+  name: string;
+  steps: string[];
+  updated_at: string;
+}
+
+export interface ScheduledEventRecord {
+  id: string;
+  name: string;
+  trigger_hhmm: string;
+  macro_id: string;
+  enabled: boolean;
+  updated_at: string;
+}
+
 export interface Slide {
   id: string;
   label: string;
@@ -111,6 +154,8 @@ export interface Slide {
   ccli_number: string | null;
   media_path: string | null;
   media_cue?: SlideMediaCue | null;
+  auto_advance_secs?: number | null;
+  loop_to_first?: boolean;
   primary_color: ColorRgba;
   secondary_color: ColorRgba;
   accent_color: ColorRgba;
@@ -231,6 +276,10 @@ export interface SceneState {
   timer_readout: string | null;
   looks: Record<string, LookConfig>;
   templates?: Record<string, TemplateConfig>;
+  overlays?: Record<string, OverlayItem>;
+  active_overlay_ids?: string[];
+  active_message?: ActiveMessage | null;
+  variables?: Record<string, string>;
   outputs: OutputConfig[];
   deck: Slide[];
   master_deck?: Slide[];

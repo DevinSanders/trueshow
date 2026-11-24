@@ -13,17 +13,18 @@ use core_ipc::{
     ShmPreviewReader, default_socket_name, read_frame, to_local_socket_name, write_frame,
 };
 use core_library::{
-    BibleVerseRecord, DEFAULT_LIBRARY_ID, LibraryStore, LookPresetRecord, MediaAssetRecord,
-    MediaBinRecord, PlaylistRecord, PresentationLibraryRecord, SongRecord, build_scripture_slides,
-    infer_media_kind, parse_quick_lyrics, slide_from_text,
+    BibleVerseRecord, DEFAULT_LIBRARY_ID, LibraryStore, LookPresetRecord, MacroRecord,
+    MediaAssetRecord, MediaBinRecord, PlaylistRecord, PresentationLibraryRecord,
+    ScheduledEventRecord, SongRecord, build_scripture_slides, infer_media_kind, parse_quick_lyrics,
+    slide_from_text,
 };
 use core_scene::{
-    ActiveBackground, Arrangement, AudioPlaybackState, ColorRgba, ForegroundMedia,
+    ActiveBackground, ActiveMessage, Arrangement, AudioPlaybackState, ColorRgba, ForegroundMedia,
     LOOK_AUDIENCE_FULL, LOOK_STAGE_CONFIDENCE, LayerKind, LookConfig, LookId, MaskStyle,
-    MediaCueRole, MediaTransportState, MonitorRegion, OutputConfig, OutputId, OutputKind,
-    OutputPlacement, SceneDiff, SceneState, ShaderMotionStyle, Slide, SlideElement, SlideId,
-    SlideMediaCue, StageLayoutConfig, TemplateConfig, TemplateId, TransitionSpec,
-    split_monitor_regions,
+    MediaCueRole, MediaTransportState, MessageTemplate, MonitorRegion, OutputConfig, OutputId,
+    OutputKind, OutputPlacement, OverlayItem, SceneDiff, SceneState, ShaderMotionStyle, Slide,
+    SlideAction, SlideElement, SlideId, SlideMediaCue, StageLayoutConfig, TemplateConfig,
+    TemplateId, TransitionSpec, render_message_template, split_monitor_regions,
 };
 use interprocess::local_socket::tokio::{Stream, prelude::*};
 use std::collections::{BTreeMap, HashMap};
@@ -234,21 +235,28 @@ async fn connect_engine(
     };
     match event {
         EngineEvent::Snapshot(mut snap) => {
-            // Hydrate persisted SQLite custom Looks & Templates into the engine on attach.
+            // Hydrate persisted SQLite custom Looks, Templates & Overlays into the engine on attach.
             let persisted = bridge.library.lock().ok().and_then(|lib| {
                 let looks = lib.list_looks().ok()?;
                 let templates = lib.list_templates().ok()?;
-                Some((looks, templates))
+                let overlays = lib.list_overlays().ok().unwrap_or_default();
+                Some((looks, templates, overlays))
             });
-            if let Some((looks, templates)) = persisted
-                && (!looks.is_empty() || !templates.is_empty())
-                && let Ok(updated) = apply_scene_diff(
-                    &bridge,
-                    SceneDiff::SyncLooksAndTemplates { looks, templates },
-                )
-                .await
-            {
-                snap.state = updated;
+            if let Some((looks, templates, overlays)) = persisted {
+                if (!looks.is_empty() || !templates.is_empty())
+                    && let Ok(updated) = apply_scene_diff(
+                        &bridge,
+                        SceneDiff::SyncLooksAndTemplates { looks, templates },
+                    )
+                    .await
+                {
+                    snap.state = updated;
+                }
+                if !overlays.is_empty()
+                    && let Ok(updated) = apply_scene_diff(&bridge, SceneDiff::SyncOverlays(overlays)).await
+                {
+                    snap.state = updated;
+                }
             }
             if let Ok(mut gpu) = bridge.last_gpu_summary.lock() {
                 *gpu = Some(format!(
@@ -1545,6 +1553,436 @@ struct TimerStatusDto {
 }
 
 #[tauri::command]
+fn list_timers(bridge: State<'_, Arc<EngineBridgeState>>) -> Result<Vec<TimerStatusDto>, String> {
+    let timers = bridge.timers.lock().map_err(|e| e.to_string())?;
+    Ok(timers
+        .list()
+        .into_iter()
+        .map(|t| TimerStatusDto {
+            id: t.id.0.to_string(),
+            name: t.name,
+            formatted: t.formatted,
+            running: t.running,
+            overrun: t.overrun,
+        })
+        .collect())
+}
+
+#[tauri::command]
+async fn control_timer(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    timer_id: String,
+    action: String,
+) -> Result<Vec<TimerStatusDto>, String> {
+    let tid = show_control::TimerId(Uuid::parse_str(&timer_id).map_err(|e| e.to_string())?);
+    let (list, push_text) = {
+        let mut timers = bridge.timers.lock().map_err(|e| e.to_string())?;
+        match action.as_str() {
+            "start" => {
+                let _ = timers.start(tid);
+            }
+            "pause" => {
+                let _ = timers.pause(tid);
+            }
+            "reset" => {
+                let _ = timers.reset(tid);
+            }
+            "add_minute" => {
+                let _ = timers.add_seconds(tid, 60);
+            }
+            _ => {}
+        }
+        let pushed = timers.get(tid).map(|t| t.formatted);
+        let all = timers
+            .list()
+            .into_iter()
+            .map(|t| TimerStatusDto {
+                id: t.id.0.to_string(),
+                name: t.name,
+                formatted: t.formatted,
+                running: t.running,
+                overrun: t.overrun,
+            })
+            .collect::<Vec<_>>();
+        (all, pushed)
+    };
+    if let Some(txt) = push_text {
+        let _ = apply_scene_diff(&bridge, SceneDiff::SetTimerReadout(Some(txt))).await;
+    }
+    Ok(list)
+}
+
+#[tauri::command]
+async fn tick_timers(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    elapsed_ms: u64,
+) -> Result<Vec<TimerStatusDto>, String> {
+    let (list, running_readout) = {
+        let mut timers = bridge.timers.lock().map_err(|e| e.to_string())?;
+        timers.tick_ms(elapsed_ms.min(10_000));
+        let all = timers.list();
+        let active_fmt = all.iter().find(|t| t.running).map(|t| t.formatted.clone());
+        let dtos = all
+            .into_iter()
+            .map(|t| TimerStatusDto {
+                id: t.id.0.to_string(),
+                name: t.name,
+                formatted: t.formatted,
+                running: t.running,
+                overrun: t.overrun,
+            })
+            .collect::<Vec<_>>();
+        (dtos, active_fmt)
+    };
+    if let Some(fmt) = running_readout {
+        let _ = apply_scene_diff(&bridge, SceneDiff::SetTimerReadout(Some(fmt))).await;
+    }
+    Ok(list)
+}
+
+#[tauri::command]
+fn list_overlays(bridge: State<'_, Arc<EngineBridgeState>>) -> Result<Vec<OverlayItem>, String> {
+    let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    lib.list_overlays().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn upsert_overlay(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    overlay: OverlayItem,
+) -> Result<SceneState, String> {
+    let state = apply_scene_diff(&bridge, SceneDiff::UpsertOverlay(overlay.clone())).await?;
+    let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    lib.upsert_overlay(&overlay).map_err(|e| e.to_string())?;
+    Ok(state)
+}
+
+#[tauri::command]
+async fn delete_overlay(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    overlay_id: String,
+) -> Result<SceneState, String> {
+    let state = apply_scene_diff(&bridge, SceneDiff::RemoveOverlay(overlay_id.clone())).await?;
+    let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    let _ = lib.delete_overlay(&overlay_id).map_err(|e| e.to_string())?;
+    Ok(state)
+}
+
+#[tauri::command]
+async fn toggle_overlay_item(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    overlay_id: String,
+    active: bool,
+) -> Result<SceneState, String> {
+    apply_scene_diff(
+        &bridge,
+        SceneDiff::ToggleOverlayItem {
+            id: overlay_id,
+            active,
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+fn list_message_templates(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+) -> Result<Vec<MessageTemplate>, String> {
+    let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    lib.list_message_templates().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn upsert_message_template(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    template: MessageTemplate,
+) -> Result<Vec<MessageTemplate>, String> {
+    if template.name.trim().is_empty() || template.template_text.trim().is_empty() {
+        return Err("Message template name and text cannot be empty".to_string());
+    }
+    let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    lib.upsert_message_template(&template)
+        .map_err(|e| e.to_string())?;
+    lib.list_message_templates().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_message_template(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    template_id: String,
+) -> Result<Vec<MessageTemplate>, String> {
+    let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    let _ = lib
+        .delete_message_template(&template_id)
+        .map_err(|e| e.to_string())?;
+    lib.list_message_templates().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn trigger_message(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    template_id: Option<String>,
+    template_text: String,
+    tokens: BTreeMap<String, String>,
+    show_on_audience: bool,
+    show_on_stage: bool,
+) -> Result<SceneState, String> {
+    let rendered = render_message_template(&template_text, &tokens);
+    if rendered.trim().is_empty() {
+        return Err("Message text cannot be empty".to_string());
+    }
+    apply_scene_diff(
+        &bridge,
+        SceneDiff::SetActiveMessage(Some(ActiveMessage {
+            template_id,
+            rendered_text: rendered,
+            show_on_audience,
+            show_on_stage,
+        })),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn clear_message(bridge: State<'_, Arc<EngineBridgeState>>) -> Result<SceneState, String> {
+    apply_scene_diff(&bridge, SceneDiff::SetActiveMessage(None)).await
+}
+
+#[tauri::command]
+async fn set_variable(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    key: String,
+    value: Option<String>,
+) -> Result<SceneState, String> {
+    apply_scene_diff(&bridge, SceneDiff::SetVariable { key, value }).await
+}
+
+#[tauri::command]
+async fn set_slide_automation(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    slide_id: String,
+    auto_advance_secs: Option<f32>,
+    loop_to_first: bool,
+    actions: Vec<SlideAction>,
+) -> Result<SceneState, String> {
+    let sid = SlideId(Uuid::parse_str(&slide_id).map_err(|e| e.to_string())?);
+    apply_scene_diff(
+        &bridge,
+        SceneDiff::SetSlideAutomation {
+            slide_id: sid,
+            auto_advance_secs,
+            loop_to_first,
+            actions,
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+fn list_macros(bridge: State<'_, Arc<EngineBridgeState>>) -> Result<Vec<MacroRecord>, String> {
+    let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    lib.list_macros().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn save_macro(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    id: Option<String>,
+    name: String,
+    steps: Vec<String>,
+) -> Result<Vec<MacroRecord>, String> {
+    if name.trim().is_empty() || steps.is_empty() {
+        return Err("Macro name and at least one step are required".to_string());
+    }
+    let rec = MacroRecord {
+        id: id
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| Uuid::new_v4().to_string()),
+        name: name.trim().to_string(),
+        steps,
+        updated_at: chrono::Utc::now(),
+    };
+    let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    lib.upsert_macro(&rec).map_err(|e| e.to_string())?;
+    lib.list_macros().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_macro(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    macro_id: String,
+) -> Result<Vec<MacroRecord>, String> {
+    let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    let _ = lib.delete_macro(&macro_id).map_err(|e| e.to_string())?;
+    lib.list_macros().map_err(|e| e.to_string())
+}
+
+async fn execute_macro_step(
+    bridge: &EngineBridgeState,
+    step: &str,
+) -> Result<Option<SceneState>, String> {
+    let trimmed = step.trim();
+    if trimmed.eq_ignore_ascii_case("clear:all") {
+        return Ok(Some(apply_scene_diff(bridge, SceneDiff::ClearAll).await?));
+    }
+    if trimmed.eq_ignore_ascii_case("clear:slide") {
+        return Ok(Some(
+            apply_scene_diff(bridge, SceneDiff::ClearLayer(LayerKind::Slide)).await?,
+        ));
+    }
+    if trimmed.eq_ignore_ascii_case("blackout:on") {
+        return Ok(Some(apply_scene_diff(bridge, SceneDiff::SetBlackout(true)).await?));
+    }
+    if trimmed.eq_ignore_ascii_case("blackout:off") {
+        return Ok(Some(apply_scene_diff(bridge, SceneDiff::SetBlackout(false)).await?));
+    }
+    if let Some(ov_id) = trimmed.strip_prefix("overlay:show:") {
+        return Ok(Some(
+            apply_scene_diff(
+                bridge,
+                SceneDiff::ToggleOverlayItem {
+                    id: ov_id.trim().to_string(),
+                    active: true,
+                },
+            )
+            .await?,
+        ));
+    }
+    if let Some(ov_id) = trimmed.strip_prefix("overlay:hide:") {
+        return Ok(Some(
+            apply_scene_diff(
+                bridge,
+                SceneDiff::ToggleOverlayItem {
+                    id: ov_id.trim().to_string(),
+                    active: false,
+                },
+            )
+            .await?,
+        ));
+    }
+    if let Some(mask_name) = trimmed.strip_prefix("mask:") {
+        let mask = match mask_name.trim() {
+            "SoftVignette" => MaskStyle::SoftVignette,
+            "RoundedFrame" => MaskStyle::RoundedFrame,
+            "LowerThirdBand" => MaskStyle::LowerThirdBand,
+            _ => MaskStyle::None,
+        };
+        return Ok(Some(apply_scene_diff(bridge, SceneDiff::SetMask(mask)).await?));
+    }
+    if let Some(rest) = trimmed.strip_prefix("var:")
+        && let Some((k, v)) = rest.split_once('=')
+    {
+        return Ok(Some(
+            apply_scene_diff(
+                bridge,
+                SceneDiff::SetVariable {
+                    key: k.trim().to_string(),
+                    value: Some(v.trim().to_string()),
+                },
+            )
+            .await?,
+        ));
+    }
+    Ok(None)
+}
+
+#[tauri::command]
+async fn run_macro(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    macro_id: String,
+) -> Result<Option<SceneState>, String> {
+    let steps = {
+        let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+        lib.list_macros()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|m| m.id == macro_id)
+            .ok_or_else(|| format!("Macro '{macro_id}' not found"))?
+            .steps
+    };
+    let mut last_state = None;
+    for step in &steps {
+        if let Ok(Some(st)) = execute_macro_step(&bridge, step).await {
+            last_state = Some(st);
+        }
+    }
+    Ok(last_state)
+}
+
+#[tauri::command]
+fn list_scheduled_events(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+) -> Result<Vec<ScheduledEventRecord>, String> {
+    let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    lib.list_scheduled_events().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn save_scheduled_event(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    id: Option<String>,
+    name: String,
+    trigger_hhmm: String,
+    macro_id: String,
+    enabled: bool,
+) -> Result<Vec<ScheduledEventRecord>, String> {
+    if name.trim().is_empty() || trigger_hhmm.trim().len() != 5 {
+        return Err("Provide event name and HH:MM trigger time".to_string());
+    }
+    let rec = ScheduledEventRecord {
+        id: id
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| Uuid::new_v4().to_string()),
+        name: name.trim().to_string(),
+        trigger_hhmm: trigger_hhmm.trim().to_string(),
+        macro_id,
+        enabled,
+        updated_at: chrono::Utc::now(),
+    };
+    let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    lib.upsert_scheduled_event(&rec).map_err(|e| e.to_string())?;
+    lib.list_scheduled_events().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_scheduled_event(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    event_id: String,
+) -> Result<Vec<ScheduledEventRecord>, String> {
+    let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    let _ = lib
+        .delete_scheduled_event(&event_id)
+        .map_err(|e| e.to_string())?;
+    lib.list_scheduled_events().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn dispatch_control_command(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    protocol: String,
+    command: String,
+) -> Result<String, String> {
+    let trimmed = command.trim();
+    match protocol.as_str() {
+        "companion" => {
+            let parsed = show_control::parse_satellite_line(trimmed).map_err(|e| e.to_string())?;
+            Ok(format!("Companion Satellite parsed: {parsed:?}"))
+        }
+        "osc" => {
+            let evt = show_control::osc::parse_osc_text_command(trimmed).map_err(|e| e.to_string())?;
+            if let show_control::osc::OscControlEvent::Scene(diff) = evt.clone() {
+                let _ = apply_scene_diff(&bridge, *diff).await?;
+            }
+            Ok(format!("OSC executed: {evt:?}"))
+        }
+        _ => {
+            let _ = execute_macro_step(&bridge, trimmed).await?;
+            Ok(format!("Executed control step: {trimmed}"))
+        }
+    }
+}
+
+#[tauri::command]
 fn create_countdown_timer(
     bridge: State<'_, Arc<EngineBridgeState>>,
     name: String,
@@ -2008,6 +2446,28 @@ pub fn run() {
             toggle_video_input,
             get_broadcast_capabilities,
             create_countdown_timer,
+            list_timers,
+            control_timer,
+            tick_timers,
+            list_overlays,
+            upsert_overlay,
+            delete_overlay,
+            toggle_overlay_item,
+            list_message_templates,
+            upsert_message_template,
+            delete_message_template,
+            trigger_message,
+            clear_message,
+            set_variable,
+            set_slide_automation,
+            list_macros,
+            save_macro,
+            delete_macro,
+            run_macro,
+            list_scheduled_events,
+            save_scheduled_event,
+            delete_scheduled_event,
+            dispatch_control_command,
             import_worship_document,
             export_ccli_csv_report,
             list_plugin_tiers,

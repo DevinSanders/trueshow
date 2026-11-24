@@ -437,6 +437,9 @@ describe("OpenPresenter Operator Control Surface UI (Happy & Failure Paths)", ()
     await fireEvent.click(screen.getByText("Quick Lyrics"));
     await waitFor(() => expect(screen.getByTestId("quick-lyrics-panel")).toBeTruthy());
 
+    await fireEvent.click(screen.getByText("Overlays & Msgs"));
+    await waitFor(() => expect(screen.getByTestId("overlays-messages-panel")).toBeTruthy());
+
     await fireEvent.click(screen.getByText("Freeze"));
     await fireEvent.click(screen.getByText("Undo"));
     await fireEvent.click(screen.getByText("Redo"));

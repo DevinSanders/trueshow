@@ -620,7 +620,7 @@ impl CompositorApp {
                 .unwrap_or(true)
         });
 
-        let raster = if out.config_meta.kind == OutputKind::Stage {
+        let mut raster = if out.config_meta.kind == OutputKind::Stage {
             let layout = out
                 .config_meta
                 .stage_layout
@@ -689,8 +689,14 @@ impl CompositorApp {
                     .rasterize_slide(&fg_slide, LAYER_TEX_WIDTH, LAYER_TEX_HEIGHT, lower_third)
             }
         } else if let Some(slide) = snap.state.active_slide.as_ref() {
-            self.rasterizer.rasterize_slide_with_template(
+            let expanded = BroadcastRasterizer::expand_slide_tokens(
                 slide,
+                &snap.state.variables,
+                snap.state.timer_readout.as_deref(),
+                "LIVE",
+            );
+            self.rasterizer.rasterize_slide_with_template(
+                &expanded,
                 LAYER_TEX_WIDTH,
                 LAYER_TEX_HEIGHT,
                 lower_third,
@@ -704,6 +710,34 @@ impl CompositorApp {
                 rgba_premul: vec![0u8; (LAYER_TEX_WIDTH * LAYER_TEX_HEIGHT * 4) as usize],
             }
         };
+
+        if out.config_meta.kind == OutputKind::Audience {
+            let active_overlays: Vec<&core_scene::OverlayItem> = if snap.state.overlay_layer_active
+                && look.is_none_or(|l| l.is_layer_enabled(LayerKind::PropsAndOverlays))
+            {
+                snap.state
+                    .active_overlay_ids
+                    .iter()
+                    .filter_map(|id| snap.state.overlays.get(id))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let aud_msg = snap.state.active_message.as_ref().filter(|m| {
+                m.show_on_audience
+                    && look.is_none_or(|l| l.is_layer_enabled(LayerKind::MessagesAndTimers))
+            });
+            self.rasterizer.composite_overlays_and_message(
+                &mut raster.rgba_premul,
+                LAYER_TEX_WIDTH,
+                LAYER_TEX_HEIGHT,
+                &active_overlays,
+                aud_msg,
+                &snap.state.variables,
+                snap.state.timer_readout.as_deref(),
+                "LIVE",
+            );
+        }
 
         gpu.queue.write_texture(
             wgpu::TexelCopyTextureInfo {

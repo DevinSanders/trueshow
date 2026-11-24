@@ -21,6 +21,37 @@ pub enum OscControlEvent {
     RunMacro(Uuid),
 }
 
+/// Parses a text-line OSC command such as `"/openpresenter/blackout 1"` or `"/openpresenter/layer/clear slide"`,
+/// round-trips it through `rosc` wire encoding + [`decode_osc_packet`], and returns the decoded event.
+pub fn parse_osc_text_command(line: &str) -> Result<OscControlEvent, OscError> {
+    let mut parts = line.trim().splitn(2, char::is_whitespace);
+    let addr = parts.next().unwrap_or_default();
+    if addr.is_empty() {
+        return Err(OscError::UnknownAddress(String::new()));
+    }
+    let args = match parts.next().map(str::trim).filter(|s| !s.is_empty()) {
+        Some("true") => vec![OscType::Bool(true)],
+        Some("false") => vec![OscType::Bool(false)],
+        Some(raw) => {
+            if let Ok(n) = raw.parse::<i32>() {
+                vec![OscType::Int(n)]
+            } else {
+                vec![OscType::String(raw.to_string())]
+            }
+        }
+        None => Vec::new(),
+    };
+    let pkt = OscPacket::Message(OscMessage {
+        addr: addr.to_string(),
+        args,
+    });
+    let bytes = rosc::encoder::encode(&pkt).map_err(|e| OscError::MalformedPacket(e.to_string()))?;
+    decode_osc_packet(&bytes)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| OscError::MalformedPacket("empty OSC packet".to_string()))
+}
+
 /// Decodes raw UDP OSC bytes into OpenPresenter show-control events.
 pub fn decode_osc_packet(bytes: &[u8]) -> Result<Vec<OscControlEvent>, OscError> {
     let (_, packet) = rosc::decoder::decode_udp(bytes)
@@ -205,5 +236,20 @@ mod tests {
             decode_osc_packet(&bad_layer),
             Err(OscError::InvalidArgument(_))
         ));
+
+        // Text-command parser happy & error paths
+        assert_eq!(
+            parse_osc_text_command("/openpresenter/blackout 1").expect("blackout 1"),
+            OscControlEvent::Scene(Box::new(SceneDiff::SetBlackout(true)))
+        );
+        assert_eq!(
+            parse_osc_text_command("/openpresenter/blackout false").expect("blackout false"),
+            OscControlEvent::Scene(Box::new(SceneDiff::SetBlackout(false)))
+        );
+        assert_eq!(
+            parse_osc_text_command("/openpresenter/layer/clear slide").expect("clear slide"),
+            OscControlEvent::Scene(Box::new(SceneDiff::ClearLayer(LayerKind::Slide)))
+        );
+        assert!(parse_osc_text_command("   ").is_err());
     }
 }

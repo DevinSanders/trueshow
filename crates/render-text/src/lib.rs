@@ -8,12 +8,13 @@
 //! content hash so the `wgpu` compositor runs 60 fps transitions and scaling at 0% CPU.
 
 use core_scene::{
-    ColorRgba, MediaFitMode, RectF, Slide, SlideElement, SlideElementKind, StageLayoutConfig,
-    TemplateConfig, TextAlign, TextStyle, VIRTUAL_CANVAS_HEIGHT, VIRTUAL_CANVAS_WIDTH,
-    VerticalAlign, apply_template_to_slide_mut,
+    ActiveMessage, ColorRgba, MediaFitMode, OverlayItem, RectF, Slide, SlideElement,
+    SlideElementKind, StageLayoutConfig, TemplateConfig, TextAlign, TextStyle,
+    VIRTUAL_CANVAS_HEIGHT, VIRTUAL_CANVAS_WIDTH, VerticalAlign, apply_template_to_slide_mut,
+    resolve_dynamic_tokens,
 };
 use cosmic_text::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Style, SwashCache, Weight};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, Stroke, Transform};
 
 /// Tightly packed premultiplied RGBA8 raster output ready for `wgpu::Queue::write_texture`.
@@ -105,6 +106,101 @@ impl BroadcastRasterizer {
 
     pub fn cached_count(&self) -> usize {
         self.cache.len()
+    }
+
+    /// Expands live dynamic tokens (`{{var:Name}}`, `{{timer}}`, `{{clock}}`, `{{ccli}}`) across
+    /// all text boxes in a slide without mutating the original deck slide.
+    pub fn expand_slide_tokens(
+        slide: &Slide,
+        vars: &BTreeMap<String, String>,
+        timer: Option<&str>,
+        clock_str: &str,
+    ) -> Slide {
+        let mut out = slide.clone();
+        let ccli = slide.ccli_number.as_deref();
+        out.headline = resolve_dynamic_tokens(&out.headline, vars, timer, ccli, clock_str);
+        out.body = resolve_dynamic_tokens(&out.body, vars, timer, ccli, clock_str);
+        for el in &mut out.elements {
+            if let SlideElementKind::TextBox { ref mut text, .. } = el.kind {
+                *text = resolve_dynamic_tokens(text, vars, timer, ccli, clock_str);
+            }
+        }
+        out
+    }
+
+    /// Blits active Layer 4 [`OverlayItem`]s and an optional Layer 6 Audience [`ActiveMessage`]
+    /// banner directly onto an existing premultiplied RGBA8 layer buffer.
+    #[allow(clippy::too_many_arguments)]
+    pub fn composite_overlays_and_message(
+        &mut self,
+        rgba_premul: &mut [u8],
+        width: u32,
+        height: u32,
+        overlays: &[&OverlayItem],
+        audience_message: Option<&ActiveMessage>,
+        vars: &BTreeMap<String, String>,
+        timer: Option<&str>,
+        clock_str: &str,
+    ) {
+        if overlays.is_empty() && audience_message.is_none() {
+            return;
+        }
+        let Some(mut pixmap) = Pixmap::new(width.max(16), height.max(16)) else {
+            return;
+        };
+        if pixmap.data().len() == rgba_premul.len() {
+            pixmap.data_mut().copy_from_slice(rgba_premul);
+        }
+        let scale_x = width as f32 / VIRTUAL_CANVAS_WIDTH;
+        let scale_y = height as f32 / VIRTUAL_CANVAS_HEIGHT;
+
+        for ov in overlays {
+            if let Some(accent) = ov.accent_color {
+                Self::draw_rounded_rect(
+                    &mut pixmap,
+                    ov.bounds.x * scale_x,
+                    ov.bounds.y * scale_y,
+                    (12.0 * scale_x).max(3.0),
+                    ov.bounds.height * scale_y,
+                    4.0 * scale_x.min(scale_y),
+                    accent,
+                    None,
+                );
+            }
+            let txt = resolve_dynamic_tokens(&ov.text, vars, timer, None, clock_str);
+            self.render_text_box(&mut pixmap, ov.bounds, &txt, &ov.style, 1.0, scale_x, scale_y);
+        }
+
+        if let Some(msg) = audience_message
+            && msg.show_on_audience
+            && !msg.rendered_text.trim().is_empty()
+        {
+            let msg_style = TextStyle {
+                font_size: 42.0,
+                bold: true,
+                color: ColorRgba::WHITE,
+                backdrop_color: ColorRgba::rgba(0.76, 0.14, 0.16, 0.94),
+                backdrop_radius: 14.0,
+                backdrop_padding: 18.0,
+                stroke_width: 0.0,
+                h_align: TextAlign::Center,
+                v_align: VerticalAlign::Middle,
+                ..TextStyle::default()
+            };
+            self.render_text_box(
+                &mut pixmap,
+                RectF::new(140.0, 28.0, 1640.0, 96.0),
+                &msg.rendered_text,
+                &msg_style,
+                1.0,
+                scale_x,
+                scale_y,
+            );
+        }
+
+        if pixmap.data().len() == rgba_premul.len() {
+            rgba_premul.copy_from_slice(pixmap.data());
+        }
     }
 
     fn insert_cache(&mut self, key: [u8; 32], layer: RasterizedLayer) {
@@ -1126,5 +1222,39 @@ mod tests {
         assert!(decode_local_image_premul_rgba(&bad_path, 16, 16, MediaFitMode::Fill).is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn expands_dynamic_tokens_and_composites_overlays_and_audience_message() {
+        let mut r = BroadcastRasterizer::new(8);
+        let mut slide = demo_deck()[0].clone();
+        if let SlideElementKind::TextBox { ref mut text, .. } = slide.elements[0].kind {
+            *text = "Welcome {{var:Church}} · {{timer}} · {{clock}}".into();
+        }
+        let vars = BTreeMap::from([("Church".into(), "Grace".into())]);
+        let expanded = BroadcastRasterizer::expand_slide_tokens(&slide, &vars, Some("03:00"), "10:00");
+        assert!(expanded.plain_text().contains("Grace"));
+        assert!(expanded.plain_text().contains("03:00"));
+
+        let mut layer = r.rasterize_slide(&expanded, 320, 180, false);
+        let ovs = core_scene::default_overlays();
+        let ov_refs: Vec<&OverlayItem> = ovs.iter().collect();
+        let msg = ActiveMessage {
+            template_id: Some("msg-nursery".into()),
+            rendered_text: "Parent #12 Nursery".into(),
+            show_on_audience: true,
+            show_on_stage: true,
+        };
+        r.composite_overlays_and_message(
+            &mut layer.rgba_premul,
+            320,
+            180,
+            &ov_refs,
+            Some(&msg),
+            &vars,
+            Some("03:00"),
+            "10:00",
+        );
+        assert!(layer.rgba_premul.iter().any(|&b| b > 0));
     }
 }

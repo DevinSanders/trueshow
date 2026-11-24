@@ -480,6 +480,154 @@ pub struct ForegroundMedia {
     pub target_layer: LayerKind,
 }
 
+/// Reusable Layer 4 Prop / Overlay item (e.g., speaker nameplate, church logo pill, Give Online bug).
+/// Multiple overlays can be active simultaneously; `locked` overlays survive `ClearAll`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OverlayItem {
+    pub id: String,
+    pub name: String,
+    pub text: String,
+    pub bounds: RectF,
+    pub style: TextStyle,
+    #[serde(default)]
+    pub accent_color: Option<ColorRgba>,
+    #[serde(default)]
+    pub locked: bool,
+    #[serde(default)]
+    pub auto_clear_secs: Option<u32>,
+}
+
+/// Reusable Layer 6 tokenized Message template (e.g., `"Parent #{code}, please check Nursery {room}"`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageTemplate {
+    pub id: String,
+    pub name: String,
+    pub template_text: String,
+    pub show_on_audience: bool,
+    pub show_on_stage: bool,
+    #[serde(default)]
+    pub auto_clear_secs: Option<u32>,
+}
+
+/// Live rendered Layer 6 Message displayed on Audience and/or Stage outputs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActiveMessage {
+    pub template_id: Option<String>,
+    pub rendered_text: String,
+    pub show_on_audience: bool,
+    pub show_on_stage: bool,
+}
+
+/// Automated action attached to an individual slide and fired automatically when the slide goes live.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SlideAction {
+    SetOutputLook { output_id: OutputId, look_id: LookId },
+    ShowOverlay(String),
+    HideOverlay(String),
+    SetVariable { key: String, value: String },
+    SetMask(MaskStyle),
+}
+
+/// Replaces `{token}` placeholders inside a [`MessageTemplate`] with operator-supplied values.
+pub fn render_message_template(template: &str, tokens: &BTreeMap<String, String>) -> String {
+    let mut out = template.to_string();
+    for (k, v) in tokens {
+        let placeholder = format!("{{{k}}}");
+        out = out.replace(&placeholder, v);
+    }
+    out
+}
+
+/// Expands live dynamic tokens (`{{var:Name}}`, `{{timer}}`, `{{clock}}`, `{{ccli}}`) inside slide text.
+pub fn resolve_dynamic_tokens(
+    text: &str,
+    vars: &BTreeMap<String, String>,
+    timer: Option<&str>,
+    ccli: Option<&str>,
+    clock_str: &str,
+) -> String {
+    if !text.contains("{{") {
+        return text.to_string();
+    }
+    let mut out = text
+        .replace("{{timer}}", timer.unwrap_or("00:00"))
+        .replace("{{clock}}", clock_str)
+        .replace("{{ccli}}", ccli.unwrap_or(""));
+    for (k, v) in vars {
+        let pat = format!("{{{{var:{k}}}}}");
+        out = out.replace(&pat, v);
+    }
+    out
+}
+
+/// Built-in starter Overlays shared by `SceneState` and `core-library`.
+pub fn default_overlays() -> Vec<OverlayItem> {
+    vec![
+        OverlayItem {
+            id: "overlay-speaker-lt".to_string(),
+            name: "Speaker Nameplate (Lower-Left)".to_string(),
+            text: "Pastor David Chen · Senior Pastor".to_string(),
+            bounds: RectF::new(90.0, 860.0, 780.0, 120.0),
+            style: TextStyle {
+                font_size: 40.0,
+                bold: true,
+                backdrop_color: ColorRgba::rgba(0.06, 0.10, 0.18, 0.90),
+                backdrop_radius: 14.0,
+                backdrop_padding: 20.0,
+                stroke_width: 1.5,
+                h_align: TextAlign::Left,
+                v_align: VerticalAlign::Middle,
+                ..TextStyle::default()
+            },
+            accent_color: Some(ColorRgba::rgba(0.22, 0.62, 1.0, 0.96)),
+            locked: false,
+            auto_clear_secs: Some(12),
+        },
+        OverlayItem {
+            id: "overlay-church-bug".to_string(),
+            name: "Sanctuary Live Bug (Locked)".to_string(),
+            text: "LIVE · GRACE FELLOWSHIP".to_string(),
+            bounds: RectF::new(1460.0, 44.0, 390.0, 74.0),
+            style: TextStyle {
+                font_size: 26.0,
+                bold: true,
+                backdrop_color: ColorRgba::rgba(0.75, 0.12, 0.16, 0.88),
+                backdrop_radius: 10.0,
+                backdrop_padding: 12.0,
+                stroke_width: 0.0,
+                h_align: TextAlign::Center,
+                v_align: VerticalAlign::Middle,
+                ..TextStyle::default()
+            },
+            accent_color: None,
+            locked: true,
+            auto_clear_secs: None,
+        },
+    ]
+}
+
+/// Built-in starter tokenized Message templates (e.g. Nursery parent paging).
+pub fn default_message_templates() -> Vec<MessageTemplate> {
+    vec![
+        MessageTemplate {
+            id: "msg-nursery".to_string(),
+            name: "Nursery Parent Paging".to_string(),
+            template_text: "Parent with Tag #{code}, please check Nursery Room {room}.".to_string(),
+            show_on_audience: true,
+            show_on_stage: true,
+            auto_clear_secs: Some(45),
+        },
+        MessageTemplate {
+            id: "msg-parking".to_string(),
+            name: "Parking Lot Alert".to_string(),
+            template_text: "Owner of {vehicle} (Plate {plate}): lights are on in the {lot} lot.".to_string(),
+            show_on_audience: true,
+            show_on_stage: false,
+            auto_clear_secs: Some(30),
+        },
+    ]
+}
+
 /// Canonical slide representation with vector elements and optional ChordPro notes for Stage displays.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Slide {
@@ -493,6 +641,12 @@ pub struct Slide {
     pub media_path: Option<String>,
     #[serde(default)]
     pub media_cue: Option<SlideMediaCue>,
+    #[serde(default)]
+    pub auto_advance_secs: Option<f32>,
+    #[serde(default)]
+    pub loop_to_first: bool,
+    #[serde(default)]
+    pub actions: Vec<SlideAction>,
     pub primary_color: ColorRgba,
     pub secondary_color: ColorRgba,
     pub accent_color: ColorRgba,
@@ -716,6 +870,14 @@ pub struct SceneState {
     pub looks: BTreeMap<LookId, LookConfig>,
     #[serde(default)]
     pub templates: BTreeMap<TemplateId, TemplateConfig>,
+    #[serde(default)]
+    pub overlays: BTreeMap<String, OverlayItem>,
+    #[serde(default)]
+    pub active_overlay_ids: Vec<String>,
+    #[serde(default)]
+    pub active_message: Option<ActiveMessage>,
+    #[serde(default)]
+    pub variables: BTreeMap<String, String>,
     pub outputs: Vec<OutputConfig>,
     pub deck: Vec<Slide>,
     #[serde(default)]
@@ -797,6 +959,24 @@ pub enum SceneDiff {
         layout: StageLayoutConfig,
     },
     ToggleOverlayLayer(bool),
+    UpsertOverlay(OverlayItem),
+    RemoveOverlay(String),
+    ToggleOverlayItem {
+        id: String,
+        active: bool,
+    },
+    SetActiveMessage(Option<ActiveMessage>),
+    SetVariable {
+        key: String,
+        value: Option<String>,
+    },
+    SetSlideAutomation {
+        slide_id: SlideId,
+        auto_advance_secs: Option<f32>,
+        loop_to_first: bool,
+        actions: Vec<SlideAction>,
+    },
+    SyncOverlays(Vec<OverlayItem>),
     SetMask(MaskStyle),
     SetAnnouncement(Option<String>),
     SetStageMessage(Option<String>),
@@ -1065,6 +1245,14 @@ impl SceneState {
         for tpl in default_templates() {
             templates.insert(tpl.id, tpl);
         }
+        let mut overlays = BTreeMap::new();
+        for ov in default_overlays() {
+            overlays.insert(ov.id.clone(), ov);
+        }
+        let mut variables = BTreeMap::new();
+        variables.insert("Service".to_string(), "Sunday 10:00 AM".to_string());
+        variables.insert("TeamA".to_string(), "0".to_string());
+        variables.insert("TeamB".to_string(), "0".to_string());
 
         let mut outputs = vec![OutputConfig {
             id: OUTPUT_AUDIENCE_MAIN,
@@ -1128,6 +1316,10 @@ impl SceneState {
             timer_readout: Some("05:00".to_string()),
             looks,
             templates,
+            overlays,
+            active_overlay_ids: Vec::new(),
+            active_message: None,
+            variables,
             outputs,
             master_deck: deck.clone(),
             deck,
@@ -1188,6 +1380,33 @@ impl SceneState {
                                 self.announcement_text = Some(cue.label);
                             }
                             MediaCueRole::Audio => {}
+                        }
+                    }
+                    // Execute any automated SlideActions attached to this slide.
+                    for action in slide.actions.clone() {
+                        match action {
+                            SlideAction::SetOutputLook { output_id, look_id } => {
+                                if self.looks.contains_key(&look_id)
+                                    && let Some(out) = self.outputs.iter_mut().find(|o| o.id == output_id)
+                                {
+                                    out.look_id = look_id;
+                                }
+                            }
+                            SlideAction::ShowOverlay(oid) => {
+                                if self.overlays.contains_key(&oid) && !self.active_overlay_ids.contains(&oid) {
+                                    self.active_overlay_ids.push(oid);
+                                    self.overlay_layer_active = true;
+                                }
+                            }
+                            SlideAction::HideOverlay(oid) => {
+                                self.active_overlay_ids.retain(|id| id != &oid);
+                            }
+                            SlideAction::SetVariable { key, value } => {
+                                self.variables.insert(key, value);
+                            }
+                            SlideAction::SetMask(mask) => {
+                                self.mask_style = mask;
+                            }
                         }
                     }
                     self.active_slide = Some(slide);
@@ -1262,6 +1481,33 @@ impl SceneState {
                     self.deck.push(slide.clone());
                 }
                 if self.active_slide.as_ref().map(|s| s.id) == Some(slide.id) {
+                    // Execute any automated SlideActions attached to this slide.
+                    for action in slide.actions.clone() {
+                        match action {
+                            SlideAction::SetOutputLook { output_id, look_id } => {
+                                if self.looks.contains_key(&look_id)
+                                    && let Some(out) = self.outputs.iter_mut().find(|o| o.id == output_id)
+                                {
+                                    out.look_id = look_id;
+                                }
+                            }
+                            SlideAction::ShowOverlay(oid) => {
+                                if self.overlays.contains_key(&oid) && !self.active_overlay_ids.contains(&oid) {
+                                    self.active_overlay_ids.push(oid);
+                                    self.overlay_layer_active = true;
+                                }
+                            }
+                            SlideAction::HideOverlay(oid) => {
+                                self.active_overlay_ids.retain(|id| id != &oid);
+                            }
+                            SlideAction::SetVariable { key, value } => {
+                                self.variables.insert(key, value);
+                            }
+                            SlideAction::SetMask(mask) => {
+                                self.mask_style = mask;
+                            }
+                        }
+                    }
                     self.active_slide = Some(slide);
                 }
                 self.revision += 1;
@@ -1318,10 +1564,16 @@ impl SceneState {
                             self.active_foreground_media = None;
                         }
                     }
-                    LayerKind::PropsAndOverlays => self.overlay_layer_active = false,
+                    LayerKind::PropsAndOverlays => {
+                        self.active_overlay_ids.retain(|id| {
+                            self.overlays.get(id).is_some_and(|ov| ov.locked)
+                        });
+                        self.overlay_layer_active = !self.active_overlay_ids.is_empty();
+                    }
                     LayerKind::Masks => self.mask_style = MaskStyle::None,
                     LayerKind::MessagesAndTimers => {
                         self.stage_message = None;
+                        self.active_message = None;
                         self.timer_readout = None;
                     }
                 }
@@ -1335,10 +1587,14 @@ impl SceneState {
                 self.slide_layer_active = false;
                 self.active_foreground_media = None;
                 self.announcements_layer_active = false;
-                self.overlay_layer_active = false;
+                self.active_overlay_ids.retain(|id| {
+                    self.overlays.get(id).is_some_and(|ov| ov.locked)
+                });
+                self.overlay_layer_active = !self.active_overlay_ids.is_empty();
                 self.announcement_text = None;
                 self.mask_style = MaskStyle::None;
                 self.stage_message = None;
+                self.active_message = None;
                 self.timer_readout = None;
                 self.revision += 1;
                 true
@@ -1621,6 +1877,103 @@ impl SceneState {
                 self.revision += 1;
                 true
             }
+            SceneDiff::UpsertOverlay(mut item) => {
+                item.name = item.name.trim().to_string();
+                if item.id.trim().is_empty() || item.name.is_empty() {
+                    return false;
+                }
+                self.overlays.insert(item.id.clone(), item);
+                self.revision += 1;
+                true
+            }
+            SceneDiff::RemoveOverlay(id) => {
+                if self.overlays.remove(&id).is_some() {
+                    self.active_overlay_ids.retain(|x| x != &id);
+                    self.revision += 1;
+                    true
+                } else {
+                    false
+                }
+            }
+            SceneDiff::ToggleOverlayItem { id, active } => {
+                if !self.overlays.contains_key(&id) {
+                    return false;
+                }
+                if active {
+                    if !self.active_overlay_ids.contains(&id) {
+                        self.active_overlay_ids.push(id);
+                    }
+                    self.overlay_layer_active = true;
+                } else {
+                    self.active_overlay_ids.retain(|x| x != &id);
+                }
+                self.revision += 1;
+                true
+            }
+            SceneDiff::SetActiveMessage(msg) => {
+                if let Some(ref m) = msg
+                    && m.show_on_stage
+                {
+                    self.stage_message = Some(m.rendered_text.clone());
+                } else if msg.is_none() {
+                    self.stage_message = None;
+                }
+                self.active_message = msg;
+                self.revision += 1;
+                true
+            }
+            SceneDiff::SetVariable { key, value } => {
+                let clean = key.trim().to_string();
+                if clean.is_empty() {
+                    return false;
+                }
+                match value {
+                    Some(v) => {
+                        self.variables.insert(clean, v);
+                    }
+                    None => {
+                        self.variables.remove(&clean);
+                    }
+                }
+                self.revision += 1;
+                true
+            }
+            SceneDiff::SetSlideAutomation {
+                slide_id,
+                auto_advance_secs,
+                loop_to_first,
+                actions,
+            } => {
+                let mut found = false;
+                for list in [&mut self.deck, &mut self.master_deck] {
+                    if let Some(s) = list.iter_mut().find(|s| s.id == slide_id) {
+                        s.auto_advance_secs = auto_advance_secs;
+                        s.loop_to_first = loop_to_first;
+                        s.actions = actions.clone();
+                        found = true;
+                    }
+                }
+                if self.active_slide.as_ref().map(|s| s.id) == Some(slide_id)
+                    && let Some(active) = self.active_slide.as_mut()
+                {
+                    active.auto_advance_secs = auto_advance_secs;
+                    active.loop_to_first = loop_to_first;
+                    active.actions = actions;
+                }
+                if found {
+                    self.revision += 1;
+                }
+                found
+            }
+            SceneDiff::SyncOverlays(items) => {
+                for item in items {
+                    if !item.id.trim().is_empty() && !item.name.trim().is_empty() {
+                        self.overlays.insert(item.id.clone(), item);
+                    }
+                }
+                self.revision += 1;
+                true
+            }
             SceneDiff::SetMask(style) => {
                 self.mask_style = style;
                 self.revision += 1;
@@ -1714,6 +2067,9 @@ pub fn demo_deck() -> Vec<Slide> {
             ccli_number: None,
             media_path: None,
             media_cue: None,
+            auto_advance_secs: None,
+            loop_to_first: false,
+            actions: Vec::new(),
             primary_color: ColorRgba::rgb(0.06, 0.14, 0.28),
             secondary_color: ColorRgba::rgb(0.08, 0.42, 0.56),
             accent_color: ColorRgba::rgb(0.95, 0.78, 0.35),
@@ -1738,6 +2094,9 @@ pub fn demo_deck() -> Vec<Slide> {
             ccli_number: Some("22025".to_string()),
             media_path: None,
             media_cue: None,
+            auto_advance_secs: None,
+            loop_to_first: false,
+            actions: Vec::new(),
             primary_color: ColorRgba::rgb(0.24, 0.08, 0.05),
             secondary_color: ColorRgba::rgb(0.76, 0.32, 0.10),
             accent_color: ColorRgba::rgb(1.0, 0.88, 0.62),
@@ -1759,6 +2118,9 @@ pub fn demo_deck() -> Vec<Slide> {
             ccli_number: None,
             media_path: None,
             media_cue: None,
+            auto_advance_secs: None,
+            loop_to_first: false,
+            actions: Vec::new(),
             primary_color: ColorRgba::rgb(0.07, 0.09, 0.19),
             secondary_color: ColorRgba::rgb(0.22, 0.18, 0.44),
             accent_color: ColorRgba::rgb(0.68, 0.82, 1.0),
@@ -1780,6 +2142,9 @@ pub fn demo_deck() -> Vec<Slide> {
             ccli_number: None,
             media_path: None,
             media_cue: None,
+            auto_advance_secs: None,
+            loop_to_first: false,
+            actions: Vec::new(),
             primary_color: ColorRgba::rgb(0.08, 0.10, 0.12),
             secondary_color: ColorRgba::rgb(0.18, 0.24, 0.30),
             accent_color: ColorRgba::rgb(0.20, 0.90, 0.55),
@@ -1801,6 +2166,9 @@ pub fn demo_deck() -> Vec<Slide> {
             ccli_number: None,
             media_path: None,
             media_cue: None,
+            auto_advance_secs: None,
+            loop_to_first: false,
+            actions: Vec::new(),
             primary_color: ColorRgba::rgb(0.06, 0.12, 0.24),
             secondary_color: ColorRgba::rgb(0.14, 0.30, 0.52),
             accent_color: ColorRgba::rgb(0.95, 0.82, 0.45),
@@ -2340,5 +2708,123 @@ mod tests {
         assert_eq!(state.deck.len(), 4);
         assert!(!state.apply(SceneDiff::Undo));
         assert!(!state.apply(SceneDiff::Redo));
+    }
+
+    #[test]
+    fn manages_multi_overlays_locked_clear_messages_variables_and_slide_actions() {
+        let mut state = SceneState::demo_m0(2);
+        assert_eq!(state.overlays.len(), 2);
+        assert_eq!(default_message_templates().len(), 2);
+
+        // Toggle both unlocked & locked overlays active
+        assert!(state.apply(SceneDiff::ToggleOverlayItem {
+            id: "overlay-speaker-lt".into(),
+            active: true,
+        }));
+        assert!(state.apply(SceneDiff::ToggleOverlayItem {
+            id: "overlay-church-bug".into(),
+            active: true,
+        }));
+        assert!(!state.apply(SceneDiff::ToggleOverlayItem {
+            id: "missing".into(),
+            active: true,
+        }));
+        assert_eq!(state.active_overlay_ids.len(), 2);
+
+        // ClearAll clears unlocked overlays but keeps locked overlay active!
+        assert!(state.apply(SceneDiff::ClearAll));
+        assert_eq!(state.active_overlay_ids, vec!["overlay-church-bug".to_string()]);
+        assert!(state.overlay_layer_active);
+
+        // Upsert & Remove custom overlay (+ validation)
+        let mut custom_ov = default_overlays()[0].clone();
+        custom_ov.id = "ov-custom".into();
+        custom_ov.name = "Give Online QR".into();
+        assert!(state.apply(SceneDiff::UpsertOverlay(custom_ov.clone())));
+        let mut bad_ov = custom_ov.clone();
+        bad_ov.name = "  ".into();
+        assert!(!state.apply(SceneDiff::UpsertOverlay(bad_ov)));
+        assert!(state.apply(SceneDiff::RemoveOverlay("ov-custom".into())));
+        assert!(!state.apply(SceneDiff::RemoveOverlay("ov-custom".into())));
+        assert!(state.apply(SceneDiff::SyncOverlays(vec![custom_ov])));
+
+        // Tokenized Message rendering & Layer 6 activation
+        let tokens = BTreeMap::from([
+            ("code".into(), "42".into()),
+            ("room".into(), "B".into()),
+        ]);
+        let rendered = render_message_template(
+            &default_message_templates()[0].template_text,
+            &tokens,
+        );
+        assert_eq!(rendered, "Parent with Tag #42, please check Nursery Room B.");
+        assert!(state.apply(SceneDiff::SetActiveMessage(Some(ActiveMessage {
+            template_id: Some("msg-nursery".into()),
+            rendered_text: rendered.clone(),
+            show_on_audience: true,
+            show_on_stage: true,
+        }))));
+        assert_eq!(state.stage_message.as_deref(), Some(rendered.as_str()));
+        assert!(state.apply(SceneDiff::SetActiveMessage(None)));
+        assert!(state.stage_message.is_none());
+
+        // Dynamic Variables + token expansion
+        assert!(state.apply(SceneDiff::SetVariable {
+            key: "TeamA".into(),
+            value: Some("14".into()),
+        }));
+        assert!(!state.apply(SceneDiff::SetVariable {
+            key: "  ".into(),
+            value: Some("x".into()),
+        }));
+        let expanded = resolve_dynamic_tokens(
+            "Score: {{var:TeamA}} | {{timer}} | {{clock}} | {{ccli}}",
+            &state.variables,
+            Some("04:30"),
+            Some("22025"),
+            "10:15",
+        );
+        assert_eq!(expanded, "Score: 14 | 04:30 | 10:15 | 22025");
+        assert!(state.apply(SceneDiff::SetVariable {
+            key: "TeamA".into(),
+            value: None,
+        }));
+
+        // Slide Automation + Actions triggered automatically on TriggerSlide
+        let target_slide = state.deck[1].id;
+        assert!(state.apply(SceneDiff::SetSlideAutomation {
+            slide_id: target_slide,
+            auto_advance_secs: Some(8.0),
+            loop_to_first: true,
+            actions: vec![
+                SlideAction::ShowOverlay("overlay-speaker-lt".into()),
+                SlideAction::SetVariable {
+                    key: "Status".into(),
+                    value: "Live".into(),
+                },
+                SlideAction::SetMask(MaskStyle::RoundedFrame),
+                SlideAction::SetOutputLook {
+                    output_id: OUTPUT_AUDIENCE_MAIN,
+                    look_id: LOOK_BROADCAST_LOWER_THIRD,
+                },
+            ],
+        }));
+        assert!(!state.apply(SceneDiff::SetSlideAutomation {
+            slide_id: SlideId::new(),
+            auto_advance_secs: None,
+            loop_to_first: false,
+            actions: vec![],
+        }));
+        assert!(state.apply(SceneDiff::TriggerSlide {
+            slide_id: target_slide,
+            transition_override: None,
+        }));
+        assert!(state.active_overlay_ids.contains(&"overlay-speaker-lt".to_string()));
+        assert_eq!(state.variables.get("Status").map(String::as_str), Some("Live"));
+        assert_eq!(state.mask_style, MaskStyle::RoundedFrame);
+        assert_eq!(
+            state.look_for_output(OUTPUT_AUDIENCE_MAIN).map(|l| l.id),
+            Some(LOOK_BROADCAST_LOWER_THIRD)
+        );
     }
 }

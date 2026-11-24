@@ -10,17 +10,32 @@ describe("ShowControlPanel M3 UI (Happy & Failure Paths)", () => {
 
   it("creates timers, imports worship documents, and exports CCLI CSV (happy paths)", async () => {
     mockIPC((cmd) => {
-      if (cmd === "create_countdown_timer") {
+      if (cmd === "list_timers") return [];
+      if (cmd === "list_macros") {
+        return [{ id: "m-1", name: "Worship Start", steps: ["blackout:off"], updated_at: "2026-11-24T00:00:00Z" }];
+      }
+      if (cmd === "list_scheduled_events") {
+        return [{ id: "ev-1", name: "Sunday 10am", trigger_hhmm: "10:00", macro_id: "m-1", enabled: true, updated_at: "2026-11-24T00:00:00Z" }];
+      }
+      if (cmd === "create_countdown_timer" || cmd === "control_timer" || cmd === "tick_timers") {
         return [
           {
             id: "t-1",
             name: "Sermon Countdown",
             formatted: "30:00",
-            running: false,
+            running: cmd === "control_timer",
             overrun: false,
           },
         ];
       }
+      if (cmd === "save_macro" || cmd === "delete_macro") {
+        return [{ id: "m-1", name: "Worship Start", steps: ["blackout:off"], updated_at: "2026-11-24T00:00:00Z" }];
+      }
+      if (cmd === "run_macro") return null;
+      if (cmd === "save_scheduled_event" || cmd === "delete_scheduled_event") {
+        return [{ id: "ev-1", name: "Sunday 10am", trigger_hhmm: "10:00", macro_id: "m-1", enabled: true, updated_at: "2026-11-24T00:00:00Z" }];
+      }
+      if (cmd === "dispatch_control_command") return "OSC executed";
       if (cmd === "import_worship_document") {
         return {
           title: "Amazing Grace",
@@ -36,13 +51,23 @@ describe("ShowControlPanel M3 UI (Happy & Failure Paths)", () => {
     });
 
     render(ShowControlPanel);
+    await waitFor(() => expect(screen.getByRole("button", { name: "▶ Worship Start" })).toBeTruthy());
 
     await fireEvent.click(screen.getByText("Add Countdown"));
-    await waitFor(() => expect(screen.getByText("30:00")).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start" })).toBeTruthy());
+    await fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    await fireEvent.click(screen.getByRole("button", { name: "+1m" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Reset" }));
+
+    await fireEvent.click(screen.getByRole("button", { name: "Save Macro" }));
+    await fireEvent.click(screen.getByRole("button", { name: "▶ Worship Start" }));
+    await fireEvent.click(screen.getByLabelText("Delete macro Worship Start"));
+    await fireEvent.click(screen.getByRole("button", { name: "Schedule" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
     await fireEvent.click(screen.getByText("Import to Local Library"));
     await waitFor(() =>
-      expect(screen.getByRole("status").textContent).toContain('Imported "Amazing Grace"'),
+      expect(screen.getAllByRole("status").some((el) => el.textContent?.includes('Imported "Amazing Grace"'))).toBe(true),
     );
 
     await fireEvent.click(screen.getByText("Export CCLI CSV Report"));
