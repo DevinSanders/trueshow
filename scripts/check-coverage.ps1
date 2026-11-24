@@ -1,7 +1,18 @@
 # Measures real LLVM source-based line/function coverage for OpenPresenter Rust crates
 # using built-in `rustc -C instrument-coverage`, `llvm-profdata`, and `llvm-cov`.
 param(
-    [string[]]$Packages = @("core-scene", "core-ipc", "core-library", "render-text", "media-engine", "broadcast-io", "show-control")
+    [string[]]$Packages = @(
+        "core-scene",
+        "core-ipc",
+        "core-library",
+        "render-text",
+        "media-engine",
+        "broadcast-io",
+        "show-control",
+        "integrations",
+        "plugin-sdk",
+        "plugin-host"
+    )
 )
 
 $ErrorActionPreference = "Stop"
@@ -45,4 +56,4 @@ foreach ($b in $bins) {
     $objArgs += $b
 }
 
-& $llvmCov report --use-color=false --instr-profile=$merged @objArgs --ignore-filename-regex="(\\.cargo|rustc|\\\\deps\\\\)"
+& $llvmCov report --use-color=false --instr-profile=$merged @objArgs --ignore-filename-regex="(\.cargo|rustc|\\deps\\|target\\)"

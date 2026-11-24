@@ -3,6 +3,7 @@
   import { onMount } from "svelte";
   import PreviewCanvas from "./lib/PreviewCanvas.svelte";
   import BroadcastPanel from "./lib/BroadcastPanel.svelte";
+  import ShowControlPanel from "./lib/ShowControlPanel.svelte";
   import SlideEditor from "./lib/SlideEditor.svelte";
   import type {
     EngineSnapshot,
@@ -18,7 +19,7 @@
   let telemetry = $state<EngineTelemetry | null>(null);
   let statusMessage = $state("Connecting to openpresenter-engine sidecar...");
   let errorText = $state<string | null>(null);
-  let activeTab = $state<"show" | "editor" | "broadcast">("show");
+  let activeTab = $state<"show" | "editor" | "broadcast" | "ecosystem">("show");
 
   let transitionKind = $state<"Cut" | "Dissolve" | "PushLeft" | "WipeRight">("Dissolve");
   let dissolveMs = $state(450);
@@ -199,7 +200,7 @@
     <div class="brand">
       <span class="dot" class:live={connected}></span>
       <strong>OpenPresenter</strong>
-      <span class="pill">M2 Broadcast</span>
+      <span class="pill">M3 Complete</span>
       <nav class="tabs" aria-label="Workspace views">
         <button class="tab" class:active={activeTab === "show"} onclick={() => (activeTab = "show")}>
           Show
@@ -209,6 +210,9 @@
         </button>
         <button class="tab" class:active={activeTab === "broadcast"} onclick={() => (activeTab = "broadcast")}>
           Broadcast I/O
+        </button>
+        <button class="tab" class:active={activeTab === "ecosystem"} onclick={() => (activeTab = "ecosystem")}>
+          Control & Sync
         </button>
       </nav>
     </div>
@@ -268,6 +272,8 @@
     <section class="deck-pane">
       {#if activeTab === "broadcast"}
         <BroadcastPanel />
+      {:else if activeTab === "ecosystem"}
+        <ShowControlPanel />
       {:else if activeTab === "editor" && editableSlide}
         <SlideEditor slide={editableSlide} onUpdateElement={updateSlideElement} />
       {:else}

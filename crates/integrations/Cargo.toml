@@ -1,0 +1,26 @@
+[package]
+name = "integrations"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Clean-room worship ecosystem integrations: Bibles (OSIS/Zefania/USFX/Beblia + BYOK API.Bible), Planning Center v2, CCLI/ChordPro/.usr, Pro6/Pro7/OpenLyrics/PPTX/Keynote importers, and Loro CRDT + S3/R2 sync."
+
+[dependencies]
+base64.workspace = true
+blake3.workspace = true
+chrono.workspace = true
+core-library.workspace = true
+core-scene.workspace = true
+loro.workspace = true
+prost.workspace = true
+quick-xml.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+zip.workspace = true
+
+[lints]
+workspace = true

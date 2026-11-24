@@ -18,9 +18,13 @@ chrono = { version = "0.4", features = ["serde"] }
 core-ipc = { path = "../../../crates/core-ipc" }
 core-library = { path = "../../../crates/core-library" }
 core-scene = { path = "../../../crates/core-scene" }
+integrations = { path = "../../../crates/integrations" }
 interprocess = { version = "2.2", features = ["tokio"] }
+plugin-host = { path = "../../../crates/plugin-host" }
+plugin-sdk = { path = "../../../crates/plugin-sdk" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+show-control = { path = "../../../crates/show-control" }
 tauri = { version = "2", features = [] }
 tokio = { version = "1.44", features = ["rt-multi-thread", "macros", "sync", "time"] }
 tracing = "0.1"

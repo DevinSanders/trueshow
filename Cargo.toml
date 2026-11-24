@@ -8,6 +8,9 @@ members = [
     "crates/media-engine",
     "crates/broadcast-io",
     "crates/show-control",
+    "crates/integrations",
+    "crates/plugin-sdk",
+    "crates/plugin-host",
     "crates/render-wgpu",
     "bins/engine",
 ]
@@ -16,13 +19,14 @@ exclude = [
 ]
 
 [workspace.package]
-version = "0.1.0-m2"
+version = "0.1.0-m3"
 edition = "2024"
 license = "MPL-2.0"
 repository = "https://github.com/openpresenter/OpenPresenter"
 
 [workspace.dependencies]
 axum = { version = "0.8", features = ["ws"] }
+base64 = "0.22"
 blake3 = "1.8"
 bytemuck = { version = "1.22", features = ["derive"] }
 chrono = { version = "0.4", features = ["serde"] }
@@ -31,29 +35,40 @@ cosmic-text = "0.14"
 cpal = "0.17"
 interprocess = { version = "2.2", features = ["tokio"] }
 libloading = "0.8"
+loro = "1.10"
 memmap2 = "0.9"
+midir = "0.10"
 pollster = "0.4"
 postcard = { version = "1.1", features = ["alloc"] }
+prost = "0.13"
+quick-xml = "0.37"
+rosc = "0.11"
 rtrb = "0.3"
 rusqlite = { version = "0.34", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+sha2 = "0.10"
 symphonia = { version = "0.5", features = ["aac", "flac", "isomp4", "mp3", "ogg", "pcm", "vorbis", "wav"] }
 thiserror = "2.0"
 tiny-skia = "0.11"
 tokio = { version = "1.44", features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal"] }
+toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1.16", features = ["v4", "serde"] }
+wasmtime = { version = "32", default-features = false, features = ["runtime", "cranelift", "wat"] }
 wgpu = "30.0"
 winit = "0.30"
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
 
 core-scene = { path = "crates/core-scene" }
 core-ipc = { path = "crates/core-ipc" }
+core-library = { path = "crates/core-library" }
 render-text = { path = "crates/render-text" }
 media-engine = { path = "crates/media-engine" }
 broadcast-io = { path = "crates/broadcast-io" }
 show-control = { path = "crates/show-control" }
+plugin-sdk = { path = "crates/plugin-sdk" }
 render-wgpu = { path = "crates/render-wgpu" }
 
 [workspace.lints.rust]

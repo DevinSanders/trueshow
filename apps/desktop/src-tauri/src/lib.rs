@@ -31,6 +31,7 @@ struct EngineBridgeState {
     conn: Mutex<Option<Stream>>,
     preview_buses: Mutex<HashMap<OutputId, PreviewBusDescriptor>>,
     library: StdMutex<LibraryStore>,
+    timers: StdMutex<show_control::TimerEngine>,
 }
 
 impl EngineBridgeState {
@@ -48,6 +49,7 @@ impl EngineBridgeState {
             conn: Mutex::new(None),
             preview_buses: Mutex::new(HashMap::new()),
             library: StdMutex::new(store),
+            timers: StdMutex::new(show_control::TimerEngine::new()),
         }
     }
 
@@ -373,6 +375,161 @@ fn get_broadcast_capabilities() -> BroadcastCapabilitiesDto {
     }
 }
 
+#[derive(serde::Serialize)]
+struct TimerStatusDto {
+    id: String,
+    name: String,
+    formatted: String,
+    running: bool,
+    overrun: bool,
+}
+
+#[tauri::command]
+fn create_countdown_timer(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    name: String,
+    initial_secs: i64,
+) -> Result<Vec<TimerStatusDto>, String> {
+    let mut timers = bridge.timers.lock().map_err(|e| e.to_string())?;
+    let _ = timers.create(
+        name,
+        show_control::TimerKind::Countdown {
+            initial_secs,
+            allow_overrun: true,
+        },
+    );
+    Ok(timers
+        .list()
+        .into_iter()
+        .map(|t| TimerStatusDto {
+            id: t.id.0.to_string(),
+            name: t.name,
+            formatted: t.formatted,
+            running: t.running,
+            overrun: t.overrun,
+        })
+        .collect())
+}
+
+#[derive(serde::Serialize)]
+struct ImportSummaryDto {
+    title: String,
+    slide_count: usize,
+    ccli_number: Option<String>,
+    source_format: String,
+}
+
+#[tauri::command]
+fn import_worship_document(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    format: String,
+    content: String,
+) -> Result<ImportSummaryDto, String> {
+    let mut lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    match format.as_str() {
+        "chordpro" => {
+            let song = integrations::parse_chordpro(&content)?;
+            let slide_count = song.slides.len();
+            let rec = SongRecord {
+                id: Uuid::new_v4().to_string(),
+                title: song.title.clone(),
+                author: song.author,
+                copyright: song.copyright,
+                ccli_number: song.ccli_number.clone(),
+                key_signature: song.key,
+                bpm: None,
+                lyrics_plain: song.slides.iter().map(|s| s.plain_text()).collect::<Vec<_>>().join("\n"),
+                slides: song.slides,
+                updated_at: chrono::Utc::now(),
+            };
+            lib.upsert_song(&rec).map_err(|e| e.to_string())?;
+            Ok(ImportSummaryDto {
+                title: song.title,
+                slide_count,
+                ccli_number: song.ccli_number,
+                source_format: "ChordPro".into(),
+            })
+        }
+        "songselect_usr" => {
+            let song = integrations::parse_songselect_usr(&content)?;
+            let slide_count = song.slides.len();
+            let rec = SongRecord {
+                id: Uuid::new_v4().to_string(),
+                title: song.title.clone(),
+                author: song.author,
+                copyright: song.copyright,
+                ccli_number: song.ccli_number.clone(),
+                key_signature: None,
+                bpm: None,
+                lyrics_plain: song.slides.iter().map(|s| s.plain_text()).collect::<Vec<_>>().join("\n"),
+                slides: song.slides,
+                updated_at: chrono::Utc::now(),
+            };
+            lib.upsert_song(&rec).map_err(|e| e.to_string())?;
+            Ok(ImportSummaryDto {
+                title: song.title,
+                slide_count,
+                ccli_number: song.ccli_number,
+                source_format: "SongSelect (.usr)".into(),
+            })
+        }
+        "plain_text" => {
+            let imported = integrations::import_plain_text_song("Imported Song", &content)
+                .map_err(|e| e.to_string())?;
+            Ok(ImportSummaryDto {
+                title: imported.title,
+                slide_count: imported.slides.len(),
+                ccli_number: imported.ccli_number,
+                source_format: imported.source_format,
+            })
+        }
+        "bible_osis" => {
+            let verses = integrations::parse_bible_xml(
+                &content,
+                "IMPORTED",
+                "Public Domain",
+                integrations::BibleXmlFormat::Osis,
+            )
+            .map_err(|e| e.to_string())?;
+            let count = lib.insert_bible_verses(&verses).map_err(|e| e.to_string())?;
+            Ok(ImportSummaryDto {
+                title: "OSIS Bible".into(),
+                slide_count: count,
+                ccli_number: None,
+                source_format: "OSIS XML".into(),
+            })
+        }
+        other => Err(format!("unsupported import format '{other}'")),
+    }
+}
+
+#[tauri::command]
+fn export_ccli_csv_report(bridge: State<'_, Arc<EngineBridgeState>>) -> Result<String, String> {
+    let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    let logs = lib.list_ccli_usage().map_err(|e| e.to_string())?;
+    Ok(integrations::export_ccli_usage_csv(&logs))
+}
+
+#[tauri::command]
+fn list_plugin_tiers() -> Vec<plugin_host::RegisteredPluginInfo> {
+    let mut supervisor = plugin_host::SidecarSupervisor::default();
+    let _ = supervisor.register(
+        plugin_sdk::PluginManifest {
+            id: "org.openpresenter.whisper-stt".to_string(),
+            name: "Local Whisper STT (Optional Sidecar)".to_string(),
+            version: "0.1.0".to_string(),
+            tier: plugin_sdk::PluginTier::SidecarProcess,
+            entrypoint: "openpresenter-whisper-sidecar".to_string(),
+            capabilities: vec![
+                plugin_sdk::PluginCapability::AudioTap,
+                plugin_sdk::PluginCapability::CueTrigger,
+            ],
+        },
+        &[plugin_sdk::PluginCapability::AudioTap],
+    );
+    supervisor.list()
+}
+
 #[tauri::command]
 async fn shutdown_engine(bridge: State<'_, Arc<EngineBridgeState>>) -> Result<(), String> {
     let _ = bridge.request(EngineCommand::Shutdown, false).await?;
@@ -452,6 +609,10 @@ pub fn run() {
             search_library_songs,
             list_playlists,
             get_broadcast_capabilities,
+            create_countdown_timer,
+            import_worship_document,
+            export_ccli_csv_report,
+            list_plugin_tiers,
             shutdown_engine,
             start_preview_stream,
         ])

@@ -55,5 +55,6 @@ jobs:
       - working-directory: apps/desktop
         run: |
           npm ci
+          npm run test:coverage
           npm run check
           npm run build

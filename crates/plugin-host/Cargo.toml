@@ -1,0 +1,17 @@
+[package]
+name = "plugin-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Two-tier plugin runtime host: Tier 1 out-of-process Sidecar Supervisor and Tier 2 Wasmtime fuel-metered sandbox."
+
+[dependencies]
+plugin-sdk.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+wasmtime.workspace = true
+
+[lints]
+workspace = true

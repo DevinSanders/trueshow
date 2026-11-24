@@ -1,0 +1,35 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// WebAssembly Component Model interface contract for OpenPresenter Tier 2 plugins.
+
+package openpresenter:plugin@0.1.0;
+
+interface host-events {
+    record cue-event {
+        slide-id: string,
+        slide-label: string,
+        ccli-number: option<string>,
+        blackout: bool,
+    }
+
+    on-cue-triggered: func(event: cue-event) -> result<_, string>;
+}
+
+interface importer {
+    record imported-slide {
+        group: string,
+        body: string,
+    }
+
+    record imported-deck {
+        title: string,
+        ccli-number: option<string>,
+        slides: list<imported-slide>,
+    }
+
+    import-document: func(file-name: string, bytes: list<u8>) -> result<imported-deck, string>;
+}
+
+world openpresenter-plugin {
+    export host-events;
+    export importer;
+}
