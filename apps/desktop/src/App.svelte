@@ -228,6 +228,18 @@
     }
   }
 
+  async function shutdownAll() {
+    errorText = null;
+    try {
+      await invoke("shutdown_all");
+      snapshot = null;
+      telemetry = null;
+      statusMessage = "Shutting down all windows and engines...";
+    } catch (err) {
+      errorText = String(err);
+    }
+  }
+
   function cssRgb(c: { r: number; g: number; b: number }): string {
     return `rgb(${Math.round(c.r * 255)}, ${Math.round(c.g * 255)}, ${Math.round(c.b * 255)})`;
   }
@@ -345,6 +357,13 @@
       <button class="btn" onclick={reloadUiKeepLive}>Reload UI (Keep Live)</button>
       <button class="btn danger" onclick={shutdownEngine} disabled={!connected}>
         Stop Engine
+      </button>
+      <button
+        class="btn danger-solid"
+        onclick={shutdownAll}
+        title="Stop all rendering engines and close every window"
+      >
+        Shutdown All
       </button>
     </div>
   </header>
@@ -915,6 +934,13 @@
   .btn.danger {
     border-color: rgba(239, 68, 68, 0.5);
     color: #fca5a5;
+  }
+
+  .btn.danger-solid {
+    background: #b91c1c;
+    border-color: #ef4444;
+    color: #fff;
+    font-weight: 600;
   }
 
   .btn.blackout {

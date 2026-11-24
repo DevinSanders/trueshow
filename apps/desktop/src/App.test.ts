@@ -307,6 +307,7 @@ describe("OpenPresenter Operator Control Surface UI (Happy & Failure Paths)", ()
         case "report_frontend_crash":
           return null;
         case "shutdown_engine":
+        case "shutdown_all":
           return null;
         default:
           return null;
@@ -409,10 +410,14 @@ describe("OpenPresenter Operator Control Surface UI (Happy & Failure Paths)", ()
     await waitFor(() => expect(screen.getByTestId("diagnostics-panel")).toBeTruthy());
     window.dispatchEvent(new ErrorEvent("error", { message: "Simulated UI error" }));
 
-    // 6. Clean engine shutdown
+    // 6. Clean engine shutdown and full app Shutdown All
     await fireEvent.click(screen.getByText("Stop Engine"));
     await waitFor(() =>
       expect(screen.getAllByText("Engine shut down cleanly").length).toBeGreaterThan(0),
+    );
+    await fireEvent.click(screen.getByText("Shutdown All"));
+    await waitFor(() =>
+      expect(screen.getAllByText("Shutting down all windows and engines...").length).toBeGreaterThan(0),
     );
   });
 

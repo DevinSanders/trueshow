@@ -28,7 +28,7 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 use tauri::ipc::Response;
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
@@ -1265,6 +1265,37 @@ async fn shutdown_engine(bridge: State<'_, Arc<EngineBridgeState>>) -> Result<()
     Ok(())
 }
 
+/// Gracefully stops the decoupled `openpresenter-engine` sidecar (closing all native GPU
+/// Audience/Stage/Broadcast windows), releases SHM readers, closes all Tauri windows, and exits.
+#[tauri::command]
+async fn shutdown_all(
+    app: AppHandle,
+    bridge: State<'_, Arc<EngineBridgeState>>,
+) -> Result<(), String> {
+    info!("received Shutdown All request; stopping engine sidecar and closing all windows");
+    let _ = tokio::time::timeout(
+        Duration::from_secs(2),
+        bridge.request(EngineCommand::Shutdown, false),
+    )
+    .await;
+    {
+        let mut guard = bridge.conn.lock().await;
+        *guard = None;
+    }
+    {
+        let mut buses = bridge.preview_buses.lock().await;
+        buses.clear();
+    }
+    if let Ok(mut readers) = bridge.preview_readers.lock() {
+        readers.clear();
+    }
+    for (_, window) in app.webview_windows() {
+        let _ = window.close();
+    }
+    app.exit(0);
+    Ok(())
+}
+
 /// Fast 2x nearest-neighbor RGBA8 downsample so ~310px sidebar monitors transfer 4x fewer bytes
 /// (230 KB instead of 921 KB) without saturating WebView2 IPC or the JS main thread.
 fn pack_preview_packet(src_w: u32, src_h: u32, rgba: &[u8]) -> Vec<u8> {
@@ -1520,6 +1551,7 @@ pub fn run() {
             export_ccli_csv_report,
             list_plugin_tiers,
             shutdown_engine,
+            shutdown_all,
             poll_preview_frame,
             get_diagnostics_status,
             set_debug_logging,
