@@ -85,15 +85,21 @@
     regionH = Math.max(64, Math.round(mh * fh));
   }
 
-  function startNewScreen(kind: "Audience" | "Stage") {
+  function startNewScreen(kind: "Audience" | "Stage", lowerThirdPreset = false) {
     editingId = null;
     screenKind = kind;
     const count = outputs.filter((o) => o.kind === kind).length + 1;
-    screenName = kind === "Audience" ? `Audience ${count}` : `Stage ${count}`;
+    if (lowerThirdPreset) {
+      screenName = `Broadcast Lower-Third ${count}`;
+      const ltLook = looks.find((l) => l.lower_third_mode);
+      selectedLookId = ltLook?.id ?? "";
+    } else {
+      screenName = kind === "Audience" ? `Audience ${count}` : `Stage ${count}`;
+      selectedLookId = "";
+    }
     placementMode = "windowed";
     winWidth = kind === "Audience" ? 1280 : 960;
     winHeight = kind === "Audience" ? 720 : 540;
-    selectedLookId = "";
     notice = null;
     errorMsg = null;
   }
@@ -254,6 +260,9 @@
     </div>
     <div class="quick-adds">
       <button class="btn primary" onclick={() => startNewScreen("Audience")}>+ New Audience</button>
+      <button class="btn" onclick={() => startNewScreen("Audience", true)}>
+        + New Broadcast Lower-Third
+      </button>
       <button class="btn teal" onclick={() => startNewScreen("Stage")}>+ New Stage</button>
     </div>
   </header>

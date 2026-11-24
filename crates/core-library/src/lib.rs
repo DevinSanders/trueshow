@@ -353,6 +353,23 @@ impl LibraryStore {
         Ok(removed > 0)
     }
 
+    pub fn move_song_to_library(
+        &self,
+        song_id: &str,
+        target_library_id: &str,
+    ) -> Result<bool, LibraryError> {
+        let lib_id = if target_library_id.trim().is_empty() || target_library_id == "all" {
+            DEFAULT_LIBRARY_ID
+        } else {
+            target_library_id
+        };
+        let updated = self.conn.execute(
+            "UPDATE songs SET library_id = ?1, updated_at = ?2 WHERE id = ?3",
+            params![lib_id, Utc::now().to_rfc3339(), song_id],
+        )?;
+        Ok(updated > 0)
+    }
+
     pub fn list_songs(&self) -> Result<Vec<SongRecord>, LibraryError> {
         self.list_songs_in_library(None)
     }
@@ -652,6 +669,23 @@ impl LibraryStore {
             params![blake3_hash],
         )?;
         Ok(removed > 0)
+    }
+
+    pub fn move_media_to_bin(
+        &self,
+        blake3_hash: &str,
+        target_bin_id: &str,
+    ) -> Result<bool, LibraryError> {
+        let bin_id = if target_bin_id.trim().is_empty() || target_bin_id == "all" {
+            DEFAULT_MEDIA_BIN_ID
+        } else {
+            target_bin_id
+        };
+        let updated = self.conn.execute(
+            "UPDATE media_assets SET bin_id = ?1 WHERE blake3_hash = ?2",
+            params![bin_id, blake3_hash],
+        )?;
+        Ok(updated > 0)
     }
 
     pub fn list_media_assets(&self) -> Result<Vec<MediaAssetRecord>, LibraryError> {
@@ -1235,6 +1269,8 @@ mod tests {
                 .len(),
             2
         );
+        assert!(store.move_song_to_library(&all[0].id, "worship-songs").expect("move song"));
+        assert!(store.move_media_to_bin("builtin-bg-aurora-wave", "images").expect("move media"));
         assert!(store.delete_media_bin("christmas").expect("delete bin"));
         assert!(store.delete_media_asset("builtin-bg-aurora-wave").expect("delete media"));
         assert!(store.delete_song(&all[0].id).expect("delete song"));

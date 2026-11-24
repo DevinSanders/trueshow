@@ -109,6 +109,11 @@ describe("LibraryPlaylistDrawer (Presentation Libraries & Playlists)", () => {
         case "delete_playlist":
           playlists = playlists.filter((p) => p.id !== payload.playlistId);
           return playlists;
+        case "move_presentation_to_library":
+          songs = songs.map((s) =>
+            s.id === payload.songId ? { ...s, library_id: String(payload.libraryId) } : s,
+          );
+          return true;
         default:
           return null;
       }
@@ -154,6 +159,53 @@ describe("LibraryPlaylistDrawer (Presentation Libraries & Playlists)", () => {
     await fireEvent.click(screen.getByText("Add"));
     await waitFor(() => expect(screen.getByText(/Wednesday Night/)).toBeTruthy());
     await fireEvent.click(screen.getByLabelText("Delete playlist Wednesday Night"));
+
+    // 4. Drag-and-drop: move presentation to library, add presentation to playlist, and drag-reorder playlist
+    const songRow = screen.getByText("Amazing Grace").closest("li")!;
+    await fireEvent.dragStart(songRow, { dataTransfer: { setData: vi.fn() } });
+    const defaultLibRow = screen.getByText("Default Library").closest("li")!;
+    await fireEvent.dragOver(defaultLibRow);
+    await fireEvent.dragLeave(defaultLibRow);
+    await fireEvent.drop(defaultLibRow, {
+      dataTransfer: {
+        getData: (t: string) => (t === "application/x-openpresenter-song" ? "song-1" : ""),
+      },
+    });
+    const plChip = screen.getByText(/Sunday Morning/).closest("div")!;
+    await fireEvent.dragOver(plChip);
+    await fireEvent.dragLeave(plChip);
+    await fireEvent.drop(plChip, {
+      dataTransfer: {
+        getData: (t: string) => (t === "application/x-openpresenter-song" ? "song-1" : ""),
+      },
+    });
+
+    // Drop directly on playlist cue list & drag-reorder cue rows
+    const cueList = document.querySelector(".item-list.compact")!;
+    await fireEvent.dragOver(cueList);
+    await fireEvent.dragLeave(cueList);
+    await fireEvent.drop(cueList, {
+      dataTransfer: {
+        getData: (t: string) => (t === "application/x-openpresenter-song" ? "song-2" : ""),
+      },
+    });
+    const cueRows = cueList.querySelectorAll("li.item-row");
+    if (cueRows.length >= 2) {
+      await fireEvent.dragStart(cueRows[0], { dataTransfer: { setData: vi.fn() } });
+      await fireEvent.dragOver(cueRows[1]);
+      await fireEvent.dragLeave(cueRows[1]);
+      await fireEvent.drop(cueRows[1], {
+        dataTransfer: {
+          getData: (t: string) => (t === "application/x-openpresenter-playlist-idx" ? "0" : ""),
+        },
+      });
+      // Dropping a song directly onto a cue row appends it
+      await fireEvent.drop(cueRows[0], {
+        dataTransfer: {
+          getData: (t: string) => (t === "application/x-openpresenter-song" ? "song-1" : ""),
+        },
+      });
+    }
 
     await fireEvent.click(screen.getByLabelText("Delete Call to Worship"));
     expect(onError).not.toHaveBeenCalled();

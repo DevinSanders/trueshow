@@ -24,6 +24,7 @@
   let mediaFilePath = $state("");
   let mediaFileKind = $state("auto");
   let mediaHasAlpha = $state(false);
+  let dragOverBinId = $state<string | null>(null);
 
   const visibleAssets = $derived(
     assets.filter((a) => {
@@ -115,14 +116,54 @@
     }
   }
 
-  async function triggerAsset(asset: MediaAssetRecord) {
+  async function triggerAsset(
+    asset: MediaAssetRecord,
+    role: "auto" | "background" | "foreground" | "announcement" = "auto",
+  ) {
     try {
       const next = await invoke<SceneState>("trigger_media_asset", {
         blake3Hash: asset.blake3_hash,
+        role,
       });
       onMediaTriggered(next);
     } catch (err) {
       onError(`Trigger media failed: ${String(err)}`);
+    }
+  }
+
+  async function moveAssetToBin(blake3Hash: string, targetBinId: string) {
+    try {
+      await invoke("move_media_to_bin", { blake3Hash, binId: targetBinId });
+      await refreshAssets();
+    } catch (err) {
+      onError(`Move media failed: ${String(err)}`);
+    }
+  }
+
+  function startMediaDrag(event: DragEvent, asset: MediaAssetRecord) {
+    event.dataTransfer?.setData(
+      "application/x-openpresenter-media",
+      JSON.stringify({
+        blake3_hash: asset.blake3_hash,
+        kind: asset.kind,
+        file_name: asset.file_name,
+      }),
+    );
+    event.dataTransfer?.setData("text/plain", asset.file_name);
+  }
+
+  function handleDropOnBin(event: DragEvent, targetBinId: string) {
+    dragOverBinId = null;
+    event.preventDefault();
+    const raw = event.dataTransfer?.getData("application/x-openpresenter-media");
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw) as { blake3_hash?: string };
+      if (parsed.blake3_hash) {
+        void moveAssetToBin(parsed.blake3_hash, targetBinId);
+      }
+    } catch {
+      // Ignore non-OpenPresenter drag payload
     }
   }
 
@@ -193,7 +234,18 @@
         </button>
       </li>
       {#each bins as bin (bin.id)}
-        <li class="bin-row">
+        <li
+          class="bin-row"
+          class:drag-over={dragOverBinId === bin.id}
+          ondragover={(e) => {
+            e.preventDefault();
+            dragOverBinId = bin.id;
+          }}
+          ondragleave={() => {
+            if (dragOverBinId === bin.id) dragOverBinId = null;
+          }}
+          ondrop={(e) => handleDropOnBin(e, bin.id)}
+        >
           <button
             class="bin-btn"
             class:active={selectedBinId === bin.id}
@@ -272,23 +324,43 @@
 
     <div class="asset-grid">
       {#each visibleAssets as asset (asset.blake3_hash)}
-        <div class="asset-card">
+        <div
+          class="asset-card"
+          draggable="true"
+          role="group"
+          ondragstart={(e) => startMediaDrag(e, asset)}
+          title="Click to fire (BG stays behind slides; FG clears on next slide). Drag onto any Slide, Layer, or Bin."
+        >
           <button
             class="asset-thumb"
             style={swatchStyle(asset)}
-            onclick={() => void triggerAsset(asset)}
-            title={`Click to send ${asset.file_name} live`}
+            onclick={() => void triggerAsset(asset, "auto")}
           >
-            <span class="kind-badge">{asset.kind.toUpperCase()}</span>
+            <span class="kind-badge">
+              {asset.kind === "background" ? "BG LAYER" : asset.kind.toUpperCase()}
+            </span>
             {#if asset.has_alpha}
               <span class="alpha-badge">ALPHA</span>
             {/if}
             <span class="thumb-name">{asset.file_name}</span>
           </button>
           <div class="asset-foot">
-            <span class="asset-meta">
-              {asset.width && asset.height ? `${asset.width}×${asset.height}` : asset.kind}
-            </span>
+            <div class="role-btns">
+              <button
+                class="role-pill"
+                aria-label={`Set ${asset.file_name} as Background Layer`}
+                onclick={() => void triggerAsset(asset, "background")}
+              >
+                BG
+              </button>
+              <button
+                class="role-pill"
+                aria-label={`Show ${asset.file_name} on Foreground Slide Layer`}
+                onclick={() => void triggerAsset(asset, "foreground")}
+              >
+                FG
+              </button>
+            </div>
             <button
               class="icon-btn danger"
               aria-label={`Remove media ${asset.file_name}`}
@@ -558,5 +630,31 @@
     color: var(--text-1);
     font-size: 12px;
     margin: 8px 0;
+  }
+
+  .role-btns {
+    display: flex;
+    gap: 3px;
+  }
+
+  .role-pill {
+    background: var(--bg-0);
+    color: var(--text-1);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 5px;
+    font-size: 9px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .role-pill:hover {
+    color: #fff;
+    border-color: #3b82f6;
+  }
+
+  .drag-over {
+    outline: 1px dashed #38bdf8;
+    background: rgba(56, 189, 248, 0.14);
   }
 </style>

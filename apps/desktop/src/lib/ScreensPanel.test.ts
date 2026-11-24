@@ -202,7 +202,12 @@ describe("ScreensPanel (Multi-Screen, Fullscreen & Split-Monitor Regions)", () =
     expect(screen.getAllByText(/Primary Studio/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/LED Processor 4K/).length).toBeGreaterThan(0);
 
-    // 1. Create a new Stage display placed in a custom monitor sub-region via Quick Area Preset
+    // 1. Create an independent Broadcast Lower-Third display & a Stage sub-region display
+    await fireEvent.click(screen.getByText("+ New Broadcast Lower-Third"));
+    expect((screen.getByLabelText("Screen Name") as HTMLInputElement).value).toContain(
+      "Broadcast Lower-Third",
+    );
+
     await fireEvent.click(screen.getByText("+ New Stage"));
     await fireEvent.change(screen.getByLabelText("Physical Monitor"), { target: { value: "1" } });
     await fireEvent.change(screen.getByLabelText("Placement Mode"), {

@@ -90,6 +90,11 @@ describe("MediaBinDrawer (Backgrounds, Images, Video, Audio)", () => {
         case "delete_media_asset":
           assets = assets.filter((a) => a.blake3_hash !== payload.blake3Hash);
           return true;
+        case "move_media_to_bin":
+          assets = assets.map((a) =>
+            a.blake3_hash === payload.blake3Hash ? { ...a, bin_id: String(payload.binId) } : a,
+          );
+          return true;
         default:
           return null;
       }
@@ -99,9 +104,29 @@ describe("MediaBinDrawer (Backgrounds, Images, Video, Audio)", () => {
 
     await waitFor(() => expect(screen.getByText("Aurora Wave (GPU Motion)")).toBeTruthy());
 
-    // 1. Trigger a motion background live
+    // 1. Trigger a motion background live (both auto, explicit BG, and explicit FG roles)
     await fireEvent.click(screen.getByText("Aurora Wave (GPU Motion)"));
-    await waitFor(() => expect(onMediaTriggered).toHaveBeenCalledTimes(1));
+    await fireEvent.click(screen.getByLabelText("Set Aurora Wave (GPU Motion) as Background Layer"));
+    await fireEvent.click(screen.getByLabelText("Show Aurora Wave (GPU Motion) on Foreground Slide Layer"));
+    await waitFor(() => expect(onMediaTriggered).toHaveBeenCalledTimes(3));
+
+    // Drag media asset onto another Media Bin
+    const mediaCard = screen.getByText("Aurora Wave (GPU Motion)").closest(".asset-card")!;
+    await fireEvent.dragStart(mediaCard, { dataTransfer: { setData: vi.fn() } });
+    const audioBinRow = screen.getByText("Audio Tracks").closest("li")!;
+    await fireEvent.dragOver(audioBinRow);
+    await fireEvent.dragLeave(audioBinRow);
+    await fireEvent.drop(audioBinRow, {
+      dataTransfer: {
+        getData: (t: string) =>
+          t === "application/x-openpresenter-media"
+            ? JSON.stringify({ blake3_hash: "h-aurora" })
+            : "",
+      },
+    });
+    await fireEvent.drop(audioBinRow, {
+      dataTransfer: { getData: () => "{bad-json" },
+    });
 
     // 2. Create & delete a custom media bin
     await fireEvent.click(screen.getByText("+ Bin"));

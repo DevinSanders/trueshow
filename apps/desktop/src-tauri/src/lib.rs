@@ -17,9 +17,10 @@ use core_library::{
     PresentationLibraryRecord, SongRecord, infer_media_kind, slide_from_text,
 };
 use core_scene::{
-    LOOK_AUDIENCE_FULL, LOOK_STAGE_CONFIDENCE, LayerKind, LookId, MaskStyle, MonitorRegion,
-    OutputConfig, OutputId, OutputKind, OutputPlacement, SceneDiff, SceneState, ShaderMotionStyle,
-    Slide, SlideElement, SlideId, StageLayoutConfig, TransitionSpec, split_monitor_regions,
+    ActiveBackground, ColorRgba, ForegroundMedia, LOOK_AUDIENCE_FULL, LOOK_STAGE_CONFIDENCE,
+    LayerKind, LookId, MaskStyle, MediaCueRole, MonitorRegion, OutputConfig, OutputId, OutputKind,
+    OutputPlacement, SceneDiff, SceneState, ShaderMotionStyle, Slide, SlideElement, SlideId,
+    SlideMediaCue, StageLayoutConfig, TransitionSpec, split_monitor_regions,
 };
 use interprocess::local_socket::tokio::{Stream, prelude::*};
 use std::collections::HashMap;
@@ -881,10 +882,125 @@ fn delete_media_asset(
         .map_err(|e| e.to_string())
 }
 
+fn asset_visual_preset(
+    asset: &MediaAssetRecord,
+) -> (ShaderMotionStyle, ColorRgba, ColorRgba, ColorRgba) {
+    match asset.local_path.as_str() {
+        "builtin://motion/sanctuary-glow" => (
+            ShaderMotionStyle::SanctuaryGlow,
+            ColorRgba::rgb(0.24, 0.08, 0.05),
+            ColorRgba::rgb(0.76, 0.32, 0.10),
+            ColorRgba::rgb(1.0, 0.88, 0.62),
+        ),
+        "builtin://motion/broadcast-grid" => (
+            ShaderMotionStyle::BroadcastGrid,
+            ColorRgba::rgb(0.08, 0.10, 0.12),
+            ColorRgba::rgb(0.18, 0.24, 0.30),
+            ColorRgba::rgb(0.20, 0.90, 0.55),
+        ),
+        "builtin://motion/lower-third-alpha" => (
+            ShaderMotionStyle::LowerThirdAlpha,
+            ColorRgba::rgba(0.05, 0.07, 0.11, 0.0),
+            ColorRgba::rgba(0.12, 0.44, 0.88, 0.92),
+            ColorRgba::rgb(1.0, 1.0, 1.0),
+        ),
+        _ if asset.kind == "video" => (
+            ShaderMotionStyle::SanctuaryGlow,
+            ColorRgba::rgb(0.07, 0.11, 0.24),
+            ColorRgba::rgb(0.18, 0.36, 0.68),
+            ColorRgba::rgb(0.68, 0.85, 1.0),
+        ),
+        _ => (
+            ShaderMotionStyle::AuroraWave,
+            ColorRgba::rgb(0.06, 0.14, 0.28),
+            ColorRgba::rgb(0.08, 0.42, 0.56),
+            ColorRgba::rgb(0.95, 0.78, 0.35),
+        ),
+    }
+}
+
+#[tauri::command]
+fn move_presentation_to_library(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    song_id: String,
+    library_id: String,
+) -> Result<bool, String> {
+    let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    lib.move_song_to_library(&song_id, &library_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn move_media_to_bin(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    blake3_hash: String,
+    bin_id: String,
+) -> Result<bool, String> {
+    let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    lib.move_media_to_bin(&blake3_hash, &bin_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn toggle_video_input(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    active: bool,
+) -> Result<SceneState, String> {
+    apply_scene_diff(&bridge, SceneDiff::ToggleVideoInput(active)).await
+}
+
+#[tauri::command]
+async fn attach_media_to_slide(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    slide_id: String,
+    blake3_hash: Option<String>,
+    role: Option<String>,
+) -> Result<SceneState, String> {
+    let sid = SlideId(Uuid::parse_str(&slide_id).map_err(|e| e.to_string())?);
+    let cue = match blake3_hash.as_deref().map(str::trim) {
+        Some(hash) if !hash.is_empty() => {
+            let asset = {
+                let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+                lib.list_media_assets()
+                    .map_err(|e| e.to_string())?
+                    .into_iter()
+                    .find(|a| a.blake3_hash == hash)
+                    .ok_or_else(|| format!("media asset '{hash}' not found"))?
+            };
+            let parsed_role = match role.as_deref().unwrap_or("auto") {
+                "background" => MediaCueRole::Background,
+                "foreground" => MediaCueRole::Foreground,
+                "announcement" => MediaCueRole::Announcement,
+                "audio" => MediaCueRole::Audio,
+                _ => match asset.kind.as_str() {
+                    "background" => MediaCueRole::Background,
+                    "audio" => MediaCueRole::Audio,
+                    _ => MediaCueRole::Foreground,
+                },
+            };
+            let (motion_style, primary_color, secondary_color, accent_color) =
+                asset_visual_preset(&asset);
+            Some(SlideMediaCue {
+                label: asset.file_name,
+                media_path: asset.local_path,
+                kind: asset.kind,
+                role: parsed_role,
+                motion_style,
+                primary_color,
+                secondary_color,
+                accent_color,
+            })
+        }
+        _ => None,
+    };
+    apply_scene_diff(&bridge, SceneDiff::AttachMediaToSlide { slide_id: sid, cue }).await
+}
+
 #[tauri::command]
 async fn trigger_media_asset(
     bridge: State<'_, Arc<EngineBridgeState>>,
     blake3_hash: String,
+    role: Option<String>,
 ) -> Result<SceneState, String> {
     let asset = {
         let lib = bridge.library.lock().map_err(|e| e.to_string())?;
@@ -895,22 +1011,61 @@ async fn trigger_media_asset(
             .ok_or_else(|| format!("media asset '{blake3_hash}' not found"))?
     };
 
-    let mut slide = core_scene::demo_deck()[0].clone();
-    slide.id = SlideId::new();
-    slide.label = asset.file_name.clone();
-    slide.group = format!("Media · {}", asset.kind.to_uppercase());
-    slide.headline = asset.file_name.clone();
-    slide.body = asset.local_path.clone();
-    slide.media_path = Some(asset.local_path.clone());
-    slide.elements.clear();
-    slide.motion_style = match asset.local_path.as_str() {
-        "builtin://motion/sanctuary-glow" => ShaderMotionStyle::SanctuaryGlow,
-        "builtin://motion/broadcast-grid" => ShaderMotionStyle::BroadcastGrid,
-        "builtin://motion/lower-third-alpha" => ShaderMotionStyle::LowerThirdAlpha,
-        _ if asset.kind == "video" => ShaderMotionStyle::SanctuaryGlow,
-        _ => ShaderMotionStyle::AuroraWave,
+    let resolved_role = match role.as_deref().unwrap_or("auto") {
+        "background" => "background",
+        "foreground" => "foreground",
+        "announcement" => "announcement",
+        _ => {
+            if asset.kind == "background" {
+                "background"
+            } else {
+                "foreground"
+            }
+        }
     };
-    apply_scene_diff(&bridge, SceneDiff::TriggerCustomSlide { slide }).await
+
+    match resolved_role {
+        "background" => {
+            let (motion_style, primary_color, secondary_color, accent_color) =
+                asset_visual_preset(&asset);
+            apply_scene_diff(
+                &bridge,
+                SceneDiff::SetBackground(ActiveBackground {
+                    label: asset.file_name,
+                    media_path: asset.local_path,
+                    motion_style,
+                    primary_color,
+                    secondary_color,
+                    accent_color,
+                }),
+            )
+            .await
+        }
+        "announcement" => {
+            apply_scene_diff(
+                &bridge,
+                SceneDiff::SetForegroundMedia(ForegroundMedia {
+                    label: asset.file_name,
+                    media_path: asset.local_path,
+                    kind: asset.kind,
+                    target_layer: LayerKind::Announcements,
+                }),
+            )
+            .await
+        }
+        _ => {
+            apply_scene_diff(
+                &bridge,
+                SceneDiff::SetForegroundMedia(ForegroundMedia {
+                    label: asset.file_name,
+                    media_path: asset.local_path,
+                    kind: asset.kind,
+                    target_layer: LayerKind::Slide,
+                }),
+            )
+            .await
+        }
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -1355,6 +1510,10 @@ pub fn run() {
             add_media_file,
             delete_media_asset,
             trigger_media_asset,
+            move_presentation_to_library,
+            move_media_to_bin,
+            attach_media_to_slide,
+            toggle_video_input,
             get_broadcast_capabilities,
             create_countdown_timer,
             import_worship_document,

@@ -209,7 +209,35 @@ describe("OpenPresenter Operator Control Surface UI (Happy & Failure Paths)", ()
           ];
         case "load_presentation_to_deck":
         case "trigger_media_asset":
+        case "toggle_video_input":
           return structuredClone(currentState);
+        case "attach_media_to_slide": {
+          const sid = String(payload.slideId);
+          const hash = payload.blake3Hash as string | null;
+          currentState = {
+            ...currentState,
+            deck: currentState.deck.map((s) =>
+              s.id === sid
+                ? {
+                    ...s,
+                    media_cue: hash
+                      ? {
+                          label: "Aurora Wave",
+                          media_path: "builtin://motion/aurora-wave",
+                          kind: "background",
+                          role: "Background",
+                          motion_style: "AuroraWave",
+                          primary_color: { r: 0, g: 0, b: 0, a: 1 },
+                          secondary_color: { r: 0, g: 0, b: 0, a: 1 },
+                          accent_color: { r: 1, g: 1, b: 1, a: 1 },
+                        }
+                      : null,
+                  }
+                : s,
+            ),
+          };
+          return structuredClone(currentState);
+        }
         case "search_library_songs":
           return sampleSongs;
         case "poll_preview_frame":
@@ -320,10 +348,34 @@ describe("OpenPresenter Operator Control Surface UI (Happy & Failure Paths)", ()
     await fireEvent.click(screen.getByText("BLACKOUT ACTIVE"));
     await waitFor(() => expect(screen.getByText("BLACKOUT")).toBeTruthy());
 
-    // 4. Toggle overlay, clear slide, clear all, change mask, change look, send stage message
+    // 4. Toggle overlay, clear slide, clear all, change mask, change look, send stage message, drop media on slide & layer
     await fireEvent.click(screen.getByText(/Overlay Bug:/));
     await fireEvent.click(screen.getByText("Clear Slide"));
-    await fireEvent.click(screen.getByText("Clear All"));
+    await fireEvent.click(screen.getAllByText("Clear All")[0]);
+    await fireEvent.click(screen.getByLabelText("Toggle Video Input"));
+    await fireEvent.click(screen.getByLabelText("Toggle Props & Overlays"));
+    const bgLayerRow = screen.getByText("Media / Background").closest("li")!;
+    await fireEvent.drop(bgLayerRow, {
+      dataTransfer: {
+        getData: (t: string) =>
+          t === "application/x-openpresenter-media"
+            ? JSON.stringify({ blake3_hash: "h-bg-1" })
+            : "",
+      },
+    });
+    const slideWrap = screen.getByText("02 — Amazing Grace").closest(".slide-card-wrap")!;
+    await fireEvent.dragOver(slideWrap);
+    await fireEvent.dragLeave(slideWrap);
+    await fireEvent.drop(slideWrap, {
+      dataTransfer: {
+        getData: (t: string) =>
+          t === "application/x-openpresenter-media"
+            ? JSON.stringify({ blake3_hash: "h-bg-1" })
+            : "",
+      },
+    });
+    await waitFor(() => expect(screen.getByText(/BACKGROUND: Aurora Wave/)).toBeTruthy());
+    await fireEvent.click(screen.getByLabelText("Remove media cue from 02 — Amazing Grace"));
     await fireEvent.change(screen.getByLabelText("Mask Style"), {
       target: { value: "SoftVignette" },
     });

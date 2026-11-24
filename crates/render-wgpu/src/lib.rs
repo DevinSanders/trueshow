@@ -12,8 +12,8 @@ use core_ipc::{
     PreviewBusDescriptor, ShmPreviewWriter,
 };
 use core_scene::{
-    BlendMode, ColorRgba, LayerKind, LookConfig, MaskStyle, OutputConfig, OutputId, OutputKind,
-    OutputPlacement, SceneDiff, SceneState, Slide, StageLayoutConfig,
+    ActiveBackground, BlendMode, ColorRgba, LayerKind, LookConfig, MaskStyle, OutputConfig,
+    OutputId, OutputKind, OutputPlacement, SceneDiff, SceneState, Slide, StageLayoutConfig,
 };
 use render_text::{BroadcastRasterizer, Vector2DRasterizer};
 use staging::PreviewReadbackRing;
@@ -73,6 +73,7 @@ pub struct SharedEngineState {
 struct EngineRuntimeState {
     scene: SceneState,
     prev_slide: Option<Slide>,
+    prev_background: Option<ActiveBackground>,
     transition_start: Instant,
     transition_duration: Duration,
     transition_kind: u32,
@@ -87,10 +88,12 @@ struct EngineRuntimeState {
 impl SharedEngineState {
     pub fn new(scene: SceneState) -> Self {
         let initial_slide = scene.active_slide.clone();
+        let initial_bg = scene.active_background.clone();
         Self {
             inner: RwLock::new(EngineRuntimeState {
                 scene,
                 prev_slide: initial_slide,
+                prev_background: initial_bg,
                 transition_start: Instant::now(),
                 transition_duration: Duration::from_millis(1),
                 transition_kind: 0,
@@ -119,15 +122,26 @@ impl SharedEngineState {
     pub fn apply_diff(&self, diff: SceneDiff) -> Option<SceneState> {
         let mut guard = self.inner.write().ok()?;
         let old_slide = guard.scene.active_slide.clone();
+        let old_bg = guard.scene.active_background.clone();
         let changed = guard.scene.apply(diff);
         if !changed {
             return None;
+        }
+        let bg_changed = guard.scene.active_background != old_bg;
+        if bg_changed {
+            guard.prev_background = old_bg;
+            guard.transition_start = Instant::now();
+            guard.transition_kind = 0; // Smooth Dissolve for Layer 1 background swap
+            guard.transition_duration = Duration::from_millis(450);
         }
         if guard.scene.active_slide != old_slide {
             let old_id = old_slide.as_ref().map(|s| s.id);
             let new_id = guard.scene.active_slide.as_ref().map(|s| s.id);
             if old_id != new_id {
                 guard.prev_slide = old_slide;
+                if !bg_changed {
+                    guard.prev_background = guard.scene.active_background.clone();
+                }
                 guard.transition_start = Instant::now();
                 let spec = guard
                     .scene
@@ -237,10 +251,24 @@ impl SharedEngineState {
         if guard.scene.blackout {
             flags |= 1 << 0;
         }
-        if guard.scene.media_layer_active && look.is_layer_enabled(LayerKind::MediaBackground) {
+        if guard.scene.media_layer_active
+            && (guard.scene.active_background.is_some() || curr.is_some())
+            && look.is_layer_enabled(LayerKind::MediaBackground)
+        {
             flags |= 1 << 1;
         }
-        if guard.scene.slide_layer_active && look.is_layer_enabled(LayerKind::Slide) {
+        let fg_on_announcements = guard
+            .scene
+            .active_foreground_media
+            .as_ref()
+            .is_some_and(|fg| {
+                fg.target_layer == LayerKind::Announcements
+                    && guard.scene.announcements_layer_active
+                    && look.is_layer_enabled(LayerKind::Announcements)
+            });
+        if (guard.scene.slide_layer_active && look.is_layer_enabled(LayerKind::Slide))
+            || fg_on_announcements
+        {
             flags |= 1 << 2;
         }
         if guard.scene.overlay_layer_active && look.is_layer_enabled(LayerKind::PropsAndOverlays) {
@@ -256,8 +284,11 @@ impl SharedEngineState {
             flags |= 1 << 6;
         }
 
-        let (c1, c2, ca, cs) = slide_colors(curr);
-        let (p1, p2, pa, ps) = slide_colors(prev);
+        let (c1, c2, ca, cs) = background_colors(guard.scene.active_background.as_ref(), curr);
+        let (p1, p2, pa, ps) = background_colors(
+            guard.prev_background.as_ref().or(guard.scene.active_background.as_ref()),
+            prev,
+        );
 
         let mask_style = if look.is_layer_enabled(LayerKind::Masks) {
             guard.scene.mask_style as u32
@@ -288,8 +319,19 @@ impl SharedEngineState {
     }
 }
 
-fn slide_colors(slide: Option<&Slide>) -> (ColorRgba, ColorRgba, ColorRgba, u32) {
-    match slide {
+fn background_colors(
+    bg: Option<&ActiveBackground>,
+    fallback_slide: Option<&Slide>,
+) -> (ColorRgba, ColorRgba, ColorRgba, u32) {
+    if let Some(b) = bg {
+        return (
+            b.primary_color,
+            b.secondary_color,
+            b.accent_color,
+            b.motion_style as u32,
+        );
+    }
+    match fallback_slide {
         Some(s) => (
             s.primary_color,
             s.secondary_color,
@@ -469,11 +511,12 @@ impl CompositorApp {
         }
 
         let snap = self.shared.snapshot();
-        let lower_third = snap
-            .state
-            .look_for_output(out.config_meta.id)
-            .map(|l| l.lower_third_mode)
-            .unwrap_or(false);
+        let look = snap.state.look_for_output(out.config_meta.id);
+        let lower_third = look.map(|l| l.lower_third_mode).unwrap_or(false);
+        let fg_active = snap.state.active_foreground_media.as_ref().filter(|fg| {
+            look.map(|l| l.is_layer_enabled(fg.target_layer))
+                .unwrap_or(true)
+        });
 
         let raster = if out.config_meta.kind == OutputKind::Stage {
             let layout = out
@@ -490,6 +533,45 @@ impl CompositorApp {
                 LAYER_TEX_WIDTH,
                 LAYER_TEX_HEIGHT,
             )
+        } else if let Some(fg) = fg_active {
+            // Foreground image/video renders onto the Slide or Announcements foreground layer
+            // without disturbing Layer 1 (MediaBackground), and clears on the next cued slide.
+            let mut fg_slide = core_scene::demo_deck()[0].clone();
+            fg_slide.id = core_scene::SlideId::new();
+            fg_slide.label = fg.label.clone();
+            fg_slide.headline = fg.label.clone();
+            fg_slide.body = format!("{} LAYER · {}", fg.kind.to_uppercase(), fg.media_path);
+            fg_slide.elements = vec![
+                core_scene::SlideElement {
+                    id: core_scene::ElementId::new(),
+                    name: "Foreground Media Frame".to_string(),
+                    bounds: core_scene::RectF::new(140.0, 110.0, 1640.0, 860.0),
+                    opacity: 0.94,
+                    z_index: 5,
+                    kind: core_scene::SlideElementKind::ShapeRect {
+                        fill: ColorRgba::rgba(0.06, 0.11, 0.19, 0.92),
+                        stroke: ColorRgba::rgba(0.28, 0.62, 0.98, 0.95),
+                        stroke_width: 4.0,
+                        corner_radius: 24.0,
+                    },
+                },
+                core_scene::SlideElement {
+                    id: core_scene::ElementId::new(),
+                    name: "Foreground Media Label".to_string(),
+                    bounds: core_scene::RectF::new(200.0, 340.0, 1520.0, 380.0),
+                    opacity: 1.0,
+                    z_index: 10,
+                    kind: core_scene::SlideElementKind::TextBox {
+                        text: format!("[FOREGROUND {}]\n{}", fg.kind.to_uppercase(), fg.label),
+                        style: core_scene::TextStyle {
+                            font_size: 68.0,
+                            ..core_scene::TextStyle::default()
+                        },
+                    },
+                },
+            ];
+            self.rasterizer
+                .rasterize_slide(&fg_slide, LAYER_TEX_WIDTH, LAYER_TEX_HEIGHT, lower_third)
         } else if let Some(slide) = snap.state.active_slide.as_ref() {
             self.rasterizer
                 .rasterize_slide(slide, LAYER_TEX_WIDTH, LAYER_TEX_HEIGHT, lower_third)

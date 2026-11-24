@@ -4,6 +4,7 @@
   import PreviewCanvas from "./lib/PreviewCanvas.svelte";
   import BroadcastPanel from "./lib/BroadcastPanel.svelte";
   import DiagnosticsPanel from "./lib/DiagnosticsPanel.svelte";
+  import LayerManager from "./lib/LayerManager.svelte";
   import LibraryPlaylistDrawer from "./lib/LibraryPlaylistDrawer.svelte";
   import MediaBinDrawer from "./lib/MediaBinDrawer.svelte";
   import ScreensPanel from "./lib/ScreensPanel.svelte";
@@ -31,6 +32,7 @@
   let transitionKind = $state<"Cut" | "Dissolve" | "PushLeft" | "WipeRight">("Dissolve");
   let dissolveMs = $state(450);
   let stageMessageInput = $state("");
+  let dragOverSlideId = $state<string | null>(null);
 
   const connected = $derived(snapshot !== null);
   const scene = $derived(snapshot?.state ?? null);
@@ -152,6 +154,61 @@
       if (snapshot) snapshot = { ...snapshot, state: next };
     } catch (err) {
       errorText = String(err);
+    }
+  }
+
+  async function toggleVideoInput() {
+    if (!scene) return;
+    errorText = null;
+    try {
+      const next = await invoke<SceneState>("toggle_video_input", {
+        active: !scene.video_input_active,
+      });
+      if (snapshot) snapshot = { ...snapshot, state: next };
+    } catch (err) {
+      errorText = String(err);
+    }
+  }
+
+  async function triggerMediaOnLayer(
+    blake3Hash: string,
+    role: "background" | "foreground" | "announcement",
+  ) {
+    errorText = null;
+    try {
+      const next = await invoke<SceneState>("trigger_media_asset", { blake3Hash, role });
+      if (snapshot) snapshot = { ...snapshot, state: next };
+    } catch (err) {
+      errorText = String(err);
+    }
+  }
+
+  async function attachMediaToSlide(slideId: string, blake3Hash: string | null) {
+    errorText = null;
+    try {
+      const next = await invoke<SceneState>("attach_media_to_slide", {
+        slideId,
+        blake3Hash,
+        role: "auto",
+      });
+      if (snapshot) snapshot = { ...snapshot, state: next };
+    } catch (err) {
+      errorText = String(err);
+    }
+  }
+
+  function handleDropMediaOnSlide(event: DragEvent, slideId: string) {
+    dragOverSlideId = null;
+    event.preventDefault();
+    const raw = event.dataTransfer?.getData("application/x-openpresenter-media");
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw) as { blake3_hash?: string };
+      if (parsed.blake3_hash) {
+        void attachMediaToSlide(slideId, parsed.blake3_hash);
+      }
+    } catch {
+      // Ignore external drag payload
     }
   }
 
@@ -374,27 +431,53 @@
           <div class="slide-grid">
             {#each scene.deck as slide (slide.id)}
               {@const isLive = scene.active_slide?.id === slide.id && !scene.blackout}
-              <button
-                class="slide-card"
-                class:active={isLive}
-                onclick={() => triggerSlide(slide.id)}
+              <div
+                class="slide-card-wrap"
+                class:drag-over={dragOverSlideId === slide.id}
+                role="group"
+                ondragover={(e) => {
+                  e.preventDefault();
+                  dragOverSlideId = slide.id;
+                }}
+                ondragleave={() => {
+                  if (dragOverSlideId === slide.id) dragOverSlideId = null;
+                }}
+                ondrop={(e) => handleDropMediaOnSlide(e, slide.id)}
               >
-                <div
-                  class="swatch"
-                  style={`background: linear-gradient(135deg, ${cssRgb(slide.primary_color)}, ${cssRgb(slide.secondary_color)});`}
+                <button
+                  class="slide-card"
+                  class:active={isLive}
+                  onclick={() => triggerSlide(slide.id)}
                 >
-                  <span class="group-tag">{slide.group}</span>
-                  {#if isLive}
-                    <span class="on-air">LIVE</span>
-                  {/if}
-                  <div class="swatch-headline">{slide.headline}</div>
-                  <div class="swatch-accent" style={`background:${cssRgb(slide.accent_color)}`}></div>
-                </div>
-                <div class="card-footer">
-                  <div class="card-label">{slide.label}</div>
-                  <div class="card-body">{slide.body}</div>
-                </div>
-              </button>
+                  <div
+                    class="swatch"
+                    style={`background: linear-gradient(135deg, ${cssRgb(slide.primary_color)}, ${cssRgb(slide.secondary_color)});`}
+                  >
+                    <span class="group-tag">{slide.group}</span>
+                    {#if isLive}
+                      <span class="on-air">LIVE</span>
+                    {/if}
+                    <div class="swatch-headline">{slide.headline}</div>
+                    <div class="swatch-accent" style={`background:${cssRgb(slide.accent_color)}`}></div>
+                  </div>
+                  <div class="card-footer">
+                    <div class="card-label">{slide.label}</div>
+                    <div class="card-body">{slide.body}</div>
+                  </div>
+                </button>
+                {#if slide.media_cue}
+                  <div class="cue-pill">
+                    <span>{slide.media_cue.role.toUpperCase()}: {slide.media_cue.label}</span>
+                    <button
+                      class="cue-clear"
+                      aria-label={`Remove media cue from ${slide.label}`}
+                      onclick={() => void attachMediaToSlide(slide.id, null)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                {/if}
+              </div>
             {/each}
           </div>
 
@@ -439,6 +522,15 @@
       </div>
 
       {#if scene}
+        <LayerManager
+          {scene}
+          onClearLayer={(layer) => void clearLayer(layer)}
+          onClearAll={() => void clearAll()}
+          onToggleBlackout={() => void toggleBlackout()}
+          onToggleOverlay={() => void toggleOverlay()}
+          onToggleVideoInput={() => void toggleVideoInput()}
+          onDropMediaToLayer={(hash, role) => void triggerMediaOnLayer(hash, role)}
+        />
         <div class="monitors">
           {#each scene.outputs as output (output.id)}
             <div class="output-block">
@@ -662,6 +754,40 @@
     align-content: start;
     overflow-y: auto;
     padding-right: 4px;
+  }
+
+  .slide-card-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    border-radius: 9px;
+  }
+
+  .slide-card-wrap.drag-over {
+    outline: 2px dashed #38bdf8;
+    background: rgba(56, 189, 248, 0.12);
+  }
+
+  .cue-pill {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 7px;
+    background: rgba(37, 99, 235, 0.22);
+    border: 1px solid rgba(59, 130, 246, 0.45);
+    border-radius: 5px;
+    font-size: 10px;
+    color: #bfdbfe;
+  }
+
+  .cue-clear {
+    background: transparent;
+    border: none;
+    color: #fca5a5;
+    cursor: pointer;
+    font-size: 12px;
+    padding: 0 3px;
   }
 
   .slide-card {

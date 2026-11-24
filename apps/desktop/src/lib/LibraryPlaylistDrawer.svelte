@@ -35,6 +35,11 @@
   let showNewPlaylist = $state(false);
   let newPlaylistName = $state("");
 
+  let dragOverLibraryId = $state<string | null>(null);
+  let dragOverPlaylistId = $state<string | null>(null);
+  let dragOverPlaylistList = $state(false);
+  let dragOverCueIdx = $state<number | null>(null);
+
   const activePlaylist = $derived(
     playlists.find((p) => p.id === selectedPlaylistId) ?? playlists[0] ?? null,
   );
@@ -227,6 +232,87 @@
     }
   }
 
+  async function moveSongToLibrary(songId: string, targetLibId: string) {
+    try {
+      await invoke("move_presentation_to_library", { songId, libraryId: targetLibId });
+      await refreshSongs();
+    } catch (err) {
+      onError(`Move presentation failed: ${String(err)}`);
+    }
+  }
+
+  async function addSongToPlaylistById(playlistId: string, songId: string) {
+    const pl = playlists.find((p) => p.id === playlistId);
+    if (!pl) return;
+    try {
+      playlists = await invoke<PlaylistRecord[]>("upsert_playlist", {
+        id: pl.id,
+        name: pl.name,
+        itemSongIds: [...pl.item_song_ids, songId],
+      });
+    } catch (err) {
+      onError(`Failed to add to playlist: ${String(err)}`);
+    }
+  }
+
+  async function reorderPlaylistDrag(fromIdx: number, toIdx: number) {
+    if (!activePlaylist || fromIdx === toIdx) return;
+    if (fromIdx < 0 || toIdx < 0 || fromIdx >= activePlaylist.item_song_ids.length) return;
+    const nextIds = [...activePlaylist.item_song_ids];
+    const [moved] = nextIds.splice(fromIdx, 1);
+    nextIds.splice(toIdx, 0, moved);
+    try {
+      playlists = await invoke<PlaylistRecord[]>("upsert_playlist", {
+        id: activePlaylist.id,
+        name: activePlaylist.name,
+        itemSongIds: nextIds,
+      });
+    } catch (err) {
+      onError(`Failed to reorder playlist: ${String(err)}`);
+    }
+  }
+
+  function startSongDrag(event: DragEvent, songId: string) {
+    event.dataTransfer?.setData("application/x-openpresenter-song", songId);
+    event.dataTransfer?.setData("text/plain", songId);
+  }
+
+  function handleDropOnLibrary(event: DragEvent, targetLibId: string) {
+    dragOverLibraryId = null;
+    event.preventDefault();
+    const songId = event.dataTransfer?.getData("application/x-openpresenter-song");
+    if (songId) {
+      void moveSongToLibrary(songId, targetLibId);
+    }
+  }
+
+  function handleDropOnPlaylist(event: DragEvent, playlistId: string) {
+    dragOverPlaylistId = null;
+    dragOverPlaylistList = false;
+    event.preventDefault();
+    const songId = event.dataTransfer?.getData("application/x-openpresenter-song");
+    if (songId) {
+      void addSongToPlaylistById(playlistId, songId);
+    }
+  }
+
+  function handleDropOnCueRow(event: DragEvent, targetIdx: number) {
+    dragOverCueIdx = null;
+    event.preventDefault();
+    const fromRaw = event.dataTransfer?.getData("application/x-openpresenter-playlist-idx");
+    if (fromRaw !== undefined && fromRaw !== "") {
+      const fromIdx = Number(fromRaw);
+      if (!Number.isNaN(fromIdx)) {
+        void reorderPlaylistDrag(fromIdx, targetIdx);
+        return;
+      }
+    }
+    const songId = event.dataTransfer?.getData("application/x-openpresenter-song");
+    if (songId && activePlaylist) {
+      void addSongToPlaylistById(activePlaylist.id, songId);
+    }
+  }
+
   onMount(() => {
     void refreshAll();
   });
@@ -264,7 +350,18 @@
         </button>
       </li>
       {#each libraries as lib (lib.id)}
-        <li class="folder-row">
+        <li
+          class="folder-row"
+          class:drag-over={dragOverLibraryId === lib.id}
+          ondragover={(e) => {
+            e.preventDefault();
+            dragOverLibraryId = lib.id;
+          }}
+          ondragleave={() => {
+            if (dragOverLibraryId === lib.id) dragOverLibraryId = null;
+          }}
+          ondrop={(e) => handleDropOnLibrary(e, lib.id)}
+        >
           <button
             class="folder-btn"
             class:selected={selectedLibraryId === lib.id}
@@ -325,7 +422,12 @@
 
     <ul class="item-list">
       {#each songs as song (song.id)}
-        <li class="item-row">
+        <li
+          class="item-row"
+          draggable="true"
+          ondragstart={(e) => startSongDrag(e, song.id)}
+          title="Drag onto a library to move, or onto a playlist to add"
+        >
           <button class="item-main" onclick={() => void openPresentation(song.id)}>
             <strong>{song.title}</strong>
             <span class="meta">
@@ -378,7 +480,20 @@
 
     <div class="playlist-tabs">
       {#each playlists as pl (pl.id)}
-        <div class="pl-chip" class:active={activePlaylist?.id === pl.id}>
+        <div
+          class="pl-chip"
+          class:active={activePlaylist?.id === pl.id}
+          class:drag-over={dragOverPlaylistId === pl.id}
+          role="group"
+          ondragover={(e) => {
+            e.preventDefault();
+            dragOverPlaylistId = pl.id;
+          }}
+          ondragleave={() => {
+            if (dragOverPlaylistId === pl.id) dragOverPlaylistId = null;
+          }}
+          ondrop={(e) => handleDropOnPlaylist(e, pl.id)}
+        >
           <button class="pl-select" onclick={() => (selectedPlaylistId = pl.id)}>
             {pl.name} ({pl.item_song_ids.length})
           </button>
@@ -396,10 +511,40 @@
     </div>
 
     {#if activePlaylist}
-      <ul class="item-list compact">
+      <ul
+        class="item-list compact"
+        class:drag-over={dragOverPlaylistList}
+        ondragover={(e) => {
+          e.preventDefault();
+          dragOverPlaylistList = true;
+        }}
+        ondragleave={() => {
+          dragOverPlaylistList = false;
+        }}
+        ondrop={(e) => handleDropOnPlaylist(e, activePlaylist.id)}
+      >
         {#each activePlaylist.item_song_ids as songId, idx (`${songId}-${idx}`)}
           {@const song = songById.get(songId)}
-          <li class="item-row">
+          <li
+            class="item-row"
+            class:drag-over={dragOverCueIdx === idx}
+            draggable="true"
+            ondragstart={(e) => {
+              e.dataTransfer?.setData("application/x-openpresenter-playlist-idx", String(idx));
+            }}
+            ondragover={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              dragOverCueIdx = idx;
+            }}
+            ondragleave={() => {
+              if (dragOverCueIdx === idx) dragOverCueIdx = null;
+            }}
+            ondrop={(e) => {
+              e.stopPropagation();
+              handleDropOnCueRow(e, idx);
+            }}
+          >
             <button class="item-main" onclick={() => void openPresentation(songId)}>
               <strong>{idx + 1}. {song ? song.title : songId.slice(0, 8)}</strong>
             </button>
@@ -670,5 +815,10 @@
     font-size: 11px;
     color: var(--text-1);
     padding: 4px 2px;
+  }
+
+  .drag-over {
+    outline: 1px dashed #38bdf8;
+    background: rgba(56, 189, 248, 0.14) !important;
   }
 </style>

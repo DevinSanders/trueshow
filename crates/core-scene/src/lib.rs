@@ -312,6 +312,55 @@ impl Default for TransitionSpec {
     }
 }
 
+/// Role of a media cue attached to a slide or triggered onto a composition layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum MediaCueRole {
+    /// Persistent Layer 1 background that stays active across subsequent slides until replaced or cleared.
+    #[default]
+    Background,
+    /// Foreground image/video placed on the Slide layer that clears as soon as the next slide is cued.
+    Foreground,
+    /// Foreground image/video routed to the independent Announcements layer.
+    Announcement,
+    /// Audio track cue routed to the audio bus.
+    Audio,
+}
+
+/// Media cue attached to an individual slide (e.g., via dragging from the Media Bin onto a slide card).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SlideMediaCue {
+    pub label: String,
+    pub media_path: String,
+    pub kind: String,
+    pub role: MediaCueRole,
+    pub motion_style: ShaderMotionStyle,
+    pub primary_color: ColorRgba,
+    pub secondary_color: ColorRgba,
+    pub accent_color: ColorRgba,
+}
+
+/// Persistent active Layer 1 (`MediaBackground`) state — survives slide transitions until
+/// another background is triggered or Layer 1 is cleared.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ActiveBackground {
+    pub label: String,
+    pub media_path: String,
+    pub motion_style: ShaderMotionStyle,
+    pub primary_color: ColorRgba,
+    pub secondary_color: ColorRgba,
+    pub accent_color: ColorRgba,
+}
+
+/// Active foreground image/video state placed on `LayerKind::Slide` or `LayerKind::Announcements`.
+/// Foreground items on `LayerKind::Slide` automatically clear when the next slide is cued.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForegroundMedia {
+    pub label: String,
+    pub media_path: String,
+    pub kind: String,
+    pub target_layer: LayerKind,
+}
+
 /// Canonical slide representation with vector elements and optional ChordPro notes for Stage displays.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Slide {
@@ -323,6 +372,8 @@ pub struct Slide {
     pub chords_line: Option<String>,
     pub ccli_number: Option<String>,
     pub media_path: Option<String>,
+    #[serde(default)]
+    pub media_cue: Option<SlideMediaCue>,
     pub primary_color: ColorRgba,
     pub secondary_color: ColorRgba,
     pub accent_color: ColorRgba,
@@ -495,6 +546,10 @@ pub struct SceneState {
     pub blackout: bool,
     pub active_slide: Option<Slide>,
     pub next_slide_preview: Option<Slide>,
+    #[serde(default)]
+    pub active_background: Option<ActiveBackground>,
+    #[serde(default)]
+    pub active_foreground_media: Option<ForegroundMedia>,
     pub video_input_active: bool,
     pub media_layer_active: bool,
     pub slide_layer_active: bool,
@@ -519,6 +574,13 @@ pub enum SceneDiff {
     TriggerCustomSlide {
         slide: Slide,
     },
+    SetBackground(ActiveBackground),
+    SetForegroundMedia(ForegroundMedia),
+    AttachMediaToSlide {
+        slide_id: SlideId,
+        cue: Option<SlideMediaCue>,
+    },
+    ToggleVideoInput(bool),
     UpsertSlide {
         slide: Slide,
     },
@@ -624,11 +686,22 @@ impl SceneState {
         let first_slide = deck.first().cloned();
         let next_slide = deck.get(1).cloned();
 
+        let initial_bg = first_slide.as_ref().map(|s| ActiveBackground {
+            label: "Aurora Wave (GPU Motion)".to_string(),
+            media_path: "builtin://motion/aurora-wave".to_string(),
+            motion_style: s.motion_style,
+            primary_color: s.primary_color,
+            secondary_color: s.secondary_color,
+            accent_color: s.accent_color,
+        });
+
         Self {
             revision: 1,
             blackout: false,
             active_slide: first_slide,
             next_slide_preview: next_slide,
+            active_background: initial_bg,
+            active_foreground_media: None,
             video_input_active: false,
             media_layer_active: true,
             slide_layer_active: true,
@@ -655,9 +728,51 @@ impl SceneState {
                     if let Some(t) = transition_override {
                         slide.transition = t;
                     }
+                    // Foreground images/videos on the Slide layer always clear when the next slide is cued.
+                    if self
+                        .active_foreground_media
+                        .as_ref()
+                        .is_some_and(|fg| fg.target_layer == LayerKind::Slide)
+                    {
+                        self.active_foreground_media = None;
+                    }
+                    // Apply any media cue explicitly attached to this slide (Background stays persistent!).
+                    if let Some(cue) = slide.media_cue.clone() {
+                        match cue.role {
+                            MediaCueRole::Background => {
+                                self.active_background = Some(ActiveBackground {
+                                    label: cue.label,
+                                    media_path: cue.media_path,
+                                    motion_style: cue.motion_style,
+                                    primary_color: cue.primary_color,
+                                    secondary_color: cue.secondary_color,
+                                    accent_color: cue.accent_color,
+                                });
+                                self.media_layer_active = true;
+                            }
+                            MediaCueRole::Foreground => {
+                                self.active_foreground_media = Some(ForegroundMedia {
+                                    label: cue.label,
+                                    media_path: cue.media_path,
+                                    kind: cue.kind,
+                                    target_layer: LayerKind::Slide,
+                                });
+                            }
+                            MediaCueRole::Announcement => {
+                                self.active_foreground_media = Some(ForegroundMedia {
+                                    label: cue.label.clone(),
+                                    media_path: cue.media_path,
+                                    kind: cue.kind,
+                                    target_layer: LayerKind::Announcements,
+                                });
+                                self.announcements_layer_active = true;
+                                self.announcement_text = Some(cue.label);
+                            }
+                            MediaCueRole::Audio => {}
+                        }
+                    }
                     self.active_slide = Some(slide);
                     self.next_slide_preview = self.deck.get(idx + 1).cloned();
-                    self.media_layer_active = true;
                     self.slide_layer_active = true;
                     self.blackout = false;
                     self.revision += 1;
@@ -667,10 +782,57 @@ impl SceneState {
                 }
             }
             SceneDiff::TriggerCustomSlide { slide } => {
+                if self
+                    .active_foreground_media
+                    .as_ref()
+                    .is_some_and(|fg| fg.target_layer == LayerKind::Slide)
+                {
+                    self.active_foreground_media = None;
+                }
                 self.active_slide = Some(slide);
-                self.media_layer_active = true;
                 self.slide_layer_active = true;
                 self.blackout = false;
+                self.revision += 1;
+                true
+            }
+            SceneDiff::SetBackground(bg) => {
+                // Background sits on Layer 1 independently and NEVER clears the active slide!
+                self.active_background = Some(bg);
+                self.media_layer_active = true;
+                self.blackout = false;
+                self.revision += 1;
+                true
+            }
+            SceneDiff::SetForegroundMedia(fg) => {
+                match fg.target_layer {
+                    LayerKind::Announcements => {
+                        self.announcements_layer_active = true;
+                        self.announcement_text = Some(fg.label.clone());
+                    }
+                    _ => {
+                        self.slide_layer_active = true;
+                    }
+                }
+                self.active_foreground_media = Some(fg);
+                self.blackout = false;
+                self.revision += 1;
+                true
+            }
+            SceneDiff::AttachMediaToSlide { slide_id, cue } => {
+                if let Some(slide) = self.deck.iter_mut().find(|s| s.id == slide_id) {
+                    slide.media_path = cue.as_ref().map(|c| c.media_path.clone());
+                    slide.media_cue = cue;
+                    if self.active_slide.as_ref().map(|s| s.id) == Some(slide_id) {
+                        self.active_slide = Some(slide.clone());
+                    }
+                    self.revision += 1;
+                    true
+                } else {
+                    false
+                }
+            }
+            SceneDiff::ToggleVideoInput(active) => {
+                self.video_input_active = active;
                 self.revision += 1;
                 true
             }
@@ -712,11 +874,30 @@ impl SceneState {
             SceneDiff::ClearLayer(layer) => {
                 match layer {
                     LayerKind::VideoInput => self.video_input_active = false,
-                    LayerKind::MediaBackground => self.media_layer_active = false,
-                    LayerKind::Slide => self.slide_layer_active = false,
+                    LayerKind::MediaBackground => {
+                        self.media_layer_active = false;
+                        self.active_background = None;
+                    }
+                    LayerKind::Slide => {
+                        self.slide_layer_active = false;
+                        if self
+                            .active_foreground_media
+                            .as_ref()
+                            .is_some_and(|fg| fg.target_layer == LayerKind::Slide)
+                        {
+                            self.active_foreground_media = None;
+                        }
+                    }
                     LayerKind::Announcements => {
                         self.announcements_layer_active = false;
                         self.announcement_text = None;
+                        if self
+                            .active_foreground_media
+                            .as_ref()
+                            .is_some_and(|fg| fg.target_layer == LayerKind::Announcements)
+                        {
+                            self.active_foreground_media = None;
+                        }
                     }
                     LayerKind::PropsAndOverlays => self.overlay_layer_active = false,
                     LayerKind::Masks => self.mask_style = MaskStyle::None,
@@ -731,11 +912,15 @@ impl SceneState {
             SceneDiff::ClearAll => {
                 self.video_input_active = false;
                 self.media_layer_active = false;
+                self.active_background = None;
                 self.slide_layer_active = false;
+                self.active_foreground_media = None;
                 self.announcements_layer_active = false;
                 self.overlay_layer_active = false;
                 self.announcement_text = None;
                 self.mask_style = MaskStyle::None;
+                self.stage_message = None;
+                self.timer_readout = None;
                 self.revision += 1;
                 true
             }
@@ -897,6 +1082,7 @@ pub fn demo_deck() -> Vec<Slide> {
             chords_line: None,
             ccli_number: None,
             media_path: None,
+            media_cue: None,
             primary_color: ColorRgba::rgb(0.06, 0.14, 0.28),
             secondary_color: ColorRgba::rgb(0.08, 0.42, 0.56),
             accent_color: ColorRgba::rgb(0.95, 0.78, 0.35),
@@ -920,6 +1106,7 @@ pub fn demo_deck() -> Vec<Slide> {
             ),
             ccli_number: Some("22025".to_string()),
             media_path: None,
+            media_cue: None,
             primary_color: ColorRgba::rgb(0.24, 0.08, 0.05),
             secondary_color: ColorRgba::rgb(0.76, 0.32, 0.10),
             accent_color: ColorRgba::rgb(1.0, 0.88, 0.62),
@@ -940,6 +1127,7 @@ pub fn demo_deck() -> Vec<Slide> {
             chords_line: None,
             ccli_number: None,
             media_path: None,
+            media_cue: None,
             primary_color: ColorRgba::rgb(0.07, 0.09, 0.19),
             secondary_color: ColorRgba::rgb(0.22, 0.18, 0.44),
             accent_color: ColorRgba::rgb(0.68, 0.82, 1.0),
@@ -960,6 +1148,7 @@ pub fn demo_deck() -> Vec<Slide> {
             chords_line: None,
             ccli_number: None,
             media_path: None,
+            media_cue: None,
             primary_color: ColorRgba::rgb(0.08, 0.10, 0.12),
             secondary_color: ColorRgba::rgb(0.18, 0.24, 0.30),
             accent_color: ColorRgba::rgb(0.20, 0.90, 0.55),
@@ -973,36 +1162,24 @@ pub fn demo_deck() -> Vec<Slide> {
         },
         Slide {
             id: SlideId::from_u128(1005),
-            label: "05 — Lower-Third Key".to_string(),
-            group: "Broadcast".to_string(),
-            headline: "Pastor David Miller — Lead Pastor".to_string(),
-            body: "Lower-Third Alpha Key/Fill Band".to_string(),
+            label: "05 — Closing Benediction".to_string(),
+            group: "Benediction".to_string(),
+            headline: "The LORD bless thee, and keep thee".to_string(),
+            body: "Numbers 6:24-26 (KJV)".to_string(),
             chords_line: None,
             ccli_number: None,
             media_path: None,
-            primary_color: ColorRgba::rgba(0.05, 0.07, 0.11, 0.0),
-            secondary_color: ColorRgba::rgba(0.12, 0.44, 0.88, 0.92),
-            accent_color: ColorRgba::rgb(1.0, 1.0, 1.0),
-            motion_style: ShaderMotionStyle::LowerThirdAlpha,
-            transition: TransitionSpec::WipeRight { duration_ms: 350 },
-            elements: vec![SlideElement {
-                id: ElementId::from_u128(5040),
-                name: "Lower Third Pill".to_string(),
-                bounds: RectF::new(140.0, 810.0, 1640.0, 170.0),
-                opacity: 1.0,
-                z_index: 12,
-                kind: SlideElementKind::TextBox {
-                    text: "Make a joyful noise unto the LORD, all ye lands".to_string(),
-                    style: TextStyle {
-                        font_size: 56.0,
-                        backdrop_color: ColorRgba::rgba(0.06, 0.10, 0.18, 0.86),
-                        backdrop_radius: 20.0,
-                        backdrop_padding: 28.0,
-                        h_align: TextAlign::Left,
-                        ..TextStyle::default()
-                    },
-                },
-            }],
+            media_cue: None,
+            primary_color: ColorRgba::rgb(0.06, 0.12, 0.24),
+            secondary_color: ColorRgba::rgb(0.14, 0.30, 0.52),
+            accent_color: ColorRgba::rgb(0.95, 0.82, 0.45),
+            motion_style: ShaderMotionStyle::SanctuaryGlow,
+            transition: TransitionSpec::Dissolve { duration_ms: 500 },
+            elements: default_lyric_elements(
+                5040,
+                "The LORD bless thee, and keep thee:\nThe LORD make his face shine upon thee,\nand be gracious unto thee.",
+                Some("NUMBERS 6:24-25 (KJV)"),
+            ),
         },
     ]
 }
@@ -1229,5 +1406,101 @@ mod tests {
         // Remove output cleanly
         assert!(state.apply(SceneDiff::RemoveOutput(stage_id)));
         assert!(state.outputs.iter().all(|o| o.id != stage_id));
+    }
+
+    #[test]
+    fn separates_persistent_background_layer_from_ephemeral_foreground_media() {
+        let mut state = SceneState::demo_m0(2);
+        let original_slide_id = state.active_slide.as_ref().expect("slide 0").id;
+
+        // 1. Triggering a background updates Layer 1 WITHOUT clearing the active slide!
+        let glow_bg = ActiveBackground {
+            label: "Sanctuary Glow".into(),
+            media_path: "builtin://motion/sanctuary-glow".into(),
+            motion_style: ShaderMotionStyle::SanctuaryGlow,
+            primary_color: ColorRgba::rgb(0.24, 0.08, 0.05),
+            secondary_color: ColorRgba::rgb(0.76, 0.32, 0.10),
+            accent_color: ColorRgba::rgb(1.0, 0.88, 0.62),
+        };
+        assert!(state.apply(SceneDiff::SetBackground(glow_bg.clone())));
+        assert_eq!(state.active_slide.as_ref().map(|s| s.id), Some(original_slide_id));
+        assert_eq!(state.active_background.as_ref(), Some(&glow_bg));
+        assert!(state.media_layer_active);
+
+        // 2. Switching slides PRESERVES the active background!
+        let slide2_id = state.deck[1].id;
+        assert!(state.apply(SceneDiff::TriggerSlide {
+            slide_id: slide2_id,
+            transition_override: None,
+        }));
+        assert_eq!(state.active_background.as_ref(), Some(&glow_bg));
+
+        // 3. Foreground image on Slide layer clears as soon as the next slide is cued!
+        assert!(state.apply(SceneDiff::SetForegroundMedia(ForegroundMedia {
+            label: "SermonGraphic.png".into(),
+            media_path: "C:\\Media\\SermonGraphic.png".into(),
+            kind: "image".into(),
+            target_layer: LayerKind::Slide,
+        })));
+        assert!(state.active_foreground_media.is_some());
+        assert_eq!(state.active_background.as_ref(), Some(&glow_bg));
+
+        let slide3_id = state.deck[2].id;
+        assert!(state.apply(SceneDiff::TriggerSlide {
+            slide_id: slide3_id,
+            transition_override: None,
+        }));
+        assert!(state.active_foreground_media.is_none());
+        assert_eq!(state.active_background.as_ref(), Some(&glow_bg));
+
+        // 4. Foreground image on Announcements layer persists across slide switches until cleared!
+        assert!(state.apply(SceneDiff::SetForegroundMedia(ForegroundMedia {
+            label: "AnnouncementCard.png".into(),
+            media_path: "C:\\Media\\AnnouncementCard.png".into(),
+            kind: "image".into(),
+            target_layer: LayerKind::Announcements,
+        })));
+        assert!(state.apply(SceneDiff::TriggerSlide {
+            slide_id: slide2_id,
+            transition_override: None,
+        }));
+        assert!(state.active_foreground_media.is_some());
+        assert!(state.apply(SceneDiff::ClearLayer(LayerKind::Announcements)));
+        assert!(state.active_foreground_media.is_none());
+
+        // 5. Attaching a Background media cue to a slide triggers that background when cued.
+        let cue = SlideMediaCue {
+            label: "Broadcast Grid".into(),
+            media_path: "builtin://motion/broadcast-grid".into(),
+            kind: "background".into(),
+            role: MediaCueRole::Background,
+            motion_style: ShaderMotionStyle::BroadcastGrid,
+            primary_color: ColorRgba::rgb(0.08, 0.10, 0.12),
+            secondary_color: ColorRgba::rgb(0.18, 0.24, 0.30),
+            accent_color: ColorRgba::rgb(0.20, 0.90, 0.55),
+        };
+        assert!(state.apply(SceneDiff::AttachMediaToSlide {
+            slide_id: slide3_id,
+            cue: Some(cue),
+        }));
+        assert!(!state.apply(SceneDiff::AttachMediaToSlide {
+            slide_id: SlideId::new(),
+            cue: None,
+        }));
+        assert!(state.apply(SceneDiff::TriggerSlide {
+            slide_id: slide3_id,
+            transition_override: None,
+        }));
+        assert_eq!(
+            state.active_background.as_ref().map(|b| b.label.as_str()),
+            Some("Broadcast Grid")
+        );
+
+        // 6. Toggle Video Input + clear individual layers independently
+        assert!(state.apply(SceneDiff::ToggleVideoInput(true)));
+        assert!(state.video_input_active);
+        assert!(state.apply(SceneDiff::ClearLayer(LayerKind::MediaBackground)));
+        assert!(state.active_background.is_none());
+        assert!(state.slide_layer_active);
     }
 }

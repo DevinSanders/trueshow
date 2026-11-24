@@ -72,6 +72,35 @@ export type LayerKind =
   | "Masks"
   | "MessagesAndTimers";
 
+export type MediaCueRole = "Background" | "Foreground" | "Announcement" | "Audio";
+
+export interface SlideMediaCue {
+  label: string;
+  media_path: string;
+  kind: string;
+  role: MediaCueRole;
+  motion_style: string;
+  primary_color: ColorRgba;
+  secondary_color: ColorRgba;
+  accent_color: ColorRgba;
+}
+
+export interface ActiveBackground {
+  label: string;
+  media_path: string;
+  motion_style: string;
+  primary_color: ColorRgba;
+  secondary_color: ColorRgba;
+  accent_color: ColorRgba;
+}
+
+export interface ForegroundMedia {
+  label: string;
+  media_path: string;
+  kind: string;
+  target_layer: LayerKind;
+}
+
 export interface Slide {
   id: string;
   label: string;
@@ -81,6 +110,7 @@ export interface Slide {
   chords_line: string | null;
   ccli_number: string | null;
   media_path: string | null;
+  media_cue?: SlideMediaCue | null;
   primary_color: ColorRgba;
   secondary_color: ColorRgba;
   accent_color: ColorRgba;
@@ -127,6 +157,8 @@ export interface SceneState {
   blackout: boolean;
   active_slide: Slide | null;
   next_slide_preview: Slide | null;
+  active_background?: ActiveBackground | null;
+  active_foreground_media?: ForegroundMedia | null;
   video_input_active: boolean;
   media_layer_active: boolean;
   slide_layer_active: boolean;
