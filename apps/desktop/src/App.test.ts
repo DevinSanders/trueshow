@@ -310,6 +310,8 @@ describe("OpenPresenter Operator Control Surface UI (Happy & Failure Paths)", ()
           };
           return structuredClone(currentState);
         }
+        case "delete_slide_element":
+          return structuredClone(currentState);
         case "get_diagnostics_status":
           return {
             log_dir: "/tmp/logs",
@@ -422,10 +424,16 @@ describe("OpenPresenter Operator Control Surface UI (Happy & Failure Paths)", ()
     await fireEvent.click(screen.getByText("Left"));
     await fireEvent.click(screen.getByText("X →"));
     await fireEvent.click(screen.getByText("Y ↓"));
+    await fireEvent.click(screen.getByText("+ Text"));
+    await fireEvent.click(screen.getByText("+ Shape"));
+    await fireEvent.click(screen.getByText("Delete Element"));
 
-    // 5a. Switch to Screens configuration tab
+    // 5a. Switch to Screens & Stage Designer tabs
     await fireEvent.click(screen.getByText("Screens"));
     await waitFor(() => expect(screen.getByTestId("screens-panel")).toBeTruthy());
+
+    await fireEvent.click(screen.getByText("Stage Designer"));
+    await waitFor(() => expect(screen.getByTestId("stage-designer-panel")).toBeTruthy());
 
     // 5a2. Switch to Looks & Templates, Scripture, and Quick Lyrics tabs + hotkeys/Freeze/Undo/Redo
     await fireEvent.click(screen.getByText("Looks & Templates"));

@@ -1,19 +1,32 @@
 <script lang="ts">
-  import type { Slide, SlideElement, TextAlign } from "./types";
+  import { invoke } from "@tauri-apps/api/core";
+  import type { RectF, SceneState, Slide, SlideElement, TextAlign } from "./types";
 
   interface Props {
     slide: Slide;
     onUpdateElement: (slideId: string, element: SlideElement) => Promise<void>;
+    onSceneChange?: (next: SceneState) => void;
   }
 
-  let { slide, onUpdateElement }: Props = $props();
+  let { slide, onUpdateElement, onSceneChange }: Props = $props();
 
   let selectedElementId = $state<string | null>(null);
   let saveError = $state<string | null>(null);
+  let svgEl = $state<SVGSVGElement | null>(null);
+  let dragMode = $state<"move" | "resize" | null>(null);
+  let dragOrigin = $state<{ px: number; py: number; rect: RectF } | null>(null);
+  let snapGuideX = $state<number | null>(null);
+  let snapGuideY = $state<number | null>(null);
 
   const selectedElement = $derived(
     slide.elements.find((e) => e.id === selectedElementId) ?? slide.elements[0] ?? null,
   );
+
+  function newId(): string {
+    return typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `00000000-0000-4000-8000-${String(Date.now()).slice(-12).padStart(12, "0")}`;
+  }
 
   async function commitElement(updated: SlideElement) {
     saveError = null;
@@ -24,16 +37,81 @@
     }
   }
 
+  async function addElement(kind: "text" | "shape") {
+    const id = newId();
+    const el: SlideElement =
+      kind === "text"
+        ? {
+            id,
+            name: `Text Box ${slide.elements.length + 1}`,
+            bounds: { x: 240, y: 360, width: 1440, height: 260 },
+            opacity: 1,
+            z_index: 15 + slide.elements.length,
+            kind: {
+              TextBox: {
+                text: "New Slide Text",
+                style: {
+                  font_family: "sans-serif",
+                  font_size: 72,
+                  bold: true,
+                  italic: false,
+                  line_height: 1.2,
+                  color: { r: 1, g: 1, b: 1, a: 1 },
+                  stroke_color: { r: 0, g: 0, b: 0, a: 0.9 },
+                  stroke_width: 3,
+                  shadow_color: { r: 0, g: 0, b: 0, a: 0.7 },
+                  shadow_offset_x: 0,
+                  shadow_offset_y: 4,
+                  shadow_blur: 8,
+                  backdrop_color: { r: 0, g: 0, b: 0, a: 0 },
+                  backdrop_radius: 14,
+                  backdrop_padding: 18,
+                  h_align: "Center",
+                  v_align: "Middle",
+                  auto_shrink: true,
+                },
+              },
+            },
+          }
+        : {
+            id,
+            name: `Shape ${slide.elements.length + 1}`,
+            bounds: { x: 160, y: 740, width: 1600, height: 200 },
+            opacity: 0.85,
+            z_index: 5,
+            kind: {
+              ShapeRect: {
+                fill: { r: 0.08, g: 0.14, b: 0.28, a: 0.85 },
+                stroke: { r: 0.3, g: 0.6, b: 1, a: 0.9 },
+                stroke_width: 3,
+                corner_radius: 16,
+              },
+            },
+          };
+    selectedElementId = id;
+    await commitElement(el);
+  }
+
+  async function deleteSelectedElement() {
+    if (!selectedElement) return;
+    saveError = null;
+    try {
+      const next = await invoke<SceneState>("delete_slide_element", {
+        slideId: slide.id,
+        elementId: selectedElement.id,
+      });
+      selectedElementId = null;
+      onSceneChange?.(next);
+    } catch (err) {
+      saveError = String(err);
+    }
+  }
+
   async function updateText(nextText: string) {
     if (!selectedElement || !("TextBox" in selectedElement.kind)) return;
     await commitElement({
       ...selectedElement,
-      kind: {
-        TextBox: {
-          ...selectedElement.kind.TextBox,
-          text: nextText,
-        },
-      },
+      kind: { TextBox: { ...selectedElement.kind.TextBox, text: nextText } },
     });
   }
 
@@ -44,10 +122,7 @@
       kind: {
         TextBox: {
           ...selectedElement.kind.TextBox,
-          style: {
-            ...selectedElement.kind.TextBox.style,
-            font_size: nextSize,
-          },
+          style: { ...selectedElement.kind.TextBox.style, font_size: nextSize },
         },
       },
     });
@@ -60,10 +135,7 @@
       kind: {
         TextBox: {
           ...selectedElement.kind.TextBox,
-          style: {
-            ...selectedElement.kind.TextBox.style,
-            stroke_width: nextStroke,
-          },
+          style: { ...selectedElement.kind.TextBox.style, stroke_width: nextStroke },
         },
       },
     });
@@ -76,10 +148,7 @@
       kind: {
         TextBox: {
           ...selectedElement.kind.TextBox,
-          style: {
-            ...selectedElement.kind.TextBox.style,
-            h_align: align,
-          },
+          style: { ...selectedElement.kind.TextBox.style, h_align: align },
         },
       },
     });
@@ -96,15 +165,79 @@
       },
     });
   }
+
+  function clientToCanvas(e: PointerEvent): { x: number; y: number } | null {
+    if (!svgEl) return null;
+    const rect = svgEl.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    return {
+      x: ((e.clientX - rect.left) / rect.width) * 1920,
+      y: ((e.clientY - rect.top) / rect.height) * 1080,
+    };
+  }
+
+  function startPointerOp(e: PointerEvent, el: SlideElement, mode: "move" | "resize") {
+    e.stopPropagation();
+    selectedElementId = el.id;
+    const pt = clientToCanvas(e);
+    if (!pt) return;
+    dragMode = mode;
+    dragOrigin = { px: pt.x, py: pt.y, rect: { ...el.bounds } };
+  }
+
+  function onCanvasPointerMove(e: PointerEvent) {
+    if (!dragMode || !dragOrigin || !selectedElement) return;
+    const pt = clientToCanvas(e);
+    if (!pt) return;
+    const dx = pt.x - dragOrigin.px;
+    const dy = pt.y - dragOrigin.py;
+    const nextBounds: RectF = { ...dragOrigin.rect };
+    if (dragMode === "move") {
+      nextBounds.x = Math.max(0, Math.min(1920 - nextBounds.width, Math.round(dragOrigin.rect.x + dx)));
+      nextBounds.y = Math.max(0, Math.min(1080 - nextBounds.height, Math.round(dragOrigin.rect.y + dy)));
+      const cx = nextBounds.x + nextBounds.width / 2;
+      const cy = nextBounds.y + nextBounds.height / 2;
+      snapGuideX = Math.abs(cx - 960) < 24 ? 960 : null;
+      snapGuideY = Math.abs(cy - 540) < 24 ? 540 : null;
+      if (snapGuideX !== null) nextBounds.x = Math.round(960 - nextBounds.width / 2);
+      if (snapGuideY !== null) nextBounds.y = Math.round(540 - nextBounds.height / 2);
+    } else {
+      nextBounds.width = Math.max(120, Math.min(1920 - nextBounds.x, Math.round(dragOrigin.rect.width + dx)));
+      nextBounds.height = Math.max(60, Math.min(1080 - nextBounds.y, Math.round(dragOrigin.rect.height + dy)));
+    }
+    void commitElement({ ...selectedElement, bounds: nextBounds });
+  }
+
+  function endPointerOp() {
+    dragMode = null;
+    dragOrigin = null;
+    snapGuideX = null;
+    snapGuideY = null;
+  }
 </script>
 
 <div class="editor-grid" data-testid="slide-editor">
   <div class="stage-canvas">
     <div class="canvas-meta">
-      <span>Zero-Drift Canvas Gizmo Overlay (1920×1080 Virtual Space)</span>
-      <span>Slide: <strong>{slide.label}</strong></span>
+      <span>WYSIWYG Drag & Resize Canvas (1920×1080 · Snap Guides)</span>
+      <div class="toolbar">
+        <button class="mini-btn" onclick={() => void addElement("text")}>+ Text</button>
+        <button class="mini-btn" onclick={() => void addElement("shape")}>+ Shape</button>
+        <button class="mini-btn danger" disabled={!selectedElement} onclick={() => void deleteSelectedElement()}>
+          Delete Element
+        </button>
+      </div>
     </div>
-    <svg class="gizmo-svg" viewBox="0 0 1920 1080" aria-label="Slide element bounding boxes">
+    <svg
+      bind:this={svgEl}
+      class="gizmo-svg"
+      viewBox="0 0 1920 1080"
+      role="application"
+      aria-label="Slide element bounding boxes"
+      onpointermove={onCanvasPointerMove}
+      onpointerup={endPointerOp}
+      onpointerleave={endPointerOp}
+    >
       <rect x="0" y="0" width="1920" height="1080" fill="#0d1320" />
       <rect
         x="96"
@@ -116,6 +249,12 @@
         stroke-dasharray="14 10"
         stroke-width="3"
       />
+      {#if snapGuideX !== null}
+        <line x1={snapGuideX} y1="0" x2={snapGuideX} y2="1080" stroke="#38bdf8" stroke-width="3" stroke-dasharray="10 8" />
+      {/if}
+      {#if snapGuideY !== null}
+        <line x1="0" y1={snapGuideY} x2="1920" y2={snapGuideY} stroke="#38bdf8" stroke-width="3" stroke-dasharray="10 8" />
+      {/if}
       {#each slide.elements as el (el.id)}
         {@const isSel = selectedElement?.id === el.id}
         <g
@@ -123,6 +262,7 @@
           tabindex="0"
           aria-label={`Select ${el.name}`}
           onclick={() => (selectedElementId = el.id)}
+          onpointerdown={(e) => startPointerOp(e, el, "move")}
           onkeydown={(e) => {
             if (e.key === "Enter" || e.key === " ") selectedElementId = el.id;
           }}
@@ -145,13 +285,26 @@
           >
             {el.name}
           </text>
+          {#if isSel}
+            <rect
+              x={el.bounds.x + el.bounds.width - 28}
+              y={el.bounds.y + el.bounds.height - 28}
+              width="28"
+              height="28"
+              fill="#38bdf8"
+              role="button"
+              tabindex="0"
+              aria-label={`Resize ${el.name}`}
+              onpointerdown={(e) => startPointerOp(e, el, "resize")}
+            />
+          {/if}
         </g>
       {/each}
     </svg>
   </div>
 
   <div class="inspector">
-    <h3>Element Inspector</h3>
+    <h3>Element Inspector · {slide.label}</h3>
     {#if saveError}
       <div class="err" role="alert">{saveError}</div>
     {/if}
@@ -167,6 +320,15 @@
           oninput={(e) => updateText(e.currentTarget.value)}
         ></textarea>
       </label>
+
+      <div class="field">
+        <span>Insert Live Token</span>
+        <div class="btn-row">
+          <button class="mini-btn" onclick={() => void updateText(`${tb.text} {{timer}}`)}>Timer</button>
+          <button class="mini-btn" onclick={() => void updateText(`${tb.text} {{clock}}`)}>Clock</button>
+          <button class="mini-btn" onclick={() => void updateText(`${tb.text} {{var:TeamA}}`)}>Var</button>
+        </div>
+      </div>
 
       <label class="field">
         <span>Font Size ({tb.style.font_size} px)</span>
@@ -219,7 +381,7 @@
         </div>
       </div>
     {:else}
-      <p class="muted">Select a text element to edit its typography and geometry.</p>
+      <p class="muted">Select a text element to edit its typography and geometry, or drag shapes directly on the canvas.</p>
     {/if}
   </div>
 </div>
@@ -246,8 +408,15 @@
   .canvas-meta {
     display: flex;
     justify-content: space-between;
+    align-items: center;
+    gap: 8px;
     font-size: 12px;
     color: var(--text-1);
+  }
+
+  .toolbar {
+    display: flex;
+    gap: 6px;
   }
 
   .gizmo-svg {
@@ -255,7 +424,8 @@
     aspect-ratio: 16 / 9;
     border-radius: 6px;
     border: 1px solid var(--border);
-    cursor: pointer;
+    cursor: move;
+    touch-action: none;
   }
 
   .inspector {
@@ -265,7 +435,7 @@
     padding: 12px;
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 10px;
     overflow-y: auto;
   }
 
@@ -280,51 +450,61 @@
   .field {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 5px;
     font-size: 12px;
     color: var(--text-1);
   }
 
-  textarea {
+  .field textarea {
+    width: 100%;
     background: var(--bg-0);
     color: var(--text-0);
     border: 1px solid var(--border);
     border-radius: 6px;
-    padding: 8px;
+    padding: 7px 8px;
     font: inherit;
+    font-size: 13px;
     resize: vertical;
   }
 
   .btn-row {
     display: flex;
     gap: 6px;
+    flex-wrap: wrap;
   }
 
   .mini-btn {
-    flex: 1;
     padding: 5px 8px;
+    border-radius: 5px;
+    border: 1px solid var(--border);
     background: var(--bg-2);
     color: var(--text-0);
-    border: 1px solid var(--border);
-    border-radius: 5px;
     font-size: 11px;
+    font-weight: 600;
   }
 
   .mini-btn.active {
     background: var(--accent);
     border-color: var(--accent);
+    color: #fff;
+  }
+
+  .mini-btn.danger {
+    background: rgba(239, 68, 68, 0.16);
+    border-color: rgba(239, 68, 68, 0.45);
+    color: #fecaca;
   }
 
   .err {
-    padding: 6px 8px;
-    border-radius: 5px;
     background: rgba(239, 68, 68, 0.18);
     color: #fecaca;
+    padding: 6px 8px;
+    border-radius: 5px;
     font-size: 11px;
   }
 
   .muted {
-    font-size: 12px;
     color: var(--text-1);
+    font-size: 12px;
   }
 </style>

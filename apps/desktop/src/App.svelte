@@ -14,6 +14,7 @@
   import ScriptureDrawer from "./lib/ScriptureDrawer.svelte";
   import ShowControlPanel from "./lib/ShowControlPanel.svelte";
   import SlideEditor from "./lib/SlideEditor.svelte";
+  import StageDesignerPanel from "./lib/StageDesignerPanel.svelte";
   import { allowDrop, readDroppedMedia } from "./lib/dragStore";
   import type {
     DiagnosticsStatus,
@@ -31,7 +32,7 @@
   let statusMessage = $state("Connecting to openpresenter-engine sidecar...");
   let errorText = $state<string | null>(null);
   let activeTab = $state<
-    "show" | "scripture" | "lyrics" | "overlays" | "screens" | "looks" | "editor" | "broadcast" | "ecosystem" | "diagnostics"
+    "show" | "scripture" | "lyrics" | "overlays" | "screens" | "stage" | "looks" | "editor" | "broadcast" | "ecosystem" | "diagnostics"
   >("show");
   let autoLoopActive = $state(false);
   let autoLoopSecs = $state(8);
@@ -489,6 +490,9 @@
         <button class="tab" class:active={activeTab === "screens"} onclick={() => (activeTab = "screens")}>
           Screens
         </button>
+        <button class="tab" class:active={activeTab === "stage"} onclick={() => (activeTab = "stage")}>
+          Stage Designer
+        </button>
         <button class="tab" class:active={activeTab === "looks"} onclick={() => (activeTab = "looks")}>
           Looks & Templates
         </button>
@@ -595,6 +599,8 @@
         <QuickLyricsPanel {scene} onSceneChange={applySceneState} onError={setError} />
       {:else if activeTab === "overlays" && scene}
         <OverlaysMessagesPanel {scene} onSceneChange={applySceneState} onError={setError} />
+      {:else if activeTab === "stage" && scene}
+        <StageDesignerPanel {scene} onSceneChange={applySceneState} onError={setError} />
       {:else if activeTab === "looks" && scene}
         <LooksTemplatesPanel {scene} onSceneChange={applySceneState} onError={setError} />
       {:else if activeTab === "broadcast"}
@@ -604,7 +610,7 @@
       {:else if activeTab === "diagnostics"}
         <DiagnosticsPanel />
       {:else if activeTab === "editor" && editableSlide}
-        <SlideEditor slide={editableSlide} onUpdateElement={updateSlideElement} />
+        <SlideEditor slide={editableSlide} onUpdateElement={updateSlideElement} onSceneChange={applySceneState} />
       {:else}
         <div class="pane-header">
           <h2>Cue Deck (7-Layer GPU Compositor)</h2>

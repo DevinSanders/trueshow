@@ -207,6 +207,21 @@ export type OutputPlacement =
   | "Fullscreen"
   | { Region: MonitorRegion };
 
+export interface StageLayoutConfig {
+  name: string;
+  show_current_slide: boolean;
+  show_next_slide: boolean;
+  show_chords: boolean;
+  show_clock: boolean;
+  show_timer: boolean;
+  show_stage_message: boolean;
+  current_rect: RectF;
+  next_rect: RectF;
+  chords_rect: RectF;
+  timer_rect: RectF;
+  message_rect: RectF;
+}
+
 export interface OutputConfig {
   id: string;
   name: string;
@@ -217,6 +232,7 @@ export interface OutputConfig {
   fullscreen: boolean;
   placement?: OutputPlacement;
   look_id: string;
+  stage_layout?: StageLayoutConfig | null;
 }
 
 export type MediaFitMode = "Fill" | "Contain" | "Stretch";

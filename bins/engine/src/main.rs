@@ -172,14 +172,94 @@ async fn run_ipc_server(
 
     info!("IPC control server listening on '{socket_id}' (survives UI disconnects)");
 
-    let stage_server = match show_control::WebStageServer::bind(
-        "127.0.0.1:0",
+    let remote_shared = Arc::clone(&shared);
+    let remote_proxy = proxy.clone();
+    let remote_handler: show_control::web_stage::RemoteCommandHandler = Arc::new(move |cmd| {
+        let diff = match cmd {
+            show_control::web_stage::RemoteCommand::NextSlide => {
+                let snap = remote_shared.snapshot().state;
+                let cur = snap
+                    .active_slide
+                    .as_ref()
+                    .and_then(|a| snap.deck.iter().position(|s| s.id == a.id))
+                    .unwrap_or(0);
+                let next_idx = (cur + 1).min(snap.deck.len().saturating_sub(1));
+                snap.deck.get(next_idx).map(|s| core_scene::SceneDiff::TriggerSlide {
+                    slide_id: s.id,
+                    transition_override: None,
+                })
+            }
+            show_control::web_stage::RemoteCommand::PrevSlide => {
+                let snap = remote_shared.snapshot().state;
+                let cur = snap
+                    .active_slide
+                    .as_ref()
+                    .and_then(|a| snap.deck.iter().position(|s| s.id == a.id))
+                    .unwrap_or(0);
+                snap.deck
+                    .get(cur.saturating_sub(1))
+                    .map(|s| core_scene::SceneDiff::TriggerSlide {
+                        slide_id: s.id,
+                        transition_override: None,
+                    })
+            }
+            show_control::web_stage::RemoteCommand::TriggerSlide { slide_id } => {
+                uuid::Uuid::parse_str(&slide_id)
+                    .ok()
+                    .map(|u| core_scene::SceneDiff::TriggerSlide {
+                        slide_id: core_scene::SlideId(u),
+                        transition_override: None,
+                    })
+            }
+            show_control::web_stage::RemoteCommand::SetBlackout { enabled } => {
+                Some(core_scene::SceneDiff::SetBlackout(enabled))
+            }
+            show_control::web_stage::RemoteCommand::SetFreeze { enabled } => {
+                Some(core_scene::SceneDiff::SetFreeze(enabled))
+            }
+            show_control::web_stage::RemoteCommand::ClearAll => {
+                Some(core_scene::SceneDiff::ClearAll)
+            }
+            show_control::web_stage::RemoteCommand::SetStageMessage { message } => {
+                Some(core_scene::SceneDiff::SetStageMessage(message))
+            }
+            show_control::web_stage::RemoteCommand::SetPointer { x, y, active } => {
+                Some(core_scene::SceneDiff::SetPointer(if active {
+                    Some(core_scene::TelestratorPointer {
+                        x,
+                        y,
+                        active: true,
+                        color: core_scene::ColorRgba::rgba(1.0, 0.22, 0.22, 0.92),
+                        radius: 16.0,
+                    })
+                } else {
+                    None
+                }))
+            }
+        };
+        if let Some(d) = diff
+            && remote_shared.apply_diff(d).is_some()
+            && let Some(p) = remote_proxy.as_ref()
+        {
+            let _ = p.send_event(EngineWakeEvent::SceneChanged);
+        }
+    });
+
+    let stage_server = match show_control::WebStageServer::bind_with_remote(
+        "0.0.0.0:0",
         show_control::payload_from_scene(&shared.snapshot().state),
+        "2026".to_string(),
+        Some(remote_handler),
     )
     .await
     {
         Ok(srv) => {
-            info!("LAN Web Stage Display listening at {}", srv.url());
+            info!(
+                stage_url = %srv.url(),
+                remote_url = %srv.remote_url(),
+                pin = %srv.remote_pin(),
+                "LAN Web Stage Display & Mobile Remote Controller listening"
+            );
             Some(Arc::new(srv))
         }
         Err(err) => {

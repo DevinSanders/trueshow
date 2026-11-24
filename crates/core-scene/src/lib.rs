@@ -726,26 +726,78 @@ impl LookConfig {
     }
 }
 
-/// Customizable Stage Display layout configuration.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Live laser pointer / telestrator highlight overlay coordinates in normalized `[0.0, 1.0]` UV space.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct TelestratorPointer {
+    pub x: f32,
+    pub y: f32,
+    pub active: bool,
+    pub color: ColorRgba,
+    pub radius: f32,
+}
+
+fn default_stage_layout_name() -> String {
+    "Band Confidence (Default)".to_string()
+}
+
+fn default_stage_current_rect() -> RectF {
+    RectF::new(120.0, 230.0, 1680.0, 430.0)
+}
+
+fn default_stage_next_rect() -> RectF {
+    RectF::new(120.0, 760.0, 1680.0, 190.0)
+}
+
+fn default_stage_chords_rect() -> RectF {
+    RectF::new(120.0, 150.0, 1680.0, 84.0)
+}
+
+fn default_stage_timer_rect() -> RectF {
+    RectF::new(1380.0, 12.0, 480.0, 96.0)
+}
+
+fn default_stage_message_rect() -> RectF {
+    RectF::new(160.0, 930.0, 1600.0, 120.0)
+}
+
+/// Customizable Stage Display layout configuration with toggleable, movable/resizable zones.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StageLayoutConfig {
+    #[serde(default = "default_stage_layout_name")]
+    pub name: String,
     pub show_current_slide: bool,
     pub show_next_slide: bool,
     pub show_chords: bool,
     pub show_clock: bool,
     pub show_timer: bool,
     pub show_stage_message: bool,
+    #[serde(default = "default_stage_current_rect")]
+    pub current_rect: RectF,
+    #[serde(default = "default_stage_next_rect")]
+    pub next_rect: RectF,
+    #[serde(default = "default_stage_chords_rect")]
+    pub chords_rect: RectF,
+    #[serde(default = "default_stage_timer_rect")]
+    pub timer_rect: RectF,
+    #[serde(default = "default_stage_message_rect")]
+    pub message_rect: RectF,
 }
 
 impl Default for StageLayoutConfig {
     fn default() -> Self {
         Self {
+            name: default_stage_layout_name(),
             show_current_slide: true,
             show_next_slide: true,
             show_chords: true,
             show_clock: true,
             show_timer: true,
             show_stage_message: true,
+            current_rect: default_stage_current_rect(),
+            next_rect: default_stage_next_rect(),
+            chords_rect: default_stage_chords_rect(),
+            timer_rect: default_stage_timer_rect(),
+            message_rect: default_stage_message_rect(),
         }
     }
 }
@@ -816,7 +868,7 @@ pub fn split_monitor_regions(
 }
 
 /// Configuration for an individual compositor output window / render target.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OutputConfig {
     pub id: OutputId,
     pub name: String,
@@ -878,6 +930,8 @@ pub struct SceneState {
     pub active_message: Option<ActiveMessage>,
     #[serde(default)]
     pub variables: BTreeMap<String, String>,
+    #[serde(default)]
+    pub pointer: Option<TelestratorPointer>,
     pub outputs: Vec<OutputConfig>,
     pub deck: Vec<Slide>,
     #[serde(default)]
@@ -977,6 +1031,11 @@ pub enum SceneDiff {
         actions: Vec<SlideAction>,
     },
     SyncOverlays(Vec<OverlayItem>),
+    SetPointer(Option<TelestratorPointer>),
+    DeleteSlideElement {
+        slide_id: SlideId,
+        element_id: ElementId,
+    },
     SetMask(MaskStyle),
     SetAnnouncement(Option<String>),
     SetStageMessage(Option<String>),
@@ -1320,6 +1379,7 @@ impl SceneState {
             active_overlay_ids: Vec::new(),
             active_message: None,
             variables,
+            pointer: None,
             outputs,
             master_deck: deck.clone(),
             deck,
@@ -1973,6 +2033,31 @@ impl SceneState {
                 }
                 self.revision += 1;
                 true
+            }
+            SceneDiff::SetPointer(ptr) => {
+                self.pointer = ptr;
+                self.revision += 1;
+                true
+            }
+            SceneDiff::DeleteSlideElement {
+                slide_id,
+                element_id,
+            } => {
+                let mut removed = false;
+                if let Some(slide) = self.deck.iter_mut().find(|s| s.id == slide_id) {
+                    let before = slide.elements.len();
+                    slide.elements.retain(|e| e.id != element_id);
+                    if slide.elements.len() < before {
+                        if self.active_slide.as_ref().map(|s| s.id) == Some(slide_id) {
+                            self.active_slide = Some(slide.clone());
+                        }
+                        removed = true;
+                    }
+                }
+                if removed {
+                    self.revision += 1;
+                }
+                removed
             }
             SceneDiff::SetMask(style) => {
                 self.mask_style = style;

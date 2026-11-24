@@ -9,7 +9,7 @@
 
 use core_scene::{
     ActiveMessage, ColorRgba, MediaFitMode, OverlayItem, RectF, Slide, SlideElement,
-    SlideElementKind, StageLayoutConfig, TemplateConfig, TextAlign, TextStyle,
+    SlideElementKind, StageLayoutConfig, TelestratorPointer, TemplateConfig, TextAlign, TextStyle,
     VIRTUAL_CANVAS_HEIGHT, VIRTUAL_CANVAS_WIDTH, VerticalAlign, apply_template_to_slide_mut,
     resolve_dynamic_tokens,
 };
@@ -138,11 +138,13 @@ impl BroadcastRasterizer {
         height: u32,
         overlays: &[&OverlayItem],
         audience_message: Option<&ActiveMessage>,
+        pointer: Option<&TelestratorPointer>,
         vars: &BTreeMap<String, String>,
         timer: Option<&str>,
         clock_str: &str,
     ) {
-        if overlays.is_empty() && audience_message.is_none() {
+        let ptr_active = pointer.filter(|p| p.active);
+        if overlays.is_empty() && audience_message.is_none() && ptr_active.is_none() {
             return;
         }
         let Some(mut pixmap) = Pixmap::new(width.max(16), height.max(16)) else {
@@ -195,6 +197,22 @@ impl BroadcastRasterizer {
                 1.0,
                 scale_x,
                 scale_y,
+            );
+        }
+
+        if let Some(ptr) = ptr_active {
+            let cx = ptr.x.clamp(0.0, 1.0) * width as f32;
+            let cy = ptr.y.clamp(0.0, 1.0) * height as f32;
+            let r = (ptr.radius.clamp(6.0, 48.0) * scale_x.min(scale_y)).max(4.0);
+            Self::draw_rounded_rect(
+                &mut pixmap,
+                cx - r,
+                cy - r,
+                r * 2.0,
+                r * 2.0,
+                r,
+                ptr.color,
+                Some((ColorRgba::WHITE, 2.0)),
             );
         }
 
@@ -725,6 +743,28 @@ impl Vector2DRasterizer for BroadcastRasterizer {
         if let Some(t) = timer_readout {
             hasher.update(t.as_bytes());
         }
+        for flag in [
+            layout.show_current_slide,
+            layout.show_next_slide,
+            layout.show_chords,
+            layout.show_clock,
+            layout.show_timer,
+            layout.show_stage_message,
+        ] {
+            hasher.update(&[u8::from(flag)]);
+        }
+        for r in [
+            layout.current_rect,
+            layout.next_rect,
+            layout.chords_rect,
+            layout.timer_rect,
+            layout.message_rect,
+        ] {
+            hasher.update(&r.x.to_le_bytes());
+            hasher.update(&r.y.to_le_bytes());
+            hasher.update(&r.width.to_le_bytes());
+            hasher.update(&r.height.to_le_bytes());
+        }
         let key = *hasher.finalize().as_bytes();
         if let Some(hit) = self.cache.get(&key) {
             return hit.clone();
@@ -751,7 +791,7 @@ impl Vector2DRasterizer for BroadcastRasterizer {
             };
             self.render_text_box(
                 &mut pixmap,
-                RectF::new(1380.0, 12.0, 480.0, 96.0),
+                layout.timer_rect,
                 timer,
                 &style,
                 1.0,
@@ -779,7 +819,7 @@ impl Vector2DRasterizer for BroadcastRasterizer {
                 };
                 self.render_text_box(
                     &mut pixmap,
-                    RectF::new(120.0, 150.0, 1680.0, 84.0),
+                    layout.chords_rect,
                     chords,
                     &chord_style,
                     1.0,
@@ -799,7 +839,7 @@ impl Vector2DRasterizer for BroadcastRasterizer {
             };
             self.render_text_box(
                 &mut pixmap,
-                RectF::new(120.0, 230.0, 1680.0, 430.0),
+                layout.current_rect,
                 &curr.plain_text(),
                 &curr_style,
                 1.0,
@@ -825,7 +865,7 @@ impl Vector2DRasterizer for BroadcastRasterizer {
             };
             self.render_text_box(
                 &mut pixmap,
-                RectF::new(120.0, 760.0, 1680.0, 190.0),
+                layout.next_rect,
                 &next_text,
                 &next_style,
                 1.0,
@@ -851,7 +891,7 @@ impl Vector2DRasterizer for BroadcastRasterizer {
             };
             self.render_text_box(
                 &mut pixmap,
-                RectF::new(160.0, 930.0, 1600.0, 120.0),
+                layout.message_rect,
                 msg,
                 &msg_style,
                 1.0,
@@ -1245,12 +1285,20 @@ mod tests {
             show_on_audience: true,
             show_on_stage: true,
         };
+        let ptr = TelestratorPointer {
+            x: 0.5,
+            y: 0.5,
+            active: true,
+            color: ColorRgba::rgb(1.0, 0.2, 0.2),
+            radius: 16.0,
+        };
         r.composite_overlays_and_message(
             &mut layer.rgba_premul,
             320,
             180,
             &ov_refs,
             Some(&msg),
+            Some(&ptr),
             &vars,
             Some("03:00"),
             "10:00",

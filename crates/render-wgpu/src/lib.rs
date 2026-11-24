@@ -733,6 +733,7 @@ impl CompositorApp {
                 LAYER_TEX_HEIGHT,
                 &active_overlays,
                 aud_msg,
+                snap.state.pointer.as_ref(),
                 &snap.state.variables,
                 snap.state.timer_readout.as_deref(),
                 "LIVE",

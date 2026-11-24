@@ -366,6 +366,42 @@ async fn upsert_slide(
 }
 
 #[tauri::command]
+async fn delete_slide_element(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    slide_id: String,
+    element_id: String,
+) -> Result<SceneState, String> {
+    let sid = SlideId(Uuid::parse_str(&slide_id).map_err(|e| e.to_string())?);
+    let eid = core_scene::ElementId(Uuid::parse_str(&element_id).map_err(|e| e.to_string())?);
+    apply_scene_diff(
+        &bridge,
+        SceneDiff::DeleteSlideElement {
+            slide_id: sid,
+            element_id: eid,
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+async fn set_output_stage_layout(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    output_id: String,
+    layout: StageLayoutConfig,
+) -> Result<SceneState, String> {
+    let oid = OutputId(Uuid::parse_str(&output_id).map_err(|e| e.to_string())?);
+    apply_scene_diff(&bridge, SceneDiff::SetOutputStageLayout { output_id: oid, layout }).await
+}
+
+#[tauri::command]
+async fn set_pointer(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    pointer: Option<core_scene::TelestratorPointer>,
+) -> Result<SceneState, String> {
+    apply_scene_diff(&bridge, SceneDiff::SetPointer(pointer)).await
+}
+
+#[tauri::command]
 async fn clear_layer(
     bridge: State<'_, Arc<EngineBridgeState>>,
     layer: LayerKind,
@@ -2388,6 +2424,9 @@ pub fn run() {
             trigger_slide,
             update_slide_element,
             upsert_slide,
+            delete_slide_element,
+            set_output_stage_layout,
+            set_pointer,
             clear_layer,
             clear_all,
             set_blackout,
