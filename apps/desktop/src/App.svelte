@@ -16,7 +16,7 @@
   import QuickLyricsPanel from "./lib/QuickLyricsPanel.svelte";
   import ScreensPanel from "./lib/ScreensPanel.svelte";
   import ScriptureDrawer from "./lib/ScriptureDrawer.svelte";
-  import ShowControlPanel from "./lib/ShowControlPanel.svelte";
+  import ShowControlPanel, { type ControlSection } from "./lib/ShowControlPanel.svelte";
   import SlideEditor from "./lib/SlideEditor.svelte";
   import StageDesignerPanel from "./lib/StageDesignerPanel.svelte";
   import StatusBar from "./lib/StatusBar.svelte";
@@ -39,6 +39,7 @@
   let statusMessage = $state("Connecting to openpresenter-engine sidecar...");
   let errorText = $state<string | null>(null);
   let activeTab = $state<WorkspaceTab>("show");
+  let activeControlSection = $state<ControlSection>("timers");
   let editingTimerSlideId = $state<string | null>(null);
   let crashCount = $state(0);
   let showLibraryDrawer = $state(true);
@@ -69,8 +70,9 @@
     errorText = msg;
   }
 
-  function selectTab(tab: WorkspaceTab) {
+  function selectTab(tab: WorkspaceTab, section?: ControlSection) {
     activeTab = tab;
+    if (section) activeControlSection = section;
   }
 
   function openSlideContextMenu(event: MouseEvent, slide: Slide) {
@@ -520,6 +522,7 @@
 <div class="shell">
   <MenuBar
     {activeTab}
+    {activeControlSection}
     {connected}
     frozen={Boolean(scene?.freeze_output)}
     {crashCount}
@@ -570,7 +573,11 @@
       {:else if activeTab === "broadcast"}
         <BroadcastPanel />
       {:else if activeTab === "ecosystem"}
-        <ShowControlPanel onSceneChange={applySceneState} />
+        <ShowControlPanel
+          initialSection={activeControlSection}
+          onSectionChange={(s) => (activeControlSection = s)}
+          onSceneChange={applySceneState}
+        />
       {:else if activeTab === "diagnostics"}
         <DiagnosticsPanel />
       {:else if activeTab === "editor" && editableSlide}

@@ -9,8 +9,9 @@ describe("ShowControlPanel M3 UI (Happy & Failure Paths)", () => {
   });
 
   it("creates timers, imports worship documents, and exports CCLI CSV (happy paths)", async () => {
+    let mockTimers: { id: string; name: string; formatted: string; running: boolean; overrun: boolean }[] = [];
     mockIPC((cmd) => {
-      if (cmd === "list_timers") return [];
+      if (cmd === "list_timers") return mockTimers;
       if (cmd === "list_macros") {
         return [{ id: "m-1", name: "Worship Start", steps: ["blackout:off"], updated_at: "2026-11-24T00:00:00Z" }];
       }
@@ -18,7 +19,7 @@ describe("ShowControlPanel M3 UI (Happy & Failure Paths)", () => {
         return [{ id: "ev-1", name: "Sunday 10am", trigger_hhmm: "10:00", macro_id: "m-1", enabled: true, updated_at: "2026-11-24T00:00:00Z" }];
       }
       if (cmd === "create_countdown_timer" || cmd === "control_timer" || cmd === "tick_timers") {
-        return [
+        mockTimers = [
           {
             id: "t-1",
             name: "Sermon Countdown",
@@ -27,6 +28,7 @@ describe("ShowControlPanel M3 UI (Happy & Failure Paths)", () => {
             overrun: false,
           },
         ];
+        return mockTimers;
       }
       if (cmd === "save_macro" || cmd === "delete_macro") {
         return [{ id: "m-1", name: "Worship Start", steps: ["blackout:off"], updated_at: "2026-11-24T00:00:00Z" }];
@@ -65,20 +67,26 @@ describe("ShowControlPanel M3 UI (Happy & Failure Paths)", () => {
     });
 
     render(ShowControlPanel);
-    await waitFor(() => expect(screen.getByRole("button", { name: "▶ Worship Start" })).toBeTruthy());
 
+    // 1. Live Timers tab (default)
+    expect(screen.getByTestId("section-timers")).toBeTruthy();
     await fireEvent.click(screen.getByText("Add Countdown"));
     await waitFor(() => expect(screen.getByRole("button", { name: "Start" })).toBeTruthy());
     await fireEvent.click(screen.getByRole("button", { name: "Start" }));
     await fireEvent.click(screen.getByRole("button", { name: "+1m" }));
     await fireEvent.click(screen.getByRole("button", { name: "Reset" }));
 
+    // 2. Macros & Schedule tab
+    await fireEvent.click(screen.getByRole("tab", { name: "Macros & Schedule" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "▶ Worship Start" })).toBeTruthy());
     await fireEvent.click(screen.getByRole("button", { name: "Save Macro" }));
     await fireEvent.click(screen.getByRole("button", { name: "▶ Worship Start" }));
     await fireEvent.click(screen.getByLabelText("Delete macro Worship Start"));
     await fireEvent.click(screen.getByRole("button", { name: "Schedule" }));
     await fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
+    // 3. Import & PCO tab
+    await fireEvent.click(screen.getByRole("tab", { name: "Import & PCO" }));
     await fireEvent.click(screen.getByText("Import to Local Library"));
     await waitFor(() =>
       expect(screen.getAllByRole("status").some((el) => el.textContent?.includes('Imported "Amazing Grace"'))).toBe(true),
@@ -92,6 +100,8 @@ describe("ShowControlPanel M3 UI (Happy & Failure Paths)", () => {
       expect(screen.getAllByRole("status").some((el) => el.textContent?.includes('Imported "Sunday Sermon"'))).toBe(true),
     );
 
+    // 4. Backup tab
+    await fireEvent.click(screen.getByRole("tab", { name: "Backup" }));
     await fireEvent.click(screen.getByRole("button", { name: "Export .opbundle Backup" }));
     await waitFor(() =>
       expect(screen.getAllByRole("status").some((el) => el.textContent?.includes("Exported 18 library items"))).toBe(true),
@@ -101,6 +111,8 @@ describe("ShowControlPanel M3 UI (Happy & Failure Paths)", () => {
       expect(screen.getAllByRole("status").some((el) => el.textContent?.includes("Restored 18 library items"))).toBe(true),
     );
 
+    // 5. CCLI tab
+    await fireEvent.click(screen.getByRole("tab", { name: "CCLI" }));
     await fireEvent.click(screen.getByText("Export CCLI CSV Report"));
     await waitFor(() =>
       expect(screen.getByTestId("ccli-csv").textContent).toContain("CCLINumber"),
@@ -129,12 +141,12 @@ describe("ShowControlPanel M3 UI (Happy & Failure Paths)", () => {
       expect(screen.getByRole("alert").textContent).toContain("timer engine offline"),
     );
 
-    // Client-side validation failure: empty import payload
+    // Import tab validation & backend failure
+    await fireEvent.click(screen.getByRole("tab", { name: "Import & PCO" }));
     await fireEvent.input(screen.getByLabelText("Import Content"), { target: { value: "  " } });
     await fireEvent.click(screen.getByText("Import to Local Library"));
     expect(screen.getByRole("alert").textContent).toContain("Paste document content");
 
-    // Backend failure: corrupt document
     await fireEvent.input(screen.getByLabelText("Import Content"), {
       target: { value: "{bad}" },
     });
@@ -143,7 +155,8 @@ describe("ShowControlPanel M3 UI (Happy & Failure Paths)", () => {
       expect(screen.getByRole("alert").textContent).toContain("corrupt ChordPro syntax"),
     );
 
-    // Backend failure: CCLI export failure
+    // CCLI tab backend failure
+    await fireEvent.click(screen.getByRole("tab", { name: "CCLI" }));
     await fireEvent.click(screen.getByText("Export CCLI CSV Report"));
     await waitFor(() =>
       expect(screen.getByRole("alert").textContent).toContain("database locked"),

@@ -70,10 +70,10 @@ describe("MenuBar & StatusBar desktop chrome", () => {
     await fireEvent.click(screen.getByRole("button", { name: "Freeze" }));
     expect(onToggleFreeze).toHaveBeenCalledTimes(1);
 
-    // Trigger File -> Reconnect & Reload UI & Broadcast via Screens
+    // Trigger File -> Import & Reconnect & Reload UI & Broadcast via Screens
     await fireEvent.click(screen.getByRole("menuitem", { name: "File" }));
-    await fireEvent.click(screen.getByRole("menuitem", { name: /Import & \.opbundle Backup/ }));
-    expect(onSelectTab).toHaveBeenCalledWith("ecosystem");
+    await fireEvent.click(screen.getByRole("menuitem", { name: /Import Files & Planning Center/ }));
+    expect(onSelectTab).toHaveBeenCalledWith("ecosystem", "import");
 
     await fireEvent.click(screen.getByRole("menuitem", { name: "File" }));
     await fireEvent.click(screen.getByRole("menuitem", { name: /Reconnect Engine/ }));

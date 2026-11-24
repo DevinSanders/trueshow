@@ -1,4 +1,6 @@
 <script lang="ts">
+  import type { ControlSection } from "./ShowControlPanel.svelte";
+
   export type WorkspaceTab =
     | "show"
     | "scripture"
@@ -30,13 +32,14 @@
 
   interface Props {
     activeTab: WorkspaceTab;
+    activeControlSection?: ControlSection;
     connected: boolean;
     frozen: boolean;
     crashCount: number;
     showLibraryDrawer: boolean;
     showLayerDock: boolean;
     showMediaDrawer: boolean;
-    onSelectTab: (tab: WorkspaceTab) => void;
+    onSelectTab: (tab: WorkspaceTab, section?: ControlSection) => void;
     onToggleLibraryDrawer: () => void;
     onToggleLayerDock: () => void;
     onToggleMediaDrawer: () => void;
@@ -51,6 +54,7 @@
 
   let {
     activeTab,
+    activeControlSection = "timers",
     connected,
     frozen,
     crashCount,
@@ -86,6 +90,18 @@
     diagnostics: "Diagnostics",
   };
 
+  const sectionTitles: Record<ControlSection, string> = {
+    timers: "Live Timers",
+    automation: "Macros & Schedule",
+    import: "Import & Planning Center",
+    ccli: "CCLI Attribution & Reports",
+    backup: "Library Backup (.opbundle)",
+  };
+
+  const activeViewTitle = $derived(
+    activeTab === "ecosystem" ? sectionTitles[activeControlSection] : tabTitles[activeTab],
+  );
+
   const menus = $derived<MenuGroup[]>([
     {
       id: "file",
@@ -94,7 +110,8 @@
         { id: "tab:show", label: "Show Deck", checked: activeTab === "show" },
         { id: "tab:scripture", label: "Scripture Lookup", checked: activeTab === "scripture" },
         { id: "tab:lyrics", label: "Quick Lyrics & Arrangements", checked: activeTab === "lyrics" },
-        { id: "tab:ecosystem", label: "Import & .opbundle Backup...", separator: true },
+        { id: "tool:import", label: "Import Files & Planning Center...", separator: true },
+        { id: "tool:backup", label: "Backup & Restore (.opbundle)..." },
         { id: "reconnect", label: "Reconnect Engine", separator: true },
         { id: "reload", label: "Reload UI (Keep Live)" },
         { id: "stop-engine", label: "Stop Engine", disabled: !connected, danger: true, separator: true },
@@ -137,7 +154,11 @@
       id: "tools",
       label: "Tools",
       items: [
-        { id: "tab:ecosystem", label: "Control, Timers, Macros & Sync", checked: activeTab === "ecosystem" },
+        { id: "tool:timers", label: "Live Timers", checked: activeTab === "ecosystem" && activeControlSection === "timers" },
+        { id: "tool:automation", label: "Macros, Calendar & OSC", checked: activeTab === "ecosystem" && activeControlSection === "automation" },
+        { id: "tool:import", label: "Import & Planning Center", checked: activeTab === "ecosystem" && activeControlSection === "import", separator: true },
+        { id: "tool:ccli", label: "CCLI Attribution & Reports", checked: activeTab === "ecosystem" && activeControlSection === "ccli" },
+        { id: "tool:backup", label: "Backup & Restore (.opbundle)", checked: activeTab === "ecosystem" && activeControlSection === "backup" },
         {
           id: "tab:diagnostics",
           label: crashCount > 0 ? `Diagnostics (${crashCount})` : "Diagnostics & Logs",
@@ -163,6 +184,10 @@
     openMenuId = null;
     if (item.id.startsWith("tab:")) {
       onSelectTab(item.id.slice(4) as WorkspaceTab);
+      return;
+    }
+    if (item.id.startsWith("tool:")) {
+      onSelectTab("ecosystem", item.id.slice(5) as ControlSection);
       return;
     }
     switch (item.id) {
@@ -244,7 +269,7 @@
   </div>
 
   <div class="menubar-right">
-    <span class="view-pill" data-testid="active-view-label">{tabTitles[activeTab]}</span>
+    <span class="view-pill" data-testid="active-view-label">{activeViewTitle}</span>
     {#if activeTab !== "show"}
       <button type="button" class="quick-btn" onclick={() => onSelectTab("show")}>
         Show
