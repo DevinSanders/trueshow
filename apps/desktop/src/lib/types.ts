@@ -174,13 +174,52 @@ export interface OutputConfig {
   look_id: string;
 }
 
+export type MediaFitMode = "Fill" | "Contain" | "Stretch";
+
+export interface MediaTransportState {
+  playing: boolean;
+  looping: boolean;
+  muted: boolean;
+  volume: number;
+  fit_mode: MediaFitMode;
+  position_secs: number;
+  duration_secs: number;
+}
+
+export interface AudioPlaybackState {
+  title: string;
+  media_path: string;
+  playing: boolean;
+  looping: boolean;
+  volume: number;
+}
+
+export interface Arrangement {
+  id: string;
+  name: string;
+  group_order: string[];
+}
+
+export interface BibleVerseRecord {
+  translation: string;
+  book: string;
+  chapter: number;
+  verse: number;
+  text: string;
+  attribution: string;
+  cached_at_epoch: number | null;
+}
+
 export interface SceneState {
   revision: number;
   blackout: boolean;
+  freeze_output?: boolean;
   active_slide: Slide | null;
   next_slide_preview: Slide | null;
   active_background?: ActiveBackground | null;
   active_foreground_media?: ForegroundMedia | null;
+  media_transport?: MediaTransportState;
+  active_audio?: AudioPlaybackState | null;
   video_input_active: boolean;
   media_layer_active: boolean;
   slide_layer_active: boolean;
@@ -194,6 +233,9 @@ export interface SceneState {
   templates?: Record<string, TemplateConfig>;
   outputs: OutputConfig[];
   deck: Slide[];
+  master_deck?: Slide[];
+  active_arrangements?: Arrangement[];
+  active_arrangement_id?: string | null;
 }
 
 export interface DisplayInfo {

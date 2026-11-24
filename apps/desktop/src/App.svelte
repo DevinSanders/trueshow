@@ -8,7 +8,9 @@
   import LibraryPlaylistDrawer from "./lib/LibraryPlaylistDrawer.svelte";
   import LooksTemplatesPanel from "./lib/LooksTemplatesPanel.svelte";
   import MediaBinDrawer from "./lib/MediaBinDrawer.svelte";
+  import QuickLyricsPanel from "./lib/QuickLyricsPanel.svelte";
   import ScreensPanel from "./lib/ScreensPanel.svelte";
+  import ScriptureDrawer from "./lib/ScriptureDrawer.svelte";
   import ShowControlPanel from "./lib/ShowControlPanel.svelte";
   import SlideEditor from "./lib/SlideEditor.svelte";
   import { allowDrop, readDroppedMedia } from "./lib/dragStore";
@@ -18,6 +20,7 @@
     EngineTelemetry,
     LayerKind,
     MaskStyle,
+    MediaFitMode,
     SceneState,
     SlideElement,
   } from "./lib/types";
@@ -26,7 +29,9 @@
   let telemetry = $state<EngineTelemetry | null>(null);
   let statusMessage = $state("Connecting to openpresenter-engine sidecar...");
   let errorText = $state<string | null>(null);
-  let activeTab = $state<"show" | "screens" | "looks" | "editor" | "broadcast" | "ecosystem" | "diagnostics">("show");
+  let activeTab = $state<
+    "show" | "scripture" | "lyrics" | "screens" | "looks" | "editor" | "broadcast" | "ecosystem" | "diagnostics"
+  >("show");
   let crashCount = $state(0);
   let showLibraryDrawer = $state(true);
   let showLayerDock = $state(true);
@@ -109,6 +114,97 @@
     } catch (err) {
       errorText = String(err);
     }
+  }
+
+  async function toggleFreeze() {
+    if (!scene) return;
+    errorText = null;
+    try {
+      const next = await invoke<SceneState>("set_freeze", {
+        enabled: !scene.freeze_output,
+      });
+      if (snapshot) snapshot = { ...snapshot, state: next };
+    } catch (err) {
+      errorText = String(err);
+    }
+  }
+
+  async function undoScene() {
+    errorText = null;
+    try {
+      const next = await invoke<SceneState>("undo_scene");
+      if (snapshot) snapshot = { ...snapshot, state: next };
+    } catch (err) {
+      errorText = String(err);
+    }
+  }
+
+  async function redoScene() {
+    errorText = null;
+    try {
+      const next = await invoke<SceneState>("redo_scene");
+      if (snapshot) snapshot = { ...snapshot, state: next };
+    } catch (err) {
+      errorText = String(err);
+    }
+  }
+
+  async function setMediaFitMode(fitMode: MediaFitMode) {
+    if (!scene) return;
+    errorText = null;
+    const base = scene.media_transport ?? {
+      playing: true,
+      looping: true,
+      muted: true,
+      volume: 1,
+      fit_mode: "Fill" as MediaFitMode,
+      position_secs: 0,
+      duration_secs: 0,
+    };
+    try {
+      const next = await invoke<SceneState>("set_media_transport", {
+        transport: { ...base, fit_mode: fitMode },
+      });
+      if (snapshot) snapshot = { ...snapshot, state: next };
+    } catch (err) {
+      errorText = String(err);
+    }
+  }
+
+  async function stopAudioPlayback() {
+    errorText = null;
+    try {
+      const next = await invoke<SceneState>("set_audio_playback", { audio: null });
+      if (snapshot) snapshot = { ...snapshot, state: next };
+    } catch (err) {
+      errorText = String(err);
+    }
+  }
+
+  function stepSlide(delta: number) {
+    if (!scene || scene.deck.length === 0) return;
+    const curIdx = scene.active_slide
+      ? scene.deck.findIndex((s) => s.id === scene.active_slide?.id)
+      : -1;
+    const nextIdx = Math.max(0, Math.min(scene.deck.length - 1, (curIdx < 0 ? 0 : curIdx) + delta));
+    const target = scene.deck[nextIdx];
+    if (target) void triggerSlide(target.id);
+  }
+
+  function jumpToGroupPrefix(prefix: string) {
+    if (!scene) return;
+    const hit = scene.deck.find((s) => s.group.toLowerCase().startsWith(prefix.toLowerCase()));
+    if (hit) void triggerSlide(hit.id);
+  }
+
+  function groupBadgeColor(group: string): string {
+    const g = group.toLowerCase();
+    if (g.includes("chorus")) return "#2563eb";
+    if (g.includes("bridge")) return "#9333ea";
+    if (g.includes("verse")) return "#0d9488";
+    if (g.includes("scripture")) return "#d97706";
+    if (g.includes("pre")) return "#475569";
+    return "#334155";
   }
 
   async function toggleOverlay() {
@@ -269,6 +365,49 @@
     window.addEventListener("error", onWindowError);
     window.addEventListener("unhandledrejection", onUnhandledRejection);
 
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const tag = target?.tagName ?? "";
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target?.isContentEditable) {
+        return;
+      }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        if (event.shiftKey) void redoScene();
+        else void undoScene();
+        return;
+      }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "y") {
+        event.preventDefault();
+        void redoScene();
+        return;
+      }
+      if (event.key === "ArrowRight" || event.key === "PageDown" || event.key === " ") {
+        event.preventDefault();
+        stepSlide(1);
+      } else if (event.key === "ArrowLeft" || event.key === "PageUp") {
+        event.preventDefault();
+        stepSlide(-1);
+      } else if (event.key === "F1") {
+        event.preventDefault();
+        void clearAll();
+      } else if (event.key === "F2") {
+        event.preventDefault();
+        void clearLayer("Slide");
+      } else if (event.key.toLowerCase() === "b") {
+        void toggleBlackout();
+      } else if (event.key.toLowerCase() === "f") {
+        void toggleFreeze();
+      } else if (event.key.toLowerCase() === "v") {
+        jumpToGroupPrefix("verse");
+      } else if (event.key.toLowerCase() === "c") {
+        jumpToGroupPrefix("chorus");
+      } else if (event.key.toLowerCase() === "g") {
+        jumpToGroupPrefix("bridge");
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+
     let consecutiveErrors = 0;
     let telemetryInFlight = false;
     const timer = setInterval(async () => {
@@ -291,6 +430,7 @@
       clearInterval(timer);
       window.removeEventListener("error", onWindowError);
       window.removeEventListener("unhandledrejection", onUnhandledRejection);
+      window.removeEventListener("keydown", onKeyDown);
     };
   });
 </script>
@@ -304,6 +444,12 @@
       <nav class="tabs" aria-label="Workspace views">
         <button class="tab" class:active={activeTab === "show"} onclick={() => (activeTab = "show")}>
           Show
+        </button>
+        <button class="tab" class:active={activeTab === "scripture"} onclick={() => (activeTab = "scripture")}>
+          Scripture
+        </button>
+        <button class="tab" class:active={activeTab === "lyrics"} onclick={() => (activeTab = "lyrics")}>
+          Quick Lyrics
         </button>
         <button class="tab" class:active={activeTab === "screens"} onclick={() => (activeTab = "screens")}>
           Screens
@@ -360,6 +506,21 @@
       >
         Media Bin
       </button>
+      <button class="btn" onclick={() => void undoScene()} title="Undo (Ctrl+Z)" disabled={!connected}>
+        Undo
+      </button>
+      <button class="btn" onclick={() => void redoScene()} title="Redo (Ctrl+Y)" disabled={!connected}>
+        Redo
+      </button>
+      <button
+        class="btn"
+        class:toggled={Boolean(scene?.freeze_output)}
+        onclick={() => void toggleFreeze()}
+        title="Freeze Live Outputs (Hotkey: F)"
+        disabled={!connected}
+      >
+        {scene?.freeze_output ? "Unfreeze" : "Freeze"}
+      </button>
       <button class="btn" onclick={attachEngine}>Reconnect</button>
       <button class="btn" onclick={reloadUiKeepLive}>Reload UI (Keep Live)</button>
       <button class="btn danger" onclick={shutdownEngine} disabled={!connected}>
@@ -400,6 +561,28 @@
           onSnapshotChange={(next) => {
             snapshot = next;
             telemetry = next.telemetry;
+          }}
+        />
+      {:else if activeTab === "scripture"}
+        <ScriptureDrawer
+          onDeckLoaded={(next) => {
+            errorText = null;
+            if (snapshot) snapshot = { ...snapshot, state: next };
+            activeTab = "show";
+          }}
+          onError={(msg) => {
+            errorText = msg;
+          }}
+        />
+      {:else if activeTab === "lyrics" && scene}
+        <QuickLyricsPanel
+          {scene}
+          onSceneChange={(next) => {
+            errorText = null;
+            if (snapshot) snapshot = { ...snapshot, state: next };
+          }}
+          onError={(msg) => {
+            errorText = msg;
           }}
         />
       {:else if activeTab === "looks" && scene}
@@ -447,6 +630,18 @@
               />
             </label>
             {#if scene}
+              <label>
+                Media Fit:
+                <select
+                  aria-label="Media Fit Mode"
+                  value={scene.media_transport?.fit_mode ?? "Fill"}
+                  onchange={(e) => setMediaFitMode(e.currentTarget.value as MediaFitMode)}
+                >
+                  <option value="Fill">Fill</option>
+                  <option value="Contain">Contain</option>
+                  <option value="Stretch">Stretch</option>
+                </select>
+              </label>
               <label>
                 Mask:
                 <select
@@ -500,7 +695,9 @@
                     class="swatch"
                     style={`background: linear-gradient(135deg, ${cssRgb(swatchPrimary)}, ${cssRgb(swatchSecondary)});`}
                   >
-                    <span class="group-tag">{slide.group}</span>
+                    <span class="group-tag" style={`background:${groupBadgeColor(slide.group)};`}>
+                      {slide.group}
+                    </span>
                     {#if isLive}
                       <span class="on-air">LIVE</span>
                     {/if}
@@ -527,6 +724,13 @@
               </div>
             {/each}
           </div>
+
+          {#if scene.active_audio}
+            <div class="audio-bar">
+              <span>AUDIO: <strong>{scene.active_audio.title}</strong></span>
+              <button class="btn" onclick={() => void stopAudioPlayback()}>Stop Audio</button>
+            </div>
+          {/if}
 
           <div class="stage-msg-bar">
             <input
@@ -720,6 +924,17 @@
     border: 1px solid var(--border);
     border-radius: 6px;
     padding: 6px 8px;
+    font-size: 12px;
+  }
+
+  .audio-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 10px;
+    background: rgba(16, 185, 129, 0.14);
+    border: 1px solid rgba(16, 185, 129, 0.4);
+    border-radius: 6px;
     font-size: 12px;
   }
 

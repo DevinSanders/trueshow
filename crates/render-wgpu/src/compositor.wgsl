@@ -32,6 +32,9 @@ var slide_tex: texture_2d<f32>;
 @group(0) @binding(2)
 var slide_sampler: sampler;
 
+@group(0) @binding(3)
+var bg_tex: texture_2d<f32>;
+
 struct VertexOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) uv: vec2<f32>,
@@ -162,9 +165,11 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let overlay_active = (u.flags & 8u) != 0u;
     let stage_mode = (u.flags & 32u) != 0u;
     let transparent_bg = (u.flags & 64u) != 0u;
+    let has_bg_tex = (u.flags & 128u) != 0u;
 
     let smooth_blend = smoothstep(0.0, 1.0, clamp(u.blend_t, 0.0, 1.0));
     let slide_sample = textureSample(slide_tex, slide_sampler, in.uv);
+    let bg_img_sample = textureSample(bg_tex, slide_sampler, in.uv);
 
     // Stage Confidence Mode: crisp dark backdrop + live rasterized Stage Confidence typography
     if stage_mode {
@@ -187,10 +192,13 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         return vec4<f32>(composed.rgb, 1.0);
     }
 
-    // Layer 1: Media / Motion Background with Cut / Dissolve / PushLeft / WipeRight transitions
+    // Layer 1: Media / Motion Background (real local image texture OR procedural GPU shader)
     var out_col = vec4<f32>(0.0, 0.0, 0.0, select(1.0, 0.0, transparent_bg));
     if media_active && !transparent_bg {
-        if u.transition_kind == 1u && smooth_blend < 0.999 {
+        if has_bg_tex {
+            let prev_px = eval_style(in.uv, u.time_sec, u.prev_style, u.prev_primary, u.prev_secondary, u.prev_accent);
+            out_col = mix(prev_px, vec4<f32>(bg_img_sample.rgb, 1.0), smooth_blend);
+        } else if u.transition_kind == 1u && smooth_blend < 0.999 {
             // PushLeft
             let split = 1.0 - smooth_blend;
             if in.uv.x < split {

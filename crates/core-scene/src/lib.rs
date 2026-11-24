@@ -339,6 +339,98 @@ impl Default for TransitionSpec {
     }
 }
 
+/// How local image/video media scales inside the `1920×1080` virtual output canvas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum MediaFitMode {
+    /// Scale proportionally to cover the entire canvas (crop edges if aspect differs).
+    #[default]
+    Fill = 0,
+    /// Scale proportionally to fit completely inside the canvas (letterbox/pillarbox).
+    Contain = 1,
+    /// Stretch to fill the exact canvas dimensions.
+    Stretch = 2,
+}
+
+/// Live playback transport state for active motion/video media.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MediaTransportState {
+    pub playing: bool,
+    pub looping: bool,
+    pub muted: bool,
+    pub volume: f32,
+    pub fit_mode: MediaFitMode,
+    pub position_secs: f32,
+    pub duration_secs: f32,
+}
+
+impl Default for MediaTransportState {
+    fn default() -> Self {
+        Self {
+            playing: true,
+            looping: true,
+            muted: true,
+            volume: 1.0,
+            fit_mode: MediaFitMode::Fill,
+            position_secs: 0.0,
+            duration_secs: 0.0,
+        }
+    }
+}
+
+/// Active audio bus playback state (walk-in music, tracks, audio cues).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AudioPlaybackState {
+    pub title: String,
+    pub media_path: String,
+    pub playing: bool,
+    pub looping: bool,
+    pub volume: f32,
+}
+
+/// Non-destructive song arrangement specifying the playback order of slide groups
+/// (e.g. `["Verse 1", "Chorus", "Verse 2", "Chorus", "Bridge", "Chorus"]`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Arrangement {
+    pub id: String,
+    pub name: String,
+    pub group_order: Vec<String>,
+}
+
+/// Expands a master slide list according to an optional [`Arrangement`], preserving
+/// slide content while allowing groups (e.g. Chorus) to repeat cleanly without duplicating data.
+pub fn expand_deck_by_arrangement(master: &[Slide], arrangement: Option<&Arrangement>) -> Vec<Slide> {
+    let Some(arr) = arrangement else {
+        return master.to_vec();
+    };
+    if arr.group_order.is_empty() {
+        return master.to_vec();
+    }
+    let mut expanded = Vec::new();
+    for (occ_idx, group_name) in arr.group_order.iter().enumerate() {
+        let matches: Vec<&Slide> = master
+            .iter()
+            .filter(|s| s.group.eq_ignore_ascii_case(group_name))
+            .collect();
+        for (slide_idx, orig) in matches.into_iter().enumerate() {
+            let mut copy = orig.clone();
+            // Ensure repeated occurrences of the same group have distinct, deterministic SlideIds
+            // so the UI and cue deck track which chorus occurrence is live.
+            if occ_idx > 0 {
+                let raw = orig.id.0.as_u128()
+                    ^ ((occ_idx as u128).wrapping_mul(0x9E37_79B9_7F4A_7C15))
+                    ^ (slide_idx as u128);
+                copy.id = SlideId::from_u128(raw);
+            }
+            expanded.push(copy);
+        }
+    }
+    if expanded.is_empty() {
+        master.to_vec()
+    } else {
+        expanded
+    }
+}
+
 /// Role of a media cue attached to a slide or triggered onto a composition layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum MediaCueRole {
@@ -600,12 +692,18 @@ impl OutputConfig {
 pub struct SceneState {
     pub revision: u64,
     pub blackout: bool,
+    #[serde(default)]
+    pub freeze_output: bool,
     pub active_slide: Option<Slide>,
     pub next_slide_preview: Option<Slide>,
     #[serde(default)]
     pub active_background: Option<ActiveBackground>,
     #[serde(default)]
     pub active_foreground_media: Option<ForegroundMedia>,
+    #[serde(default)]
+    pub media_transport: MediaTransportState,
+    #[serde(default)]
+    pub active_audio: Option<AudioPlaybackState>,
     pub video_input_active: bool,
     pub media_layer_active: bool,
     pub slide_layer_active: bool,
@@ -620,6 +718,12 @@ pub struct SceneState {
     pub templates: BTreeMap<TemplateId, TemplateConfig>,
     pub outputs: Vec<OutputConfig>,
     pub deck: Vec<Slide>,
+    #[serde(default)]
+    pub master_deck: Vec<Slide>,
+    #[serde(default)]
+    pub active_arrangements: Vec<Arrangement>,
+    #[serde(default)]
+    pub active_arrangement_id: Option<String>,
 }
 
 /// Deterministic mutation commands applied to `SceneState`.
@@ -649,6 +753,21 @@ pub enum SceneDiff {
     ClearLayer(LayerKind),
     ClearAll,
     SetBlackout(bool),
+    SetFreeze(bool),
+    SetMediaTransport(MediaTransportState),
+    SetAudioPlayback(Option<AudioPlaybackState>),
+    SetArrangements {
+        arrangements: Vec<Arrangement>,
+        active_id: Option<String>,
+    },
+    SelectArrangement(Option<String>),
+    LoadPresentation {
+        slides: Vec<Slide>,
+        arrangements: Vec<Arrangement>,
+        active_arrangement_id: Option<String>,
+    },
+    Undo,
+    Redo,
     SetOutputLook {
         output_id: OutputId,
         look_id: LookId,
@@ -991,10 +1110,13 @@ impl SceneState {
         Self {
             revision: 1,
             blackout: false,
+            freeze_output: false,
             active_slide: first_slide,
             next_slide_preview: next_slide,
             active_background: initial_bg,
             active_foreground_media: None,
+            media_transport: MediaTransportState::default(),
+            active_audio: None,
             video_input_active: false,
             media_layer_active: true,
             slide_layer_active: true,
@@ -1007,7 +1129,10 @@ impl SceneState {
             looks,
             templates,
             outputs,
+            master_deck: deck.clone(),
             deck,
+            active_arrangements: Vec::new(),
+            active_arrangement_id: None,
         }
     }
 
@@ -1223,6 +1348,76 @@ impl SceneState {
                 self.revision += 1;
                 true
             }
+            SceneDiff::SetFreeze(enabled) => {
+                self.freeze_output = enabled;
+                self.revision += 1;
+                true
+            }
+            SceneDiff::SetMediaTransport(transport) => {
+                self.media_transport = transport;
+                self.revision += 1;
+                true
+            }
+            SceneDiff::SetAudioPlayback(audio) => {
+                self.active_audio = audio;
+                self.revision += 1;
+                true
+            }
+            SceneDiff::SetArrangements {
+                arrangements,
+                active_id,
+            } => {
+                if self.master_deck.is_empty() {
+                    self.master_deck = self.deck.clone();
+                }
+                self.active_arrangements = arrangements;
+                self.active_arrangement_id = active_id;
+                let selected = self.active_arrangement_id.as_deref().and_then(|id| {
+                    self.active_arrangements.iter().find(|a| a.id == id)
+                });
+                self.deck = expand_deck_by_arrangement(&self.master_deck, selected);
+                self.active_slide = self.deck.first().cloned();
+                self.next_slide_preview = self.deck.get(1).cloned();
+                self.revision += 1;
+                true
+            }
+            SceneDiff::SelectArrangement(active_id) => {
+                if self.master_deck.is_empty() {
+                    self.master_deck = self.deck.clone();
+                }
+                if let Some(ref id) = active_id
+                    && !self.active_arrangements.iter().any(|a| a.id == *id)
+                {
+                    return false;
+                }
+                self.active_arrangement_id = active_id;
+                let selected = self.active_arrangement_id.as_deref().and_then(|id| {
+                    self.active_arrangements.iter().find(|a| a.id == id)
+                });
+                self.deck = expand_deck_by_arrangement(&self.master_deck, selected);
+                self.active_slide = self.deck.first().cloned();
+                self.next_slide_preview = self.deck.get(1).cloned();
+                self.revision += 1;
+                true
+            }
+            SceneDiff::LoadPresentation {
+                slides,
+                arrangements,
+                active_arrangement_id,
+            } => {
+                self.master_deck = slides;
+                self.active_arrangements = arrangements;
+                self.active_arrangement_id = active_arrangement_id;
+                let selected = self.active_arrangement_id.as_deref().and_then(|id| {
+                    self.active_arrangements.iter().find(|a| a.id == id)
+                });
+                self.deck = expand_deck_by_arrangement(&self.master_deck, selected);
+                self.active_slide = self.deck.first().cloned();
+                self.next_slide_preview = self.deck.get(1).cloned();
+                self.revision += 1;
+                true
+            }
+            SceneDiff::Undo | SceneDiff::Redo => false,
             SceneDiff::SetOutputLook { output_id, look_id } => {
                 if !self.looks.contains_key(&look_id) {
                     return false;
@@ -1448,7 +1643,10 @@ impl SceneState {
                 true
             }
             SceneDiff::ReplaceDeck(deck) => {
+                self.master_deck = deck.clone();
                 self.deck = deck;
+                self.active_arrangements.clear();
+                self.active_arrangement_id = None;
                 self.active_slide = self.deck.first().cloned();
                 self.next_slide_preview = self.deck.get(1).cloned();
                 self.revision += 1;
@@ -2079,5 +2277,68 @@ mod tests {
         }));
         assert!(state.looks.contains_key(&custom_look_id));
         assert!(state.templates.contains_key(&custom_tpl_id));
+    }
+
+    #[test]
+    fn manages_freeze_media_transport_audio_and_non_destructive_arrangements() {
+        let mut state = SceneState::demo_m0(2);
+        assert!(!state.freeze_output);
+        assert!(state.apply(SceneDiff::SetFreeze(true)));
+        assert!(state.freeze_output);
+
+        assert!(state.apply(SceneDiff::SetMediaTransport(MediaTransportState {
+            playing: false,
+            looping: true,
+            muted: false,
+            volume: 0.75,
+            fit_mode: MediaFitMode::Contain,
+            position_secs: 12.5,
+            duration_secs: 60.0,
+        })));
+        assert_eq!(state.media_transport.fit_mode, MediaFitMode::Contain);
+
+        assert!(state.apply(SceneDiff::SetAudioPlayback(Some(AudioPlaybackState {
+            title: "Walk-In Piano".into(),
+            media_path: "C:\\Audio\\walkin.mp3".into(),
+            playing: true,
+            looping: true,
+            volume: 0.8,
+        }))));
+        assert!(state.active_audio.is_some());
+
+        let mut s_v1 = demo_deck()[0].clone();
+        s_v1.id = SlideId::from_u128(2001);
+        s_v1.group = "Verse 1".into();
+        let mut s_ch = demo_deck()[1].clone();
+        s_ch.id = SlideId::from_u128(2002);
+        s_ch.group = "Chorus".into();
+        let mut s_v2 = demo_deck()[2].clone();
+        s_v2.id = SlideId::from_u128(2003);
+        s_v2.group = "Verse 2".into();
+
+        let arr = Arrangement {
+            id: "arr-full".into(),
+            name: "Full Band".into(),
+            group_order: vec!["Verse 1".into(), "Chorus".into(), "Verse 2".into(), "Chorus".into()],
+        };
+        assert!(state.apply(SceneDiff::LoadPresentation {
+            slides: vec![s_v1, s_ch, s_v2],
+            arrangements: vec![arr.clone()],
+            active_arrangement_id: Some("arr-full".into()),
+        }));
+        assert_eq!(state.master_deck.len(), 3);
+        assert_eq!(state.deck.len(), 4);
+        assert_ne!(state.deck[1].id, state.deck[3].id);
+
+        assert!(!state.apply(SceneDiff::SelectArrangement(Some("missing".into()))));
+        assert!(state.apply(SceneDiff::SelectArrangement(None)));
+        assert_eq!(state.deck.len(), 3);
+        assert!(state.apply(SceneDiff::SetArrangements {
+            arrangements: vec![arr],
+            active_id: Some("arr-full".into()),
+        }));
+        assert_eq!(state.deck.len(), 4);
+        assert!(!state.apply(SceneDiff::Undo));
+        assert!(!state.apply(SceneDiff::Redo));
     }
 }

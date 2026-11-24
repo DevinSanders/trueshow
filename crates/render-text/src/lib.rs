@@ -8,9 +8,9 @@
 //! content hash so the `wgpu` compositor runs 60 fps transitions and scaling at 0% CPU.
 
 use core_scene::{
-    ColorRgba, RectF, Slide, SlideElement, SlideElementKind, StageLayoutConfig, TemplateConfig,
-    TextAlign, TextStyle, VIRTUAL_CANVAS_HEIGHT, VIRTUAL_CANVAS_WIDTH, VerticalAlign,
-    apply_template_to_slide_mut,
+    ColorRgba, MediaFitMode, RectF, Slide, SlideElement, SlideElementKind, StageLayoutConfig,
+    TemplateConfig, TextAlign, TextStyle, VIRTUAL_CANVAS_HEIGHT, VIRTUAL_CANVAS_WIDTH,
+    VerticalAlign, apply_template_to_slide_mut,
 };
 use cosmic_text::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Style, SwashCache, Weight};
 use std::collections::{HashMap, VecDeque};
@@ -820,6 +820,126 @@ impl Vector2DRasterizer for BroadcastRasterizer {
     }
 }
 
+/// Decodes a local PNG or uncompressed 24/32-bit BMP image file into tightly packed premultiplied
+/// RGBA8 pixels sized `target_w × target_h` using the requested [`MediaFitMode`].
+///
+/// Returns `None` for non-image paths (e.g. `builtin://...`), missing files, or unsupported codecs.
+pub fn decode_local_image_premul_rgba(
+    path: &std::path::Path,
+    target_w: u32,
+    target_h: u32,
+    fit: MediaFitMode,
+) -> Option<Vec<u8>> {
+    if target_w == 0 || target_h == 0 || !path.is_file() {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    let (src_w, src_h, src_rgba) = decode_png_or_bmp_premul(&bytes)?;
+    Some(scale_rgba_fit(
+        src_w,
+        src_h,
+        &src_rgba,
+        target_w,
+        target_h,
+        fit,
+    ))
+}
+
+fn decode_png_or_bmp_premul(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
+        let pm = Pixmap::decode_png(bytes).ok()?;
+        return Some((pm.width(), pm.height(), pm.take()));
+    }
+    if bytes.len() >= 54 && &bytes[0..2] == b"BM" {
+        let pixel_offset = u32::from_le_bytes(bytes[10..14].try_into().ok()?) as usize;
+        let width_i = i32::from_le_bytes(bytes[18..22].try_into().ok()?);
+        let height_i = i32::from_le_bytes(bytes[22..26].try_into().ok()?);
+        let bpp = u16::from_le_bytes(bytes[28..30].try_into().ok()?);
+        let compression = u32::from_le_bytes(bytes[30..34].try_into().ok()?);
+        if width_i <= 0 || height_i == 0 || compression != 0 || (bpp != 24 && bpp != 32) {
+            return None;
+        }
+        let w = width_i as u32;
+        let top_down = height_i < 0;
+        let h = height_i.unsigned_abs();
+        let bytes_per_px = usize::from(bpp / 8);
+        let row_stride = ((w as usize) * bytes_per_px).div_ceil(4) * 4;
+        if pixel_offset + row_stride * (h as usize) > bytes.len() {
+            return None;
+        }
+        let mut out = vec![0u8; (w as usize) * (h as usize) * 4];
+        for y in 0..h as usize {
+            let src_row = if top_down { y } else { (h as usize) - 1 - y };
+            let row_start = pixel_offset + src_row * row_stride;
+            for x in 0..w as usize {
+                let sp = row_start + x * bytes_per_px;
+                let b = bytes[sp];
+                let g = bytes[sp + 1];
+                let r = bytes[sp + 2];
+                let a = if bytes_per_px == 4 { bytes[sp + 3] } else { 255 };
+                let dp = (y * (w as usize) + x) * 4;
+                if a == 255 {
+                    out[dp] = r;
+                    out[dp + 1] = g;
+                    out[dp + 2] = b;
+                    out[dp + 3] = 255;
+                } else {
+                    let af = f32::from(a) / 255.0;
+                    out[dp] = (f32::from(r) * af).round() as u8;
+                    out[dp + 1] = (f32::from(g) * af).round() as u8;
+                    out[dp + 2] = (f32::from(b) * af).round() as u8;
+                    out[dp + 3] = a;
+                }
+            }
+        }
+        return Some((w, h, out));
+    }
+    None
+}
+
+fn scale_rgba_fit(
+    src_w: u32,
+    src_h: u32,
+    src: &[u8],
+    dst_w: u32,
+    dst_h: u32,
+    fit: MediaFitMode,
+) -> Vec<u8> {
+    let mut dst = vec![0u8; (dst_w as usize) * (dst_h as usize) * 4];
+    let sw = src_w as f32;
+    let sh = src_h as f32;
+    let dw = dst_w as f32;
+    let dh = dst_h as f32;
+    let (scale_x, scale_y, off_x, off_y) = match fit {
+        MediaFitMode::Stretch => (dw / sw, dh / sh, 0.0, 0.0),
+        MediaFitMode::Contain => {
+            let s = (dw / sw).min(dh / sh);
+            (s, s, (dw - sw * s) * 0.5, (dh - sh * s) * 0.5)
+        }
+        MediaFitMode::Fill => {
+            let s = (dw / sw).max(dh / sh);
+            (s, s, (dw - sw * s) * 0.5, (dh - sh * s) * 0.5)
+        }
+    };
+
+    for y in 0..dst_h {
+        let sy = ((y as f32 - off_y) / scale_y).floor() as i32;
+        if sy < 0 || sy >= src_h as i32 {
+            continue;
+        }
+        for x in 0..dst_w {
+            let sx = ((x as f32 - off_x) / scale_x).floor() as i32;
+            if sx < 0 || sx >= src_w as i32 {
+                continue;
+            }
+            let sp = ((sy as u32 * src_w + sx as u32) * 4) as usize;
+            let dp = ((y * dst_w + x) * 4) as usize;
+            dst[dp..dp + 4].copy_from_slice(&src[sp..sp + 4]);
+        }
+    }
+    dst
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -961,5 +1081,50 @@ mod tests {
             180,
         );
         assert_eq!(empty_stage.rgba_premul.len(), 320 * 180 * 4);
+    }
+
+    #[test]
+    fn decodes_local_png_and_bmp_images_with_fit_modes() {
+        let dir = std::env::temp_dir().join(format!("op-img-test-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+
+        // 1. Real PNG written via tiny-skia
+        let mut pm = Pixmap::new(4, 2).expect("pixmap");
+        pm.fill(Color::from_rgba8(40, 120, 220, 255));
+        let png_path = dir.join("bg.png");
+        pm.save_png(&png_path).expect("save png");
+
+        for fit in [MediaFitMode::Fill, MediaFitMode::Contain, MediaFitMode::Stretch] {
+            let rgba = decode_local_image_premul_rgba(&png_path, 16, 16, fit).expect("decode png");
+            assert_eq!(rgba.len(), 16 * 16 * 4);
+            assert!(rgba.iter().any(|&b| b > 0));
+        }
+
+        // 2. Real 32-bit uncompressed BMP (2×2)
+        let mut bmp = vec![0u8; 54 + 2 * 2 * 4];
+        bmp[0..2].copy_from_slice(b"BM");
+        bmp[10..14].copy_from_slice(&54u32.to_le_bytes());
+        bmp[14..18].copy_from_slice(&40u32.to_le_bytes());
+        bmp[18..22].copy_from_slice(&2i32.to_le_bytes());
+        bmp[22..26].copy_from_slice(&2i32.to_le_bytes());
+        bmp[26..28].copy_from_slice(&1u16.to_le_bytes());
+        bmp[28..30].copy_from_slice(&32u16.to_le_bytes());
+        // BGRA pixel (half alpha to cover premultiplication path)
+        bmp[54..58].copy_from_slice(&[200, 100, 50, 128]);
+        let bmp_path = dir.join("fg.bmp");
+        std::fs::write(&bmp_path, &bmp).expect("write bmp");
+        let bmp_rgba =
+            decode_local_image_premul_rgba(&bmp_path, 8, 8, MediaFitMode::Contain).expect("decode bmp");
+        assert_eq!(bmp_rgba.len(), 8 * 8 * 4);
+        assert!(bmp_rgba.iter().any(|&b| b > 0));
+
+        // 3. Failure paths: missing file, zero dims, unknown format
+        assert!(decode_local_image_premul_rgba(&dir.join("missing.png"), 16, 16, MediaFitMode::Fill).is_none());
+        assert!(decode_local_image_premul_rgba(&png_path, 0, 16, MediaFitMode::Fill).is_none());
+        let bad_path = dir.join("bad.bin");
+        std::fs::write(&bad_path, b"not an image").expect("write bad");
+        assert!(decode_local_image_premul_rgba(&bad_path, 16, 16, MediaFitMode::Fill).is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

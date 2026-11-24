@@ -13,14 +13,16 @@ use core_ipc::{
     ShmPreviewReader, default_socket_name, read_frame, to_local_socket_name, write_frame,
 };
 use core_library::{
-    DEFAULT_LIBRARY_ID, LibraryStore, LookPresetRecord, MediaAssetRecord, MediaBinRecord,
-    PlaylistRecord, PresentationLibraryRecord, SongRecord, infer_media_kind, slide_from_text,
+    BibleVerseRecord, DEFAULT_LIBRARY_ID, LibraryStore, LookPresetRecord, MediaAssetRecord,
+    MediaBinRecord, PlaylistRecord, PresentationLibraryRecord, SongRecord, build_scripture_slides,
+    infer_media_kind, parse_quick_lyrics, slide_from_text,
 };
 use core_scene::{
-    ActiveBackground, ColorRgba, ForegroundMedia, LOOK_AUDIENCE_FULL, LOOK_STAGE_CONFIDENCE,
-    LayerKind, LookConfig, LookId, MaskStyle, MediaCueRole, MonitorRegion, OutputConfig, OutputId,
-    OutputKind, OutputPlacement, SceneDiff, SceneState, ShaderMotionStyle, Slide, SlideElement,
-    SlideId, SlideMediaCue, StageLayoutConfig, TemplateConfig, TemplateId, TransitionSpec,
+    ActiveBackground, Arrangement, AudioPlaybackState, ColorRgba, ForegroundMedia,
+    LOOK_AUDIENCE_FULL, LOOK_STAGE_CONFIDENCE, LayerKind, LookConfig, LookId, MaskStyle,
+    MediaCueRole, MediaTransportState, MonitorRegion, OutputConfig, OutputId, OutputKind,
+    OutputPlacement, SceneDiff, SceneState, ShaderMotionStyle, Slide, SlideElement, SlideId,
+    SlideMediaCue, StageLayoutConfig, TemplateConfig, TemplateId, TransitionSpec,
     split_monitor_regions,
 };
 use interprocess::local_socket::tokio::{Stream, prelude::*};
@@ -374,6 +376,210 @@ async fn set_blackout(
     enabled: bool,
 ) -> Result<SceneState, String> {
     apply_scene_diff(&bridge, SceneDiff::SetBlackout(enabled)).await
+}
+
+#[tauri::command]
+async fn set_freeze(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    enabled: bool,
+) -> Result<SceneState, String> {
+    apply_scene_diff(&bridge, SceneDiff::SetFreeze(enabled)).await
+}
+
+#[tauri::command]
+async fn undo_scene(bridge: State<'_, Arc<EngineBridgeState>>) -> Result<SceneState, String> {
+    apply_scene_diff(&bridge, SceneDiff::Undo).await
+}
+
+#[tauri::command]
+async fn redo_scene(bridge: State<'_, Arc<EngineBridgeState>>) -> Result<SceneState, String> {
+    apply_scene_diff(&bridge, SceneDiff::Redo).await
+}
+
+#[tauri::command]
+async fn set_media_transport(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    transport: MediaTransportState,
+) -> Result<SceneState, String> {
+    apply_scene_diff(&bridge, SceneDiff::SetMediaTransport(transport)).await
+}
+
+#[tauri::command]
+async fn set_audio_playback(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    audio: Option<AudioPlaybackState>,
+) -> Result<SceneState, String> {
+    apply_scene_diff(&bridge, SceneDiff::SetAudioPlayback(audio)).await
+}
+
+#[tauri::command]
+async fn select_arrangement(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    arrangement_id: Option<String>,
+) -> Result<SceneState, String> {
+    apply_scene_diff(&bridge, SceneDiff::SelectArrangement(arrangement_id)).await
+}
+
+#[tauri::command]
+async fn save_arrangements(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    arrangements: Vec<Arrangement>,
+    active_id: Option<String>,
+) -> Result<SceneState, String> {
+    apply_scene_diff(
+        &bridge,
+        SceneDiff::SetArrangements {
+            arrangements,
+            active_id,
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+fn list_bible_translations(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+) -> Result<Vec<String>, String> {
+    let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    lib.list_bible_translations().map_err(|e| e.to_string())
+}
+
+#[derive(serde::Serialize)]
+struct ScriptureLookupResult {
+    primary: Vec<BibleVerseRecord>,
+    secondary: Vec<BibleVerseRecord>,
+}
+
+#[tauri::command]
+fn lookup_scripture(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    translation: Option<String>,
+    secondary_translation: Option<String>,
+    query: String,
+    limit: Option<usize>,
+) -> Result<ScriptureLookupResult, String> {
+    let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    let max_hits = limit.unwrap_or(24).clamp(1, 100);
+    let primary = lib
+        .lookup_scripture(
+            translation.as_deref().filter(|s| !s.is_empty()),
+            &query,
+            max_hits,
+        )
+        .map_err(|e| e.to_string())?;
+    let secondary = match secondary_translation.as_deref().filter(|s| !s.is_empty()) {
+        Some(sec_tr) => lib
+            .lookup_scripture(Some(sec_tr), &query, max_hits)
+            .unwrap_or_default(),
+        None => Vec::new(),
+    };
+    Ok(ScriptureLookupResult { primary, secondary })
+}
+
+#[tauri::command]
+async fn present_scripture(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    primary: Vec<BibleVerseRecord>,
+    secondary: Vec<BibleVerseRecord>,
+    verses_per_slide: usize,
+    show_verse_numbers: bool,
+    save_to_library: bool,
+) -> Result<SceneState, String> {
+    if primary.is_empty() {
+        return Err("Select at least one Bible verse to present".to_string());
+    }
+    let slides = build_scripture_slides(&primary, &secondary, verses_per_slide, show_verse_numbers);
+    if slides.is_empty() {
+        return Err("No scripture slides could be generated".to_string());
+    }
+    if save_to_library {
+        let title = slides
+            .first()
+            .map(|s| s.headline.clone())
+            .unwrap_or_else(|| "Scripture Reading".to_string());
+        let rec = SongRecord {
+            id: Uuid::new_v4().to_string(),
+            library_id: DEFAULT_LIBRARY_ID.to_string(),
+            title,
+            author: "Scripture".to_string(),
+            copyright: "Public Domain".to_string(),
+            ccli_number: None,
+            key_signature: None,
+            bpm: None,
+            lyrics_plain: slides
+                .iter()
+                .map(|s| s.plain_text())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            slides: slides.clone(),
+            arrangements: Vec::new(),
+            updated_at: chrono::Utc::now(),
+        };
+        let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+        let _ = lib.upsert_song(&rec);
+    }
+    apply_scene_diff(&bridge, SceneDiff::ReplaceDeck(slides)).await
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn parse_and_save_quick_lyrics(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    library_id: String,
+    title: String,
+    author: Option<String>,
+    ccli_number: Option<String>,
+    raw_lyrics: String,
+    max_lines_per_slide: usize,
+    load_to_deck: bool,
+) -> Result<Option<SceneState>, String> {
+    let trimmed = title.trim();
+    if trimmed.is_empty() {
+        return Err("Song title cannot be empty".to_string());
+    }
+    let (slides, arrangements) =
+        parse_quick_lyrics(trimmed, &raw_lyrics, max_lines_per_slide, ccli_number.clone());
+    let rec = SongRecord {
+        id: Uuid::new_v4().to_string(),
+        library_id: if library_id.trim().is_empty() || library_id == "all" {
+            DEFAULT_LIBRARY_ID.to_string()
+        } else {
+            library_id
+        },
+        title: trimmed.to_string(),
+        author: author.unwrap_or_default(),
+        copyright: String::new(),
+        ccli_number,
+        key_signature: None,
+        bpm: None,
+        lyrics_plain: slides
+            .iter()
+            .map(|s| s.plain_text())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        slides: slides.clone(),
+        arrangements: arrangements.clone(),
+        updated_at: chrono::Utc::now(),
+    };
+    {
+        let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+        lib.upsert_song(&rec).map_err(|e| e.to_string())?;
+    }
+    if load_to_deck {
+        let active_id = arrangements.first().map(|a| a.id.clone());
+        let state = apply_scene_diff(
+            &bridge,
+            SceneDiff::LoadPresentation {
+                slides,
+                arrangements,
+                active_arrangement_id: active_id,
+            },
+        )
+        .await?;
+        Ok(Some(state))
+    } else {
+        Ok(None)
+    }
 }
 
 #[tauri::command]
@@ -905,6 +1111,7 @@ fn create_presentation(
             .collect::<Vec<_>>()
             .join("\n"),
         slides,
+        arrangements: Vec::new(),
         updated_at: chrono::Utc::now(),
     };
     let lib = bridge.library.lock().map_err(|e| e.to_string())?;
@@ -926,13 +1133,13 @@ async fn load_presentation_to_deck(
     bridge: State<'_, Arc<EngineBridgeState>>,
     song_id: String,
 ) -> Result<SceneState, String> {
-    let slides = {
+    let (slides, arrangements) = {
         let lib = bridge.library.lock().map_err(|e| e.to_string())?;
         let song = lib
             .get_song(&song_id)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("presentation '{song_id}' not found"))?;
-        if song.slides.is_empty() {
+        let s = if song.slides.is_empty() {
             vec![slide_from_text(
                 &song.title,
                 "Slide 1",
@@ -941,9 +1148,19 @@ async fn load_presentation_to_deck(
             )]
         } else {
             song.slides
-        }
+        };
+        (s, song.arrangements)
     };
-    apply_scene_diff(&bridge, SceneDiff::ReplaceDeck(slides)).await
+    let active_arrangement_id = arrangements.first().map(|a| a.id.clone());
+    apply_scene_diff(
+        &bridge,
+        SceneDiff::LoadPresentation {
+            slides,
+            arrangements,
+            active_arrangement_id,
+        },
+    )
+    .await
 }
 
 #[tauri::command]
@@ -1221,16 +1438,28 @@ async fn trigger_media_asset(
         "background" => "background",
         "foreground" => "foreground",
         "announcement" => "announcement",
-        _ => {
-            if asset.kind == "background" {
-                "background"
-            } else {
-                "foreground"
-            }
-        }
+        "audio" => "audio",
+        _ => match asset.kind.as_str() {
+            "background" => "background",
+            "audio" => "audio",
+            _ => "foreground",
+        },
     };
 
     match resolved_role {
+        "audio" => {
+            apply_scene_diff(
+                &bridge,
+                SceneDiff::SetAudioPlayback(Some(AudioPlaybackState {
+                    title: asset.file_name,
+                    media_path: asset.local_path,
+                    playing: true,
+                    looping: true,
+                    volume: 0.85,
+                })),
+            )
+            .await
+        }
         "background" => {
             let (motion_style, primary_color, secondary_color, accent_color) =
                 asset_visual_preset(&asset);
@@ -1372,6 +1601,7 @@ fn import_worship_document(
                 bpm: None,
                 lyrics_plain: song.slides.iter().map(|s| s.plain_text()).collect::<Vec<_>>().join("\n"),
                 slides: song.slides,
+                arrangements: Vec::new(),
                 updated_at: chrono::Utc::now(),
             };
             lib.upsert_song(&rec).map_err(|e| e.to_string())?;
@@ -1396,6 +1626,7 @@ fn import_worship_document(
                 bpm: None,
                 lyrics_plain: song.slides.iter().map(|s| s.plain_text()).collect::<Vec<_>>().join("\n"),
                 slides: song.slides,
+                arrangements: Vec::new(),
                 updated_at: chrono::Utc::now(),
             };
             lib.upsert_song(&rec).map_err(|e| e.to_string())?;
@@ -1722,6 +1953,17 @@ pub fn run() {
             clear_layer,
             clear_all,
             set_blackout,
+            set_freeze,
+            undo_scene,
+            redo_scene,
+            set_media_transport,
+            set_audio_playback,
+            select_arrangement,
+            save_arrangements,
+            list_bible_translations,
+            lookup_scripture,
+            present_scripture,
+            parse_and_save_quick_lyrics,
             toggle_overlay,
             set_mask,
             set_stage_message,

@@ -15,7 +15,7 @@ use core_scene::{
     ActiveBackground, BlendMode, ColorRgba, LayerKind, LookConfig, MaskStyle, OutputConfig,
     OutputId, OutputKind, OutputPlacement, SceneDiff, SceneState, Slide, StageLayoutConfig,
 };
-use render_text::{BroadcastRasterizer, Vector2DRasterizer};
+use render_text::{BroadcastRasterizer, Vector2DRasterizer, decode_local_image_premul_rgba};
 use staging::PreviewReadbackRing;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -72,6 +72,8 @@ pub struct SharedEngineState {
 
 struct EngineRuntimeState {
     scene: SceneState,
+    undo_stack: VecDeque<SceneState>,
+    redo_stack: VecDeque<SceneState>,
     prev_slide: Option<Slide>,
     prev_background: Option<ActiveBackground>,
     transition_start: Instant,
@@ -92,6 +94,8 @@ impl SharedEngineState {
         Self {
             inner: RwLock::new(EngineRuntimeState {
                 scene,
+                undo_stack: VecDeque::with_capacity(32),
+                redo_stack: VecDeque::with_capacity(32),
                 prev_slide: initial_slide,
                 prev_background: initial_bg,
                 transition_start: Instant::now(),
@@ -123,9 +127,48 @@ impl SharedEngineState {
         let mut guard = self.inner.write().ok()?;
         let old_slide = guard.scene.active_slide.clone();
         let old_bg = guard.scene.active_background.clone();
-        let changed = guard.scene.apply(diff);
-        if !changed {
-            return None;
+
+        match diff {
+            SceneDiff::Undo => {
+                let mut prev = guard.undo_stack.pop_back()?;
+                let current = guard.scene.clone();
+                if guard.redo_stack.len() >= 32 {
+                    guard.redo_stack.pop_front();
+                }
+                guard.redo_stack.push_back(current);
+                prev.revision = guard.scene.revision + 1;
+                guard.scene = prev;
+                return Some(guard.scene.clone());
+            }
+            SceneDiff::Redo => {
+                let mut next = guard.redo_stack.pop_back()?;
+                let current = guard.scene.clone();
+                if guard.undo_stack.len() >= 32 {
+                    guard.undo_stack.pop_front();
+                }
+                guard.undo_stack.push_back(current);
+                next.revision = guard.scene.revision + 1;
+                guard.scene = next;
+                return Some(guard.scene.clone());
+            }
+            other => {
+                let record_history = !matches!(
+                    other,
+                    SceneDiff::SyncLooksAndTemplates { .. } | SceneDiff::SetTimerReadout(_)
+                );
+                let snapshot_before = record_history.then(|| guard.scene.clone());
+                let changed = guard.scene.apply(other);
+                if !changed {
+                    return None;
+                }
+                if let Some(prev) = snapshot_before {
+                    if guard.undo_stack.len() >= 32 {
+                        guard.undo_stack.pop_front();
+                    }
+                    guard.undo_stack.push_back(prev);
+                    guard.redo_stack.clear();
+                }
+            }
         }
         let bg_changed = guard.scene.active_background != old_bg;
         if bg_changed {
@@ -227,6 +270,7 @@ impl SharedEngineState {
         output_kind: OutputKind,
         aspect: f32,
         elapsed_sec: f32,
+        has_bg_image: bool,
     ) -> CompositorUniforms {
         let guard = self.inner.read().expect("engine state lock poisoned");
         let look = guard.scene.look_for_output(output_id).cloned().unwrap_or(
@@ -285,6 +329,9 @@ impl SharedEngineState {
         }
         if look.transparent_background {
             flags |= 1 << 6;
+        }
+        if has_bg_image {
+            flags |= 1 << 7;
         }
 
         let (c1, c2, ca, cs) = background_colors(guard.scene.active_background.as_ref(), curr);
@@ -353,6 +400,9 @@ struct OutputSurfaceState {
     pipeline: wgpu::RenderPipeline,
     uniform_buffer: wgpu::Buffer,
     slide_texture: wgpu::Texture,
+    bg_texture: wgpu::Texture,
+    has_bg_image: bool,
+    uploaded_bg_path: Option<String>,
     uploaded_revision: u64,
     bind_group: wgpu::BindGroup,
     preview_bus: Option<PreviewBusDescriptor>,
@@ -514,9 +564,57 @@ impl CompositorApp {
         }
 
         let snap = self.shared.snapshot();
+        // When Freeze Output is enabled, hold the frozen GPU textures without uploading mutations.
+        if snap.state.freeze_output && out.uploaded_revision > 0 {
+            return;
+        }
         let look = snap.state.look_for_output(out.config_meta.id);
         let lower_third = look.map(|l| l.lower_third_mode).unwrap_or(false);
         let template_override = look.and_then(|l| snap.state.template_for_look(l));
+        let fit_mode = snap.state.media_transport.fit_mode;
+
+        // Upload real local PNG/BMP image texture for Layer 1 background when configured.
+        let desired_bg_path = snap
+            .state
+            .active_background
+            .as_ref()
+            .map(|b| b.media_path.clone())
+            .filter(|p| !p.starts_with("builtin://") && !p.is_empty());
+        if desired_bg_path != out.uploaded_bg_path {
+            out.uploaded_bg_path = desired_bg_path.clone();
+            if let Some(bg_path) = desired_bg_path
+                && let Some(rgba) = decode_local_image_premul_rgba(
+                    Path::new(&bg_path),
+                    LAYER_TEX_WIDTH,
+                    LAYER_TEX_HEIGHT,
+                    fit_mode,
+                )
+            {
+                gpu.queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &out.bg_texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    &rgba,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(LAYER_TEX_WIDTH * 4),
+                        rows_per_image: Some(LAYER_TEX_HEIGHT),
+                    },
+                    wgpu::Extent3d {
+                        width: LAYER_TEX_WIDTH,
+                        height: LAYER_TEX_HEIGHT,
+                        depth_or_array_layers: 1,
+                    },
+                );
+                out.has_bg_image = true;
+            } else {
+                out.has_bg_image = false;
+            }
+        }
+
         let fg_active = snap.state.active_foreground_media.as_ref().filter(|fg| {
             look.map(|l| l.is_layer_enabled(fg.target_layer))
                 .unwrap_or(true)
@@ -538,44 +636,58 @@ impl CompositorApp {
                 LAYER_TEX_HEIGHT,
             )
         } else if let Some(fg) = fg_active {
-            // Foreground image/video renders onto the Slide or Announcements foreground layer
-            // without disturbing Layer 1 (MediaBackground), and clears on the next cued slide.
-            let mut fg_slide = core_scene::demo_deck()[0].clone();
-            fg_slide.id = core_scene::SlideId::new();
-            fg_slide.label = fg.label.clone();
-            fg_slide.headline = fg.label.clone();
-            fg_slide.body = format!("{} LAYER · {}", fg.kind.to_uppercase(), fg.media_path);
-            fg_slide.elements = vec![
-                core_scene::SlideElement {
-                    id: core_scene::ElementId::new(),
-                    name: "Foreground Media Frame".to_string(),
-                    bounds: core_scene::RectF::new(140.0, 110.0, 1640.0, 860.0),
-                    opacity: 0.94,
-                    z_index: 5,
-                    kind: core_scene::SlideElementKind::ShapeRect {
-                        fill: ColorRgba::rgba(0.06, 0.11, 0.19, 0.92),
-                        stroke: ColorRgba::rgba(0.28, 0.62, 0.98, 0.95),
-                        stroke_width: 4.0,
-                        corner_radius: 24.0,
-                    },
-                },
-                core_scene::SlideElement {
-                    id: core_scene::ElementId::new(),
-                    name: "Foreground Media Label".to_string(),
-                    bounds: core_scene::RectF::new(200.0, 340.0, 1520.0, 380.0),
-                    opacity: 1.0,
-                    z_index: 10,
-                    kind: core_scene::SlideElementKind::TextBox {
-                        text: format!("[FOREGROUND {}]\n{}", fg.kind.to_uppercase(), fg.label),
-                        style: core_scene::TextStyle {
-                            font_size: 68.0,
-                            ..core_scene::TextStyle::default()
+            // Decode real local foreground PNG/BMP image directly onto Layer 2/3 when available.
+            if let Some(rgba) = decode_local_image_premul_rgba(
+                Path::new(&fg.media_path),
+                LAYER_TEX_WIDTH,
+                LAYER_TEX_HEIGHT,
+                fit_mode,
+            ) {
+                render_text::RasterizedLayer {
+                    width: LAYER_TEX_WIDTH,
+                    height: LAYER_TEX_HEIGHT,
+                    content_hash: [0u8; 32],
+                    rgba_premul: rgba,
+                }
+            } else {
+                // Fallback card for videos or virtual/missing media paths.
+                let mut fg_slide = core_scene::demo_deck()[0].clone();
+                fg_slide.id = core_scene::SlideId::new();
+                fg_slide.label = fg.label.clone();
+                fg_slide.headline = fg.label.clone();
+                fg_slide.body = format!("{} LAYER · {}", fg.kind.to_uppercase(), fg.media_path);
+                fg_slide.elements = vec![
+                    core_scene::SlideElement {
+                        id: core_scene::ElementId::new(),
+                        name: "Foreground Media Frame".to_string(),
+                        bounds: core_scene::RectF::new(140.0, 110.0, 1640.0, 860.0),
+                        opacity: 0.94,
+                        z_index: 5,
+                        kind: core_scene::SlideElementKind::ShapeRect {
+                            fill: ColorRgba::rgba(0.06, 0.11, 0.19, 0.92),
+                            stroke: ColorRgba::rgba(0.28, 0.62, 0.98, 0.95),
+                            stroke_width: 4.0,
+                            corner_radius: 24.0,
                         },
                     },
-                },
-            ];
-            self.rasterizer
-                .rasterize_slide(&fg_slide, LAYER_TEX_WIDTH, LAYER_TEX_HEIGHT, lower_third)
+                    core_scene::SlideElement {
+                        id: core_scene::ElementId::new(),
+                        name: "Foreground Media Label".to_string(),
+                        bounds: core_scene::RectF::new(200.0, 340.0, 1520.0, 380.0),
+                        opacity: 1.0,
+                        z_index: 10,
+                        kind: core_scene::SlideElementKind::TextBox {
+                            text: format!("[FOREGROUND {}]\n{}", fg.kind.to_uppercase(), fg.label),
+                            style: core_scene::TextStyle {
+                                font_size: 68.0,
+                                ..core_scene::TextStyle::default()
+                            },
+                        },
+                    },
+                ];
+                self.rasterizer
+                    .rasterize_slide(&fg_slide, LAYER_TEX_WIDTH, LAYER_TEX_HEIGHT, lower_third)
+            }
         } else if let Some(slide) = snap.state.active_slide.as_ref() {
             self.rasterizer.rasterize_slide_with_template(
                 slide,
@@ -636,16 +748,25 @@ impl CompositorApp {
             out.surface.configure(&gpu.device, &out.surface_config);
         }
 
-        let elapsed_sec = self.start_time.elapsed().as_secs_f32();
-        let aspect = (out.surface_config.width as f32) / (out.surface_config.height.max(1) as f32);
-        let uniforms = self.shared.uniforms_for_output(
-            out.config_meta.id,
-            out.config_meta.kind,
-            aspect,
-            elapsed_sec,
-        );
-        gpu.queue
-            .write_buffer(&out.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+        let is_frozen = self
+            .shared
+            .inner
+            .read()
+            .map(|g| g.scene.freeze_output)
+            .unwrap_or(false);
+        if !is_frozen || out.frames_presented == 0 {
+            let elapsed_sec = self.start_time.elapsed().as_secs_f32();
+            let aspect = (out.surface_config.width as f32) / (out.surface_config.height.max(1) as f32);
+            let uniforms = self.shared.uniforms_for_output(
+                out.config_meta.id,
+                out.config_meta.kind,
+                aspect,
+                elapsed_sec,
+                out.has_bg_image,
+            );
+            gpu.queue
+                .write_buffer(&out.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+        }
 
         let mut surface_frame = None;
         if !minimized {
@@ -985,6 +1106,22 @@ impl CompositorApp {
         });
         let slide_view = slide_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
+        let bg_texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("bg_layer_rgba8"),
+            size: wgpu::Extent3d {
+                width: LAYER_TEX_WIDTH,
+                height: LAYER_TEX_HEIGHT,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let bg_view = bg_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
         let bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("compositor_bg"),
             layout: &gpu.bind_group_layout,
@@ -1000,6 +1137,10 @@ impl CompositorApp {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: wgpu::BindingResource::Sampler(&gpu.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&bg_view),
                 },
             ],
         });
@@ -1040,6 +1181,9 @@ impl CompositorApp {
             pipeline,
             uniform_buffer,
             slide_texture,
+            bg_texture,
+            has_bg_image: false,
+            uploaded_bg_path: None,
             uploaded_revision: 0,
             bind_group,
             preview_bus,
@@ -1288,6 +1432,16 @@ impl ApplicationHandler<EngineWakeEvent> for CompositorApp {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -1474,17 +1628,26 @@ mod tests {
             OutputKind::Audience,
             16.0 / 9.0,
             1.5,
+            true,
         );
         let u_stage = state.uniforms_for_output(
             core_scene::OUTPUT_STAGE_MAIN,
             OutputKind::Stage,
             16.0 / 9.0,
             1.5,
+            false,
         );
         assert_eq!(u_aud.flags & (1 << 5), 0);
+        assert_ne!(u_aud.flags & (1 << 7), 0);
         assert_eq!(u_aud.transition_kind, 1);
         assert_eq!(u_aud.mask_style, MaskStyle::SoftVignette as u32);
         assert_ne!(u_stage.flags & (1 << 5), 0);
         assert_eq!(u_stage.mask_style, MaskStyle::None as u32);
+
+        // Undo/Redo restores mask cleanly
+        let undone = state.apply_diff(SceneDiff::Undo).expect("undo mask");
+        assert_eq!(undone.mask_style, MaskStyle::None);
+        let redone = state.apply_diff(SceneDiff::Redo).expect("redo mask");
+        assert_eq!(redone.mask_style, MaskStyle::SoftVignette);
     }
 }

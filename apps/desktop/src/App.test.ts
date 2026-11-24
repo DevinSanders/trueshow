@@ -85,6 +85,13 @@ function makeFixtureSnapshot(): EngineSnapshot {
       blackout: false,
       active_slide: slide1,
       next_slide_preview: slide2,
+      active_audio: {
+        title: "Walk-In Piano",
+        media_path: "walkin.mp3",
+        playing: true,
+        looping: true,
+        volume: 0.8,
+      },
       video_input_active: false,
       media_layer_active: true,
       slide_layer_active: true,
@@ -250,6 +257,18 @@ describe("OpenPresenter Operator Control Surface UI (Happy & Failure Paths)", ()
         case "set_blackout":
           currentState = { ...currentState, blackout: Boolean(payload.enabled) };
           return structuredClone(currentState);
+        case "set_freeze":
+          currentState = { ...currentState, freeze_output: Boolean(payload.enabled) };
+          return structuredClone(currentState);
+        case "undo_scene":
+        case "redo_scene":
+        case "set_media_transport":
+        case "set_audio_playback":
+          return structuredClone(currentState);
+        case "list_bible_translations":
+          return ["KJV", "WEB"];
+        case "lookup_scripture":
+          return { primary: [], secondary: [] };
         case "toggle_overlay":
           currentState = { ...currentState, overlay_layer_active: Boolean(payload.active) };
           return structuredClone(currentState);
@@ -408,9 +427,38 @@ describe("OpenPresenter Operator Control Surface UI (Happy & Failure Paths)", ()
     await fireEvent.click(screen.getByText("Screens"));
     await waitFor(() => expect(screen.getByTestId("screens-panel")).toBeTruthy());
 
-    // 5a2. Switch to Looks & Templates manager tab
+    // 5a2. Switch to Looks & Templates, Scripture, and Quick Lyrics tabs + hotkeys/Freeze/Undo/Redo
     await fireEvent.click(screen.getByText("Looks & Templates"));
     await waitFor(() => expect(screen.getByTestId("looks-templates-panel")).toBeTruthy());
+
+    await fireEvent.click(screen.getByText("Scripture"));
+    await waitFor(() => expect(screen.getByTestId("scripture-panel")).toBeTruthy());
+
+    await fireEvent.click(screen.getByText("Quick Lyrics"));
+    await waitFor(() => expect(screen.getByTestId("quick-lyrics-panel")).toBeTruthy());
+
+    await fireEvent.click(screen.getByText("Freeze"));
+    await fireEvent.click(screen.getByText("Undo"));
+    await fireEvent.click(screen.getByText("Redo"));
+    await fireEvent.click(screen.getByText("Manage Looks"));
+    await waitFor(() => expect(screen.getByTestId("looks-templates-panel")).toBeTruthy());
+    await fireEvent.click(screen.getByText("Configure"));
+    await waitFor(() => expect(screen.getByTestId("screens-panel")).toBeTruthy());
+    await fireEvent.click(screen.getAllByText("Show")[0]);
+    await waitFor(() => expect(screen.getByLabelText("Media Fit Mode")).toBeTruthy());
+    await fireEvent.change(screen.getByLabelText("Media Fit Mode"), { target: { value: "Contain" } });
+    await fireEvent.click(screen.getByText("Stop Audio"));
+    await fireEvent.keyDown(window, { key: "ArrowRight" });
+    await fireEvent.keyDown(window, { key: "ArrowLeft" });
+    await fireEvent.keyDown(window, { key: "f" });
+    await fireEvent.keyDown(window, { key: "b" });
+    await fireEvent.keyDown(window, { key: "v" });
+    await fireEvent.keyDown(window, { key: "c" });
+    await fireEvent.keyDown(window, { key: "g" });
+    await fireEvent.keyDown(window, { key: "F1" });
+    await fireEvent.keyDown(window, { key: "F2" });
+    await fireEvent.keyDown(window, { key: "z", ctrlKey: true });
+    await fireEvent.keyDown(window, { key: "y", ctrlKey: true });
 
     // 5b. Switch to Diagnostics tab and verify global window error crash reporting hook
     await fireEvent.click(screen.getByText(/Diagnostics/));

@@ -6,8 +6,8 @@
 
 use chrono::{DateTime, Utc};
 use core_scene::{
-    LOOK_AUDIENCE_FULL, LOOK_STAGE_CONFIDENCE, LookConfig, LookId, Slide, SlideId, TemplateConfig,
-    TemplateId, default_looks, default_templates,
+    Arrangement, LOOK_AUDIENCE_FULL, LOOK_STAGE_CONFIDENCE, LookConfig, LookId, Slide, SlideId,
+    TemplateConfig, TemplateId, default_looks, default_templates,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -65,6 +65,8 @@ pub struct SongRecord {
     pub bpm: Option<f32>,
     pub lyrics_plain: String,
     pub slides: Vec<Slide>,
+    #[serde(default)]
+    pub arrangements: Vec<Arrangement>,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -177,6 +179,7 @@ impl LibraryStore {
                 bpm REAL,
                 lyrics_plain TEXT NOT NULL DEFAULT '',
                 slides_json TEXT NOT NULL,
+                arrangements_json TEXT NOT NULL DEFAULT '[]',
                 updated_at TEXT NOT NULL
             );
 
@@ -272,6 +275,10 @@ impl LibraryStore {
             [],
         );
         let _ = self.conn.execute(
+            "ALTER TABLE songs ADD COLUMN arrangements_json TEXT NOT NULL DEFAULT '[]'",
+            [],
+        );
+        let _ = self.conn.execute(
             "ALTER TABLE media_assets ADD COLUMN bin_id TEXT NOT NULL DEFAULT 'backgrounds'",
             [],
         );
@@ -329,6 +336,7 @@ impl LibraryStore {
 
     pub fn upsert_song(&self, song: &SongRecord) -> Result<(), LibraryError> {
         let slides_json = serde_json::to_string(&song.slides)?;
+        let arrangements_json = serde_json::to_string(&song.arrangements)?;
         let lib_id = if song.library_id.trim().is_empty() {
             DEFAULT_LIBRARY_ID
         } else {
@@ -336,8 +344,8 @@ impl LibraryStore {
         };
         self.conn.execute(
             r#"
-            INSERT INTO songs (id, library_id, title, author, copyright, ccli_number, key_signature, bpm, lyrics_plain, slides_json, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            INSERT INTO songs (id, library_id, title, author, copyright, ccli_number, key_signature, bpm, lyrics_plain, slides_json, arrangements_json, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
             ON CONFLICT(id) DO UPDATE SET
                 library_id = excluded.library_id,
                 title = excluded.title,
@@ -348,6 +356,7 @@ impl LibraryStore {
                 bpm = excluded.bpm,
                 lyrics_plain = excluded.lyrics_plain,
                 slides_json = excluded.slides_json,
+                arrangements_json = excluded.arrangements_json,
                 updated_at = excluded.updated_at
             "#,
             params![
@@ -361,6 +370,7 @@ impl LibraryStore {
                 song.bpm,
                 song.lyrics_plain,
                 slides_json,
+                arrangements_json,
                 song.updated_at.to_rfc3339(),
             ],
         )?;
@@ -417,7 +427,7 @@ impl LibraryStore {
         let mut out = Vec::new();
         if let Some(lib_id) = library_id {
             let mut stmt = self.conn.prepare(
-                "SELECT id, library_id, title, author, copyright, ccli_number, key_signature, bpm, lyrics_plain, slides_json, updated_at FROM songs WHERE library_id = ?1 ORDER BY title COLLATE NOCASE ASC",
+                "SELECT id, library_id, title, author, copyright, ccli_number, key_signature, bpm, lyrics_plain, slides_json, arrangements_json, updated_at FROM songs WHERE library_id = ?1 ORDER BY title COLLATE NOCASE ASC",
             )?;
             let rows = stmt.query_map(params![lib_id], row_to_song)?;
             for row in rows {
@@ -425,7 +435,7 @@ impl LibraryStore {
             }
         } else {
             let mut stmt = self.conn.prepare(
-                "SELECT id, library_id, title, author, copyright, ccli_number, key_signature, bpm, lyrics_plain, slides_json, updated_at FROM songs ORDER BY title COLLATE NOCASE ASC",
+                "SELECT id, library_id, title, author, copyright, ccli_number, key_signature, bpm, lyrics_plain, slides_json, arrangements_json, updated_at FROM songs ORDER BY title COLLATE NOCASE ASC",
             )?;
             let rows = stmt.query_map([], row_to_song)?;
             for row in rows {
@@ -438,7 +448,7 @@ impl LibraryStore {
     pub fn get_song(&self, id: &str) -> Result<Option<SongRecord>, LibraryError> {
         self.conn
             .query_row(
-                "SELECT id, library_id, title, author, copyright, ccli_number, key_signature, bpm, lyrics_plain, slides_json, updated_at FROM songs WHERE id = ?1",
+                "SELECT id, library_id, title, author, copyright, ccli_number, key_signature, bpm, lyrics_plain, slides_json, arrangements_json, updated_at FROM songs WHERE id = ?1",
                 params![id],
                 row_to_song,
             )
@@ -469,7 +479,7 @@ impl LibraryStore {
         if let Some(lib_id) = library_id {
             let mut stmt = self.conn.prepare(
                 r#"
-                SELECT s.id, s.library_id, s.title, s.author, s.copyright, s.ccli_number, s.key_signature, s.bpm, s.lyrics_plain, s.slides_json, s.updated_at
+                SELECT s.id, s.library_id, s.title, s.author, s.copyright, s.ccli_number, s.key_signature, s.bpm, s.lyrics_plain, s.slides_json, s.arrangements_json, s.updated_at
                 FROM songs_fts f
                 JOIN songs s ON s.id = f.song_id
                 WHERE songs_fts MATCH ?1 AND s.library_id = ?2
@@ -484,7 +494,7 @@ impl LibraryStore {
         } else {
             let mut stmt = self.conn.prepare(
                 r#"
-                SELECT s.id, s.library_id, s.title, s.author, s.copyright, s.ccli_number, s.key_signature, s.bpm, s.lyrics_plain, s.slides_json, s.updated_at
+                SELECT s.id, s.library_id, s.title, s.author, s.copyright, s.ccli_number, s.key_signature, s.bpm, s.lyrics_plain, s.slides_json, s.arrangements_json, s.updated_at
                 FROM songs_fts f
                 JOIN songs s ON s.id = f.song_id
                 WHERE songs_fts MATCH ?1
@@ -805,6 +815,96 @@ impl LibraryStore {
         }
         tx.commit()?;
         Ok(verses.len())
+    }
+
+    pub fn list_bible_translations(&self) -> Result<Vec<String>, LibraryError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT DISTINCT translation FROM bible_verses ORDER BY translation ASC")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Looks up Bible passages by reference (e.g. `"John 3:16-17"`, `"Psalm 23"`, `"Ps 100:1-2"`)
+    /// or falls back to offline SQLite FTS5 keyword search when no reference matches.
+    pub fn lookup_scripture(
+        &self,
+        translation: Option<&str>,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<BibleVerseRecord>, LibraryError> {
+        let trimmed = query.trim();
+        if trimmed.is_empty() {
+            let mut stmt = if translation.is_some() {
+                self.conn.prepare(
+                    "SELECT translation, book, chapter, verse, text, attribution, cached_at_epoch FROM bible_verses WHERE translation = ?1 ORDER BY book, chapter, verse LIMIT ?2",
+                )?
+            } else {
+                self.conn.prepare(
+                    "SELECT translation, book, chapter, verse, text, attribution, cached_at_epoch FROM bible_verses ORDER BY translation, book, chapter, verse LIMIT ?1",
+                )?
+            };
+            let mut out = Vec::new();
+            if let Some(tr) = translation {
+                for r in stmt.query_map(params![tr, limit as i64], row_to_verse)? {
+                    out.push(r?);
+                }
+            } else {
+                for r in stmt.query_map(params![limit as i64], row_to_verse)? {
+                    out.push(r?);
+                }
+            }
+            return Ok(out);
+        }
+
+        if let Some((book_prefix, chapter, v_start, v_end)) = parse_scripture_reference(trimmed) {
+            let like_pat = format!("{book_prefix}%");
+            let mut out = Vec::new();
+            if let Some(tr) = translation {
+                let mut stmt = self.conn.prepare(
+                    r#"
+                    SELECT translation, book, chapter, verse, text, attribution, cached_at_epoch
+                    FROM bible_verses
+                    WHERE translation = ?1 AND lower(book) LIKE lower(?2) AND chapter = ?3
+                      AND verse >= ?4 AND verse <= ?5
+                    ORDER BY verse ASC
+                    LIMIT ?6
+                    "#,
+                )?;
+                for r in stmt.query_map(
+                    params![tr, like_pat, chapter, v_start, v_end, limit as i64],
+                    row_to_verse,
+                )? {
+                    out.push(r?);
+                }
+            } else {
+                let mut stmt = self.conn.prepare(
+                    r#"
+                    SELECT translation, book, chapter, verse, text, attribution, cached_at_epoch
+                    FROM bible_verses
+                    WHERE lower(book) LIKE lower(?1) AND chapter = ?2
+                      AND verse >= ?3 AND verse <= ?4
+                    ORDER BY translation, verse ASC
+                    LIMIT ?5
+                    "#,
+                )?;
+                for r in stmt.query_map(
+                    params![like_pat, chapter, v_start, v_end, limit as i64],
+                    row_to_verse,
+                )? {
+                    out.push(r?);
+                }
+            }
+            if !out.is_empty() {
+                return Ok(out);
+            }
+        }
+
+        self.search_bible(translation, trimmed, limit)
     }
 
     pub fn search_bible(
@@ -1199,6 +1299,20 @@ impl LibraryStore {
             }
         }
 
+        if self.list_bible_translations()?.is_empty() {
+            let starter = starter_public_domain_scripture();
+            for v in &starter {
+                let _ = self.conn.execute(
+                    "INSERT OR REPLACE INTO bible_verses (translation, book, chapter, verse, text, attribution, cached_at_epoch) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![v.translation, v.book, v.chapter, v.verse, v.text, v.attribution, v.cached_at_epoch],
+                );
+                let _ = self.conn.execute(
+                    "INSERT INTO bible_verses_fts (translation, book, chapter, verse, text) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![v.translation, v.book, v.chapter, v.verse, v.text],
+                );
+            }
+        }
+
         if !self.list_songs()?.is_empty() {
             return Ok(());
         }
@@ -1215,6 +1329,7 @@ impl LibraryStore {
             bpm: None,
             lyrics_plain: deck[0].plain_text(),
             slides: vec![deck[0].clone(), deck[3].clone(), deck[4].clone()],
+            arrangements: Vec::new(),
             updated_at: now,
         };
         let song = SongRecord {
@@ -1228,6 +1343,11 @@ impl LibraryStore {
             bpm: Some(72.0),
             lyrics_plain: deck[1].plain_text(),
             slides: vec![deck[1].clone()],
+            arrangements: vec![Arrangement {
+                id: "arr-default".to_string(),
+                name: "Default".to_string(),
+                group_order: vec!["Verse 1".to_string()],
+            }],
             updated_at: now,
         };
         let scripture = SongRecord {
@@ -1241,6 +1361,7 @@ impl LibraryStore {
             bpm: None,
             lyrics_plain: deck[2].plain_text(),
             slides: vec![deck[2].clone()],
+            arrangements: Vec::new(),
             updated_at: now,
         };
         self.upsert_song(&welcome)?;
@@ -1275,8 +1396,11 @@ pub fn infer_media_kind(path: &Path) -> &'static str {
 
 fn row_to_song(row: &rusqlite::Row<'_>) -> rusqlite::Result<SongRecord> {
     let slides_json: String = row.get(9)?;
-    let updated_str: String = row.get(10)?;
+    let arrangements_json: String = row.get(10)?;
+    let updated_str: String = row.get(11)?;
     let slides: Vec<Slide> = serde_json::from_str(&slides_json).unwrap_or_default();
+    let arrangements: Vec<Arrangement> =
+        serde_json::from_str(&arrangements_json).unwrap_or_default();
     Ok(SongRecord {
         id: row.get(0)?,
         library_id: row.get(1)?,
@@ -1288,6 +1412,7 @@ fn row_to_song(row: &rusqlite::Row<'_>) -> rusqlite::Result<SongRecord> {
         bpm: row.get(7)?,
         lyrics_plain: row.get(8)?,
         slides,
+        arrangements,
         updated_at: DateTime::parse_from_rfc3339(&updated_str)
             .map(|dt| dt.with_timezone(&Utc))
             .unwrap_or_else(|_| Utc::now()),
@@ -1340,6 +1465,310 @@ pub fn slide_from_text(title: &str, group: &str, body: &str, ccli: Option<String
     }
     base.elements.truncate(1);
     base
+}
+
+/// Parses Quick Lyrics with `[Verse 1]` / `[Chorus]` / `[Bridge]` / `[Tag]` group headers,
+/// auto-splits stanzas by `max_lines_per_slide`, supports dual-language lines (`Primary // Secondary`),
+/// and builds both the master slides and a default [`Arrangement`].
+pub fn parse_quick_lyrics(
+    title: &str,
+    raw_text: &str,
+    max_lines_per_slide: usize,
+    ccli: Option<String>,
+) -> (Vec<Slide>, Vec<Arrangement>) {
+    let cap = max_lines_per_slide.clamp(1, 12);
+    let mut sections: Vec<(String, Vec<String>)> = Vec::new();
+    let mut current_group = "Verse 1".to_string();
+    let mut current_lines: Vec<String> = Vec::new();
+    let mut verse_counter = 1usize;
+
+    for raw_line in raw_text.lines() {
+        let trimmed = raw_line.trim();
+        if trimmed.is_empty() {
+            if !current_lines.is_empty() {
+                sections.push((current_group.clone(), std::mem::take(&mut current_lines)));
+                verse_counter += 1;
+                current_group = format!("Verse {verse_counter}");
+            }
+            continue;
+        }
+        if trimmed.starts_with('[') && trimmed.ends_with(']') && trimmed.len() > 2 {
+            if !current_lines.is_empty() {
+                sections.push((current_group.clone(), std::mem::take(&mut current_lines)));
+            }
+            current_group = trimmed[1..trimmed.len() - 1].trim().to_string();
+            continue;
+        }
+        current_lines.push(trimmed.to_string());
+    }
+    if !current_lines.is_empty() {
+        sections.push((current_group, current_lines));
+    }
+
+    let mut slides = Vec::new();
+    let mut group_order = Vec::new();
+    let mut seen_groups: Vec<String> = Vec::new();
+
+    for (group, lines) in sections {
+        group_order.push(group.clone());
+        if seen_groups.iter().any(|g| g.eq_ignore_ascii_case(&group)) {
+            continue;
+        }
+        seen_groups.push(group.clone());
+
+        let chunks: Vec<&[String]> = lines.chunks(cap).collect();
+        let total = chunks.len();
+        for (idx, chunk) in chunks.into_iter().enumerate() {
+            let mut primary_lines = Vec::new();
+            let mut secondary_lines = Vec::new();
+            for line in chunk {
+                if let Some((a, b)) = line.split_once("//") {
+                    primary_lines.push(a.trim().to_string());
+                    secondary_lines.push(b.trim().to_string());
+                } else {
+                    primary_lines.push(line.clone());
+                }
+            }
+            let primary_text = primary_lines.join("\n");
+            let label = if total > 1 {
+                format!("{title} — {group} ({}/{})", idx + 1, total)
+            } else {
+                format!("{title} — {group}")
+            };
+            let mut slide = slide_from_text(&label, &group, &primary_text, ccli.clone());
+            if !secondary_lines.is_empty() {
+                let sec_text = secondary_lines.join("\n");
+                slide.body = sec_text.clone();
+                slide.elements.push(core_scene::SlideElement {
+                    id: core_scene::ElementId::new(),
+                    name: "Secondary Translation".to_string(),
+                    bounds: core_scene::RectF::new(200.0, 760.0, 1520.0, 180.0),
+                    opacity: 0.92,
+                    z_index: 11,
+                    kind: core_scene::SlideElementKind::TextBox {
+                        text: sec_text,
+                        style: core_scene::TextStyle {
+                            font_size: 50.0,
+                            bold: false,
+                            italic: true,
+                            color: core_scene::ColorRgba::rgba(0.95, 0.86, 0.56, 0.96),
+                            stroke_width: 2.5,
+                            ..core_scene::TextStyle::default()
+                        },
+                    },
+                });
+            }
+            slides.push(slide);
+        }
+    }
+
+    if slides.is_empty() {
+        slides.push(slide_from_text(title, "Verse 1", title, ccli));
+        group_order.push("Verse 1".to_string());
+    }
+
+    let arrangements = vec![Arrangement {
+        id: "arr-default".to_string(),
+        name: "Default".to_string(),
+        group_order,
+    }];
+    (slides, arrangements)
+}
+
+/// Parses a scripture reference string such as `"John 3:16-17"`, `"Psalm 100:1-2"`, or `"Ps 23"`.
+pub fn parse_scripture_reference(raw: &str) -> Option<(String, u32, u32, u32)> {
+    let trimmed = raw.trim();
+    let last_space = trimmed.rfind(' ')?;
+    let book_raw = trimmed[..last_space].trim();
+    let num_part = trimmed[last_space + 1..].trim();
+    if book_raw.is_empty() || num_part.is_empty() {
+        return None;
+    }
+    let normalized_book = match book_raw.to_ascii_lowercase().as_str() {
+        "ps" | "psa" | "psalms" => "Psalm".to_string(),
+        "gen" => "Genesis".to_string(),
+        "mat" | "matt" => "Matthew".to_string(),
+        "rom" => "Romans".to_string(),
+        "num" => "Numbers".to_string(),
+        "prov" | "pro" => "Proverbs".to_string(),
+        "jn" | "jhn" => "John".to_string(),
+        _ => book_raw.to_string(),
+    };
+
+    if let Some((ch_str, vs_str)) = num_part.split_once(':') {
+        let chapter: u32 = ch_str.trim().parse().ok()?;
+        if let Some((s, e)) = vs_str.split_once('-') {
+            let start: u32 = s.trim().parse().ok()?;
+            let end: u32 = e.trim().parse().ok()?;
+            Some((normalized_book, chapter, start.min(end), start.max(end)))
+        } else {
+            let v: u32 = vs_str.trim().parse().ok()?;
+            Some((normalized_book, chapter, v, v))
+        }
+    } else {
+        let chapter: u32 = num_part.parse().ok()?;
+        Some((normalized_book, chapter, 1, 200))
+    }
+}
+
+/// Builds presentation slides from primary Bible verses (with optional parallel secondary translation).
+pub fn build_scripture_slides(
+    primary: &[BibleVerseRecord],
+    secondary: &[BibleVerseRecord],
+    verses_per_slide: usize,
+    show_verse_numbers: bool,
+) -> Vec<Slide> {
+    let per_slide = verses_per_slide.clamp(1, 6);
+    let mut out = Vec::new();
+    for chunk in primary.chunks(per_slide) {
+        let Some(first) = chunk.first() else {
+            continue;
+        };
+        let Some(last) = chunk.last() else {
+            continue;
+        };
+        let range_ref = if first.verse == last.verse {
+            format!("{} {}:{}", first.book, first.chapter, first.verse)
+        } else {
+            format!("{} {}:{}-{}", first.book, first.chapter, first.verse, last.verse)
+        };
+        let body_text = chunk
+            .iter()
+            .map(|v| {
+                if show_verse_numbers {
+                    format!("{} {}", v.verse, v.text)
+                } else {
+                    v.text.clone()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        let sec_matches: Vec<&BibleVerseRecord> = chunk
+            .iter()
+            .filter_map(|pv| {
+                secondary.iter().find(|sv| {
+                    sv.book.eq_ignore_ascii_case(&pv.book)
+                        && sv.chapter == pv.chapter
+                        && sv.verse == pv.verse
+                })
+            })
+            .collect();
+
+        let ref_caption = if let Some(sec_first) = sec_matches.first() {
+            format!(
+                "{range_ref} ({} / {})",
+                first.translation, sec_first.translation
+            )
+        } else {
+            format!("{range_ref} ({})", first.translation)
+        };
+
+        let mut slide = slide_from_text(&ref_caption, "Scripture", &body_text, None);
+        slide.headline = ref_caption.clone();
+        slide.body = body_text.clone();
+        slide.primary_color = core_scene::ColorRgba::rgb(0.07, 0.09, 0.19);
+        slide.secondary_color = core_scene::ColorRgba::rgb(0.22, 0.18, 0.44);
+
+        if !sec_matches.is_empty() {
+            let sec_text = sec_matches
+                .iter()
+                .map(|v| {
+                    if show_verse_numbers {
+                        format!("{} {}", v.verse, v.text)
+                    } else {
+                        v.text.clone()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            if let Some(el) = slide.elements.first_mut() {
+                el.bounds = core_scene::RectF::new(160.0, 140.0, 1600.0, 350.0);
+            }
+            slide.elements.push(core_scene::SlideElement {
+                id: core_scene::ElementId::new(),
+                name: "Parallel Translation".to_string(),
+                bounds: core_scene::RectF::new(160.0, 520.0, 1600.0, 280.0),
+                opacity: 0.94,
+                z_index: 11,
+                kind: core_scene::SlideElementKind::TextBox {
+                    text: sec_text,
+                    style: core_scene::TextStyle {
+                        font_size: 52.0,
+                        bold: false,
+                        italic: true,
+                        color: core_scene::ColorRgba::rgba(0.95, 0.87, 0.62, 0.96),
+                        stroke_width: 2.0,
+                        ..core_scene::TextStyle::default()
+                    },
+                },
+            });
+        }
+
+        slide.elements.push(core_scene::SlideElement {
+            id: core_scene::ElementId::new(),
+            name: "Scripture Reference".to_string(),
+            bounds: core_scene::RectF::new(180.0, 830.0, 1560.0, 110.0),
+            opacity: 0.95,
+            z_index: 12,
+            kind: core_scene::SlideElementKind::TextBox {
+                text: ref_caption,
+                style: core_scene::TextStyle {
+                    font_size: 42.0,
+                    bold: true,
+                    color: core_scene::ColorRgba::rgba(0.96, 0.80, 0.36, 0.98),
+                    stroke_width: 2.0,
+                    h_align: core_scene::TextAlign::Right,
+                    ..core_scene::TextStyle::default()
+                },
+            },
+        });
+        out.push(slide);
+    }
+    out
+}
+
+fn starter_public_domain_scripture() -> Vec<BibleVerseRecord> {
+    let entries: &[(&str, &str, u32, u32, &str)] = &[
+        ("KJV", "Genesis", 1, 1, "In the beginning God created the heaven and the earth."),
+        ("KJV", "Genesis", 1, 2, "And the earth was without form, and void; and darkness was upon the face of the deep."),
+        ("KJV", "Genesis", 1, 3, "And God said, Let there be light: and there was light."),
+        ("KJV", "Numbers", 6, 24, "The LORD bless thee, and keep thee:"),
+        ("KJV", "Numbers", 6, 25, "The LORD make his face shine upon thee, and be gracious unto thee:"),
+        ("KJV", "Numbers", 6, 26, "The LORD lift up his countenance upon thee, and give thee peace."),
+        ("KJV", "Psalm", 23, 1, "The LORD is my shepherd; I shall not want."),
+        ("KJV", "Psalm", 23, 2, "He maketh me to lie down in green pastures: he leadeth me beside the still waters."),
+        ("KJV", "Psalm", 23, 3, "He restoreth my soul: he leadeth me in the paths of righteousness for his name's sake."),
+        ("KJV", "Psalm", 100, 1, "Make a joyful noise unto the LORD, all ye lands."),
+        ("KJV", "Psalm", 100, 2, "Serve the LORD with gladness: come before his presence with singing."),
+        ("KJV", "Proverbs", 3, 5, "Trust in the LORD with all thine heart; and lean not unto thine own understanding."),
+        ("KJV", "Proverbs", 3, 6, "In all thy ways acknowledge him, and he shall direct thy paths."),
+        ("KJV", "Matthew", 28, 19, "Go ye therefore, and teach all nations, baptizing them in the name of the Father, and of the Son, and of the Holy Ghost:"),
+        ("KJV", "Matthew", 28, 20, "Teaching them to observe all things whatsoever I have commanded you: and, lo, I am with you alway, even unto the end of the world."),
+        ("KJV", "John", 3, 16, "For God so loved the world, that he gave his only begotten Son, that whosoever believeth in him should not perish, but have everlasting life."),
+        ("KJV", "John", 3, 17, "For God sent not his Son into the world to condemn the world; but that the world through him might be saved."),
+        ("KJV", "Romans", 8, 28, "And we know that all things work together for good to them that love God, to them who are the called according to his purpose."),
+        ("WEB", "Genesis", 1, 1, "In the beginning, God created the heavens and the earth."),
+        ("WEB", "Psalm", 23, 1, "Yahweh is my shepherd: I shall lack nothing."),
+        ("WEB", "Psalm", 23, 2, "He makes me lie down in green pastures. He leads me beside still waters."),
+        ("WEB", "Psalm", 100, 1, "Shout for joy to Yahweh, all you lands!"),
+        ("WEB", "Psalm", 100, 2, "Serve Yahweh with gladness. Come before his presence with singing."),
+        ("WEB", "John", 3, 16, "For God so loved the world, that he gave his one and only Son, that whoever believes in him should not perish, but have eternal life."),
+        ("WEB", "John", 3, 17, "For God didn't send his Son into the world to judge the world, but that the world should be saved through him."),
+        ("WEB", "Romans", 8, 28, "We know that all things work together for good for those who love God, for those who are called according to his purpose."),
+    ];
+    entries
+        .iter()
+        .map(|&(tr, book, ch, v, txt)| BibleVerseRecord {
+            translation: tr.to_string(),
+            book: book.to_string(),
+            chapter: ch,
+            verse: v,
+            text: txt.to_string(),
+            attribution: "Public Domain".to_string(),
+            cached_at_epoch: None,
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1509,7 +1938,7 @@ mod tests {
                 cached_at_epoch: None,
             }])
             .expect("insert");
-        assert_eq!(store.search_bible(None, "loved", 5).expect("all trans").len(), 1);
+        assert!(!store.search_bible(None, "loved", 5).expect("all trans").is_empty());
         assert!(store.search_bible(None, "   ", 5).expect("blank").is_empty());
 
         // CRDT snapshot persistence
@@ -1563,5 +1992,43 @@ mod tests {
 
         drop(store);
         let _ = std::fs::remove_dir_all(db_path.parent().expect("parent"));
+    }
+
+    #[test]
+    fn quick_lyrics_parser_and_scripture_lookup_dual_translation_work_offline() {
+        let store = LibraryStore::open_in_memory().expect("open db");
+        store.seed_demo_if_empty().expect("seed demo");
+
+        let translations = store.list_bible_translations().expect("list translations");
+        assert!(translations.contains(&"KJV".to_string()));
+        assert!(translations.contains(&"WEB".to_string()));
+
+        // Reference lookup (single, range, abbreviated book, chapter-only) & FTS5 fallback
+        let john = store.lookup_scripture(Some("KJV"), "John 3:16-17", 10).expect("john");
+        assert_eq!(john.len(), 2);
+        let ps = store.lookup_scripture(Some("WEB"), "Ps 100", 10).expect("ps100");
+        assert_eq!(ps.len(), 2);
+        let kw = store.lookup_scripture(Some("KJV"), "shepherd", 10).expect("kw");
+        assert_eq!(kw.len(), 1);
+        let empty = store.lookup_scripture(None, "", 5).expect("empty");
+        assert_eq!(empty.len(), 5);
+        assert!(parse_scripture_reference("invalid").is_none());
+
+        // Build dual-translation slides
+        let john_web = store.lookup_scripture(Some("WEB"), "jn 3:16-17", 10).expect("john web");
+        let slides = build_scripture_slides(&john, &john_web, 1, true);
+        assert_eq!(slides.len(), 2);
+        assert!(slides[0].headline.contains("KJV / WEB"));
+        assert_eq!(slides[0].elements.len(), 3); // primary + parallel + reference
+
+        // Quick Lyrics with [Verse 1]/[Chorus], repeated chorus, max_lines=2, and dual-language '//'
+        let raw = "[Verse 1]\nLine 1 // Linea 1\nLine 2 // Linea 2\nLine 3\n\n[Chorus]\nHoly holy\n\n[Chorus]\nHoly holy";
+        let (parsed_slides, arrangements) = parse_quick_lyrics("Holy Song", raw, 2, Some("99999".into()));
+        assert_eq!(parsed_slides.len(), 3); // Verse 1 split into 2 slides + 1 master Chorus slide
+        assert_eq!(arrangements[0].group_order, vec!["Verse 1", "Chorus", "Chorus"]);
+        assert_eq!(parsed_slides[0].elements.len(), 2); // primary + secondary translation
+
+        let (empty_slides, _) = parse_quick_lyrics("Blank", "   ", 4, None);
+        assert_eq!(empty_slides.len(), 1);
     }
 }
