@@ -9,13 +9,14 @@ use core_diagnostics::{
     CrashReport, DiagnosticsPaths, ExportedBundle, LogLevel, LoggingController,
 };
 use core_ipc::{
-    EngineCommand, EngineEvent, EngineSnapshot, EngineTelemetry, PreviewBusDescriptor,
+    DisplayInfo, EngineCommand, EngineEvent, EngineSnapshot, EngineTelemetry, PreviewBusDescriptor,
     ShmPreviewReader, default_socket_name, read_frame, to_local_socket_name, write_frame,
 };
 use core_library::{LibraryStore, PlaylistRecord, SongRecord};
 use core_scene::{
-    LayerKind, LookId, MaskStyle, OutputId, SceneDiff, SceneState, Slide, SlideElement, SlideId,
-    TransitionSpec,
+    LOOK_AUDIENCE_FULL, LOOK_STAGE_CONFIDENCE, LayerKind, LookId, MaskStyle, MonitorRegion,
+    OutputConfig, OutputId, OutputKind, OutputPlacement, SceneDiff, SceneState, Slide,
+    SlideElement, SlideId, StageLayoutConfig, TransitionSpec, split_monitor_regions,
 };
 use interprocess::local_socket::tokio::{Stream, prelude::*};
 use std::collections::HashMap;
@@ -376,6 +377,198 @@ async fn set_stage_message(
     message: Option<String>,
 ) -> Result<SceneState, String> {
     apply_scene_diff(&bridge, SceneDiff::SetStageMessage(message)).await
+}
+
+async fn refresh_snapshot_and_buses(
+    bridge: &EngineBridgeState,
+    expected_output_count: Option<usize>,
+) -> Result<EngineSnapshot, String> {
+    // Allow the compositor main thread a short window to spawn/close OS windows and SHM rings.
+    let mut last_snap = None;
+    for attempt in 0..12 {
+        match bridge.request(EngineCommand::GetSnapshot, false).await? {
+            EngineEvent::Snapshot(snap) => {
+                let synced = match expected_output_count {
+                    Some(n) => snap.preview_buses.len() == n,
+                    None => true,
+                };
+                last_snap = Some(*snap);
+                if synced || attempt == 11 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(35)).await;
+            }
+            other => return Err(format!("unexpected response to GetSnapshot: {other:?}")),
+        }
+    }
+    let snap = last_snap.ok_or_else(|| "engine snapshot unavailable".to_string())?;
+    let mut map = bridge.preview_buses.lock().await;
+    map.clear();
+    for bus in &snap.preview_buses {
+        map.insert(bus.output_id, bus.clone());
+    }
+    if let Ok(mut readers) = bridge.preview_readers.lock() {
+        readers.retain(|oid, _| map.contains_key(oid));
+    }
+    Ok(snap)
+}
+
+#[derive(serde::Deserialize)]
+struct OutputScreenInput {
+    id: Option<String>,
+    name: String,
+    kind: OutputKind,
+    monitor_index: Option<usize>,
+    width: u32,
+    height: u32,
+    placement_mode: String, // "windowed" | "fullscreen" | "region"
+    region_x: Option<i32>,
+    region_y: Option<i32>,
+    region_width: Option<u32>,
+    region_height: Option<u32>,
+    look_id: Option<String>,
+}
+
+#[tauri::command]
+async fn list_physical_displays(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+) -> Result<Vec<DisplayInfo>, String> {
+    match bridge.request(EngineCommand::ListDisplays, false).await? {
+        EngineEvent::Displays(d) => Ok(d),
+        other => Err(format!("unexpected response to ListDisplays: {other:?}")),
+    }
+}
+
+#[tauri::command]
+async fn upsert_output_screen(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    screen: OutputScreenInput,
+) -> Result<EngineSnapshot, String> {
+    let id = match screen.id.as_deref().map(str::trim) {
+        Some(raw) if !raw.is_empty() => OutputId(Uuid::parse_str(raw).map_err(|e| e.to_string())?),
+        _ => OutputId::new(),
+    };
+    let look_id = match screen.look_id.as_deref().map(str::trim) {
+        Some(raw) if !raw.is_empty() => LookId(Uuid::parse_str(raw).map_err(|e| e.to_string())?),
+        _ => match screen.kind {
+            OutputKind::Audience => LOOK_AUDIENCE_FULL,
+            OutputKind::Stage => LOOK_STAGE_CONFIDENCE,
+        },
+    };
+    let (placement, fullscreen, width, height) = match screen.placement_mode.as_str() {
+        "fullscreen" => (
+            OutputPlacement::Fullscreen,
+            true,
+            screen.width.max(320),
+            screen.height.max(180),
+        ),
+        "region" => {
+            let rw = screen.region_width.unwrap_or(screen.width).max(64);
+            let rh = screen.region_height.unwrap_or(screen.height).max(64);
+            let reg = MonitorRegion {
+                x: screen.region_x.unwrap_or(0),
+                y: screen.region_y.unwrap_or(0),
+                width: rw,
+                height: rh,
+            };
+            (OutputPlacement::Region(reg), false, rw, rh)
+        }
+        _ => (
+            OutputPlacement::Windowed,
+            false,
+            screen.width.max(320),
+            screen.height.max(180),
+        ),
+    };
+
+    let cfg = OutputConfig {
+        id,
+        name: screen.name.trim().to_string(),
+        kind: screen.kind,
+        monitor_index: screen.monitor_index,
+        width,
+        height,
+        fullscreen,
+        placement,
+        look_id,
+        stage_layout: (screen.kind == OutputKind::Stage).then(StageLayoutConfig::default),
+    };
+
+    let state = apply_scene_diff(&bridge, SceneDiff::UpsertOutput(cfg)).await?;
+    refresh_snapshot_and_buses(&bridge, Some(state.outputs.len())).await
+}
+
+#[tauri::command]
+async fn remove_output_screen(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    output_id: String,
+) -> Result<EngineSnapshot, String> {
+    let oid = OutputId(Uuid::parse_str(&output_id).map_err(|e| e.to_string())?);
+    let state = apply_scene_diff(&bridge, SceneDiff::RemoveOutput(oid)).await?;
+    refresh_snapshot_and_buses(&bridge, Some(state.outputs.len())).await
+}
+
+#[tauri::command]
+async fn split_monitor_into_screens(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    monitor_index: usize,
+    cols: u32,
+    rows: u32,
+    default_kind: OutputKind,
+    replace_existing_on_monitor: bool,
+) -> Result<EngineSnapshot, String> {
+    let snap = refresh_snapshot_and_buses(&bridge, None).await?;
+    let display = snap
+        .displays
+        .get(monitor_index)
+        .ok_or_else(|| format!("physical display #{monitor_index} not found"))?
+        .clone();
+
+    let regions = split_monitor_regions(display.width, display.height, cols, rows);
+    if regions.is_empty() {
+        return Err("cols, rows, and display dimensions must be greater than zero".to_string());
+    }
+
+    if replace_existing_on_monitor {
+        for out in &snap.state.outputs {
+            if out.monitor_index == Some(monitor_index) {
+                let _ = apply_scene_diff(&bridge, SceneDiff::RemoveOutput(out.id)).await;
+            }
+        }
+    }
+
+    let look_id = match default_kind {
+        OutputKind::Audience => LOOK_AUDIENCE_FULL,
+        OutputKind::Stage => LOOK_STAGE_CONFIDENCE,
+    };
+    let kind_label = match default_kind {
+        OutputKind::Audience => "Audience",
+        OutputKind::Stage => "Stage",
+    };
+
+    let mut final_count = snap.state.outputs.len();
+    for (idx, reg) in regions.into_iter().enumerate() {
+        let cfg = OutputConfig {
+            id: OutputId::new(),
+            name: format!(
+                "Display {} — Region {} ({kind_label})",
+                monitor_index + 1,
+                idx + 1
+            ),
+            kind: default_kind,
+            monitor_index: Some(monitor_index),
+            width: reg.width,
+            height: reg.height,
+            fullscreen: false,
+            placement: OutputPlacement::Region(reg),
+            look_id,
+            stage_layout: (default_kind == OutputKind::Stage).then(StageLayoutConfig::default),
+        };
+        let st = apply_scene_diff(&bridge, SceneDiff::UpsertOutput(cfg)).await?;
+        final_count = st.outputs.len();
+    }
+
+    refresh_snapshot_and_buses(&bridge, Some(final_count)).await
 }
 
 #[tauri::command]
@@ -832,6 +1025,10 @@ pub fn run() {
             set_mask,
             set_stage_message,
             set_output_look,
+            list_physical_displays,
+            upsert_output_screen,
+            remove_output_screen,
+            split_monitor_into_screens,
             search_library_songs,
             list_playlists,
             get_broadcast_capabilities,

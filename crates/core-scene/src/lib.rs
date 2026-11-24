@@ -397,6 +397,71 @@ impl Default for StageLayoutConfig {
     }
 }
 
+/// Pixel rectangle relative to the assigned physical monitor's top-left origin
+/// (or virtual desktop origin when `monitor_index` is `None`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MonitorRegion {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// How an output screen is positioned on a physical OS display.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum OutputPlacement {
+    /// Standard resizable window.
+    #[default]
+    Windowed,
+    /// Borderless fullscreen occupying the entire selected physical monitor.
+    Fullscreen,
+    /// Independent borderless sub-screen occupying a pixel region of a physical monitor
+    /// (e.g., split-screen halves, quadrants, or LED wall slices).
+    Region(MonitorRegion),
+}
+
+/// Divides a physical monitor of size `monitor_width × monitor_height` into `cols × rows`
+/// pixel-accurate, non-overlapping [`MonitorRegion`] tiles (absorbing any remainder pixels on
+/// the final column/row so there are zero 1px gaps).
+pub fn split_monitor_regions(
+    monitor_width: u32,
+    monitor_height: u32,
+    cols: u32,
+    rows: u32,
+) -> Vec<MonitorRegion> {
+    if monitor_width == 0 || monitor_height == 0 || cols == 0 || rows == 0 {
+        return Vec::new();
+    }
+    let cols = cols.min(8);
+    let rows = rows.min(8);
+    let base_w = (monitor_width / cols).max(1);
+    let base_h = (monitor_height / rows).max(1);
+    let mut regions = Vec::with_capacity((cols * rows) as usize);
+    for r in 0..rows {
+        let y = r * base_h;
+        let h = if r + 1 == rows {
+            monitor_height.saturating_sub(y).max(1)
+        } else {
+            base_h
+        };
+        for c in 0..cols {
+            let x = c * base_w;
+            let w = if c + 1 == cols {
+                monitor_width.saturating_sub(x).max(1)
+            } else {
+                base_w
+            };
+            regions.push(MonitorRegion {
+                x: x as i32,
+                y: y as i32,
+                width: w,
+                height: h,
+            });
+        }
+    }
+    regions
+}
+
 /// Configuration for an individual compositor output window / render target.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OutputConfig {
@@ -407,8 +472,20 @@ pub struct OutputConfig {
     pub width: u32,
     pub height: u32,
     pub fullscreen: bool,
+    #[serde(default)]
+    pub placement: OutputPlacement,
     pub look_id: LookId,
     pub stage_layout: Option<StageLayoutConfig>,
+}
+
+impl OutputConfig {
+    /// Resolves effective placement, keeping legacy `fullscreen: true` flags consistent.
+    pub fn effective_placement(&self) -> OutputPlacement {
+        match self.placement {
+            OutputPlacement::Windowed if self.fullscreen => OutputPlacement::Fullscreen,
+            other => other,
+        }
+    }
 }
 
 /// Complete live compositor state synchronized between control surface and sidecar engine.
@@ -455,6 +532,12 @@ pub enum SceneDiff {
     SetOutputLook {
         output_id: OutputId,
         look_id: LookId,
+    },
+    UpsertOutput(OutputConfig),
+    RemoveOutput(OutputId),
+    SetOutputStageLayout {
+        output_id: OutputId,
+        layout: StageLayoutConfig,
     },
     ToggleOverlayLayer(bool),
     SetMask(MaskStyle),
@@ -517,6 +600,7 @@ impl SceneState {
             width: 1280,
             height: 720,
             fullscreen: false,
+            placement: OutputPlacement::Windowed,
             look_id: LOOK_AUDIENCE_FULL,
             stage_layout: None,
         }];
@@ -530,6 +614,7 @@ impl SceneState {
                 width: 960,
                 height: 540,
                 fullscreen: false,
+                placement: OutputPlacement::Windowed,
                 look_id: LOOK_STAGE_CONFIDENCE,
                 stage_layout: Some(StageLayoutConfig::default()),
             });
@@ -665,6 +750,58 @@ impl SceneState {
                 }
                 if let Some(output) = self.outputs.iter_mut().find(|o| o.id == output_id) {
                     output.look_id = look_id;
+                    self.revision += 1;
+                    true
+                } else {
+                    false
+                }
+            }
+            SceneDiff::UpsertOutput(mut cfg) => {
+                if cfg.name.trim().is_empty() || cfg.width == 0 || cfg.height == 0 {
+                    return false;
+                }
+                if let OutputPlacement::Region(r) = cfg.placement {
+                    if r.width == 0 || r.height == 0 {
+                        return false;
+                    }
+                    cfg.width = r.width;
+                    cfg.height = r.height;
+                    cfg.fullscreen = false;
+                } else if cfg.placement == OutputPlacement::Fullscreen {
+                    cfg.fullscreen = true;
+                } else if cfg.fullscreen {
+                    cfg.placement = OutputPlacement::Fullscreen;
+                }
+                if !self.looks.contains_key(&cfg.look_id) {
+                    cfg.look_id = match cfg.kind {
+                        OutputKind::Audience => LOOK_AUDIENCE_FULL,
+                        OutputKind::Stage => LOOK_STAGE_CONFIDENCE,
+                    };
+                }
+                if cfg.kind == OutputKind::Stage && cfg.stage_layout.is_none() {
+                    cfg.stage_layout = Some(StageLayoutConfig::default());
+                }
+                if let Some(existing) = self.outputs.iter_mut().find(|o| o.id == cfg.id) {
+                    *existing = cfg;
+                } else {
+                    self.outputs.push(cfg);
+                }
+                self.revision += 1;
+                true
+            }
+            SceneDiff::RemoveOutput(output_id) => {
+                let before = self.outputs.len();
+                self.outputs.retain(|o| o.id != output_id);
+                if self.outputs.len() < before {
+                    self.revision += 1;
+                    true
+                } else {
+                    false
+                }
+            }
+            SceneDiff::SetOutputStageLayout { output_id, layout } => {
+                if let Some(output) = self.outputs.iter_mut().find(|o| o.id == output_id) {
+                    output.stage_layout = Some(layout);
                     self.revision += 1;
                     true
                 } else {
@@ -991,5 +1128,106 @@ mod tests {
         assert!(state.apply(SceneDiff::ClearAll));
         assert!(state.apply(SceneDiff::ReplaceDeck(demo_deck())));
         assert!(state.look_for_output(OutputId::new()).is_none());
+    }
+
+    #[test]
+    fn manages_dynamic_outputs_and_split_monitor_regions() {
+        let regions = split_monitor_regions(3840, 2160, 2, 2);
+        assert_eq!(regions.len(), 4);
+        assert_eq!(regions[0], MonitorRegion { x: 0, y: 0, width: 1920, height: 1080 });
+        assert_eq!(regions[3], MonitorRegion { x: 1920, y: 1080, width: 1920, height: 1080 });
+
+        // Remainder pixels on odd resolution absorbed cleanly on last column/row.
+        let odd = split_monitor_regions(1921, 1081, 3, 2);
+        assert_eq!(odd.len(), 6);
+        assert_eq!(odd[2].x as u32 + odd[2].width, 1921);
+        assert_eq!(odd[5].y as u32 + odd[5].height, 1081);
+        assert!(split_monitor_regions(0, 1080, 2, 1).is_empty());
+        assert!(split_monitor_regions(1920, 1080, 0, 1).is_empty());
+
+        let mut state = SceneState::demo_m0(1);
+        let stage_id = OutputId::new();
+        let region_out = OutputConfig {
+            id: stage_id,
+            name: "Split Monitor Right (Stage)".into(),
+            kind: OutputKind::Stage,
+            monitor_index: Some(1),
+            width: 960,
+            height: 1080,
+            fullscreen: false,
+            placement: OutputPlacement::Region(MonitorRegion {
+                x: 960,
+                y: 0,
+                width: 960,
+                height: 1080,
+            }),
+            look_id: LookId::from_u128(9999), // unknown look falls back to Stage default
+            stage_layout: None,
+        };
+        assert!(state.apply(SceneDiff::UpsertOutput(region_out)));
+        let stored = state.outputs.iter().find(|o| o.id == stage_id).expect("stored");
+        assert_eq!(stored.look_id, LOOK_STAGE_CONFIDENCE);
+        assert!(stored.stage_layout.is_some());
+        assert_eq!(
+            stored.effective_placement(),
+            OutputPlacement::Region(MonitorRegion { x: 960, y: 0, width: 960, height: 1080 })
+        );
+
+        // Update existing output to Fullscreen + update StageLayout
+        let mut updated = stored.clone();
+        updated.placement = OutputPlacement::Fullscreen;
+        assert!(state.apply(SceneDiff::UpsertOutput(updated)));
+        assert!(state.outputs.iter().find(|o| o.id == stage_id).expect("updated").fullscreen);
+
+        let mut legacy_fs = state.outputs[0].clone();
+        legacy_fs.placement = OutputPlacement::Windowed;
+        legacy_fs.fullscreen = true;
+        assert_eq!(legacy_fs.effective_placement(), OutputPlacement::Fullscreen);
+        assert!(state.apply(SceneDiff::UpsertOutput(legacy_fs)));
+
+        assert!(state.apply(SceneDiff::SetOutputStageLayout {
+            output_id: stage_id,
+            layout: StageLayoutConfig {
+                show_chords: false,
+                ..StageLayoutConfig::default()
+            },
+        }));
+        assert!(!state.apply(SceneDiff::SetOutputStageLayout {
+            output_id: OutputId::new(),
+            layout: StageLayoutConfig::default(),
+        }));
+
+        // Failure paths: empty name, zero dimensions, zero region, removing unknown output
+        let bad_name = OutputConfig {
+            id: OutputId::new(),
+            name: "   ".into(),
+            kind: OutputKind::Audience,
+            monitor_index: None,
+            width: 1280,
+            height: 720,
+            fullscreen: false,
+            placement: OutputPlacement::Windowed,
+            look_id: LOOK_AUDIENCE_FULL,
+            stage_layout: None,
+        };
+        assert!(!state.apply(SceneDiff::UpsertOutput(bad_name)));
+        let bad_region = OutputConfig {
+            id: OutputId::new(),
+            name: "Bad Region".into(),
+            kind: OutputKind::Audience,
+            monitor_index: Some(0),
+            width: 1280,
+            height: 720,
+            fullscreen: false,
+            placement: OutputPlacement::Region(MonitorRegion { x: 0, y: 0, width: 0, height: 500 }),
+            look_id: LOOK_AUDIENCE_FULL,
+            stage_layout: None,
+        };
+        assert!(!state.apply(SceneDiff::UpsertOutput(bad_region)));
+        assert!(!state.apply(SceneDiff::RemoveOutput(OutputId::new())));
+
+        // Remove output cleanly
+        assert!(state.apply(SceneDiff::RemoveOutput(stage_id)));
+        assert!(state.outputs.iter().all(|o| o.id != stage_id));
     }
 }

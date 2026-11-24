@@ -4,6 +4,7 @@
   import PreviewCanvas from "./lib/PreviewCanvas.svelte";
   import BroadcastPanel from "./lib/BroadcastPanel.svelte";
   import DiagnosticsPanel from "./lib/DiagnosticsPanel.svelte";
+  import ScreensPanel from "./lib/ScreensPanel.svelte";
   import ShowControlPanel from "./lib/ShowControlPanel.svelte";
   import SlideEditor from "./lib/SlideEditor.svelte";
   import type {
@@ -21,7 +22,7 @@
   let telemetry = $state<EngineTelemetry | null>(null);
   let statusMessage = $state("Connecting to openpresenter-engine sidecar...");
   let errorText = $state<string | null>(null);
-  let activeTab = $state<"show" | "editor" | "broadcast" | "ecosystem" | "diagnostics">("show");
+  let activeTab = $state<"show" | "screens" | "editor" | "broadcast" | "ecosystem" | "diagnostics">("show");
   let crashCount = $state(0);
 
   let transitionKind = $state<"Cut" | "Dissolve" | "PushLeft" | "WipeRight">("Dissolve");
@@ -248,6 +249,9 @@
         <button class="tab" class:active={activeTab === "show"} onclick={() => (activeTab = "show")}>
           Show
         </button>
+        <button class="tab" class:active={activeTab === "screens"} onclick={() => (activeTab = "screens")}>
+          Screens
+        </button>
         <button class="tab" class:active={activeTab === "editor"} onclick={() => (activeTab = "editor")}>
           Slide Editor
         </button>
@@ -316,7 +320,15 @@
     </aside>
 
     <section class="deck-pane">
-      {#if activeTab === "broadcast"}
+      {#if activeTab === "screens" && snapshot}
+        <ScreensPanel
+          {snapshot}
+          onSnapshotChange={(next) => {
+            snapshot = next;
+            telemetry = next.telemetry;
+          }}
+        />
+      {:else if activeTab === "broadcast"}
         <BroadcastPanel />
       {:else if activeTab === "ecosystem"}
         <ShowControlPanel />
@@ -432,7 +444,7 @@
     <aside class="monitor-pane">
       <div class="pane-header">
         <h2>Native GPU Monitors</h2>
-        <span class="sub">SHM -> Binary Channel</span>
+        <button class="btn" onclick={() => (activeTab = "screens")}>Configure</button>
       </div>
 
       {#if scene}
@@ -642,11 +654,6 @@
     font-size: 13px;
     text-transform: uppercase;
     letter-spacing: 0.06em;
-    color: var(--text-1);
-  }
-
-  .sub {
-    font-size: 11px;
     color: var(--text-1);
   }
 

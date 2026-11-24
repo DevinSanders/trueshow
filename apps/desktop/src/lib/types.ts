@@ -98,6 +98,18 @@ export interface LookConfig {
   slide_blend_mode: string;
 }
 
+export interface MonitorRegion {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export type OutputPlacement =
+  | "Windowed"
+  | "Fullscreen"
+  | { Region: MonitorRegion };
+
 export interface OutputConfig {
   id: string;
   name: string;
@@ -106,6 +118,7 @@ export interface OutputConfig {
   width: number;
   height: number;
   fullscreen: boolean;
+  placement?: OutputPlacement;
   look_id: string;
 }
 

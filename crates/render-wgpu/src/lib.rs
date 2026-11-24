@@ -13,20 +13,20 @@ use core_ipc::{
 };
 use core_scene::{
     BlendMode, ColorRgba, LayerKind, LookConfig, MaskStyle, OutputConfig, OutputId, OutputKind,
-    SceneDiff, SceneState, Slide, StageLayoutConfig,
+    OutputPlacement, SceneDiff, SceneState, Slide, StageLayoutConfig,
 };
 use render_text::{BroadcastRasterizer, Vector2DRasterizer};
 use staging::PreviewReadbackRing;
-use std::collections::{HashMap, VecDeque};
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
 use winit::application::ApplicationHandler;
-use winit::dpi::{LogicalSize, PhysicalPosition};
+use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::window::{Fullscreen, Window, WindowAttributes, WindowId};
+use winit::window::{Fullscreen, Window, WindowAttributes, WindowId, WindowLevel};
 
 pub use winit::event_loop::EventLoopProxy;
 
@@ -186,6 +186,17 @@ impl SharedEngineState {
         }
     }
 
+    pub fn update_outputs_metadata(
+        &self,
+        displays: Vec<DisplayInfo>,
+        preview_buses: Vec<PreviewBusDescriptor>,
+    ) {
+        if let Ok(mut guard) = self.inner.write() {
+            guard.displays = displays;
+            guard.preview_buses = preview_buses;
+        }
+    }
+
     fn update_telemetry(&self, telemetry: EngineTelemetry) {
         if let Ok(mut guard) = self.inner.write() {
             guard.telemetry = telemetry;
@@ -299,14 +310,21 @@ struct OutputSurfaceState {
     slide_texture: wgpu::Texture,
     uploaded_revision: u64,
     bind_group: wgpu::BindGroup,
+    preview_bus: Option<PreviewBusDescriptor>,
     preview_ring: Option<PreviewReadbackRing>,
     preview_pipeline: Option<wgpu::RenderPipeline>,
     frames_presented: u64,
 }
 
 struct GpuContext {
+    instance: wgpu::Instance,
+    adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
+    shader: wgpu::ShaderModule,
+    bind_group_layout: wgpu::BindGroupLayout,
+    pipeline_layout: wgpu::PipelineLayout,
+    sampler: wgpu::Sampler,
 }
 
 struct FrameStats {
@@ -670,15 +688,8 @@ impl CompositorApp {
             self.shared.update_telemetry(telemetry);
         }
     }
-}
-
-impl ApplicationHandler<EngineWakeEvent> for CompositorApp {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.gpu.is_some() {
-            return;
-        }
-
-        let displays: Vec<DisplayInfo> = event_loop
+    fn enumerate_displays(event_loop: &ActiveEventLoop) -> Vec<DisplayInfo> {
+        event_loop
             .available_monitors()
             .enumerate()
             .map(|(idx, mon)| {
@@ -697,8 +708,370 @@ impl ApplicationHandler<EngineWakeEvent> for CompositorApp {
                     position_y: pos.y,
                 }
             })
+            .collect()
+    }
+
+    fn build_window_attributes(
+        event_loop: &ActiveEventLoop,
+        cfg: &OutputConfig,
+        stagger_idx: usize,
+    ) -> WindowAttributes {
+        let mut attrs = WindowAttributes::default()
+            .with_title(format!("OpenPresenter Output — {}", cfg.name));
+
+        match cfg.effective_placement() {
+            OutputPlacement::Fullscreen => {
+                let target_mon = cfg
+                    .monitor_index
+                    .and_then(|m| event_loop.available_monitors().nth(m));
+                attrs = attrs
+                    .with_inner_size(LogicalSize::new(cfg.width.max(320) as f64, cfg.height.max(180) as f64))
+                    .with_fullscreen(Some(Fullscreen::Borderless(target_mon)));
+            }
+            OutputPlacement::Region(reg) => {
+                let mon_origin = cfg
+                    .monitor_index
+                    .and_then(|m| event_loop.available_monitors().nth(m))
+                    .map(|m| m.position())
+                    .unwrap_or(PhysicalPosition::new(0, 0));
+                attrs = attrs
+                    .with_decorations(false)
+                    .with_window_level(WindowLevel::AlwaysOnTop)
+                    .with_inner_size(PhysicalSize::new(reg.width.max(64), reg.height.max(64)))
+                    .with_position(PhysicalPosition::new(
+                        mon_origin.x + reg.x,
+                        mon_origin.y + reg.y,
+                    ));
+            }
+            OutputPlacement::Windowed => {
+                let pos = if let Some(mon) = cfg
+                    .monitor_index
+                    .and_then(|m| event_loop.available_monitors().nth(m))
+                {
+                    let origin = mon.position();
+                    PhysicalPosition::new(
+                        origin.x + 40 + (stagger_idx as i32) * 60,
+                        origin.y + 40 + (stagger_idx as i32) * 50,
+                    )
+                } else {
+                    PhysicalPosition::new(
+                        60 + (stagger_idx as i32) * 90,
+                        60 + (stagger_idx as i32) * 70,
+                    )
+                };
+                attrs = attrs
+                    .with_decorations(true)
+                    .with_window_level(WindowLevel::Normal)
+                    .with_inner_size(LogicalSize::new(
+                        cfg.width.max(320) as f64,
+                        cfg.height.max(180) as f64,
+                    ))
+                    .with_position(pos);
+            }
+        }
+        attrs
+    }
+
+    fn apply_live_window_placement(
+        event_loop: &ActiveEventLoop,
+        window: &Window,
+        cfg: &OutputConfig,
+    ) {
+        window.set_title(&format!("OpenPresenter Output — {}", cfg.name));
+        match cfg.effective_placement() {
+            OutputPlacement::Fullscreen => {
+                let target_mon = cfg
+                    .monitor_index
+                    .and_then(|m| event_loop.available_monitors().nth(m));
+                window.set_window_level(WindowLevel::Normal);
+                window.set_fullscreen(Some(Fullscreen::Borderless(target_mon)));
+            }
+            OutputPlacement::Region(reg) => {
+                let mon_origin = cfg
+                    .monitor_index
+                    .and_then(|m| event_loop.available_monitors().nth(m))
+                    .map(|m| m.position())
+                    .unwrap_or(PhysicalPosition::new(0, 0));
+                window.set_fullscreen(None);
+                window.set_decorations(false);
+                window.set_window_level(WindowLevel::AlwaysOnTop);
+                let _ = window.request_inner_size(PhysicalSize::new(
+                    reg.width.max(64),
+                    reg.height.max(64),
+                ));
+                window.set_outer_position(PhysicalPosition::new(
+                    mon_origin.x + reg.x,
+                    mon_origin.y + reg.y,
+                ));
+            }
+            OutputPlacement::Windowed => {
+                window.set_fullscreen(None);
+                window.set_decorations(true);
+                window.set_window_level(WindowLevel::Normal);
+                let _ = window.request_inner_size(LogicalSize::new(
+                    cfg.width.max(320) as f64,
+                    cfg.height.max(180) as f64,
+                ));
+                if let Some(mon) = cfg
+                    .monitor_index
+                    .and_then(|m| event_loop.available_monitors().nth(m))
+                {
+                    let origin = mon.position();
+                    window.set_outer_position(PhysicalPosition::new(origin.x + 60, origin.y + 60));
+                }
+            }
+        }
+    }
+
+    fn build_output_surface_state(
+        gpu: &GpuContext,
+        preview_dir: &Path,
+        cfg: OutputConfig,
+        window: Arc<Window>,
+        surface: wgpu::Surface<'static>,
+        is_primary: bool,
+    ) -> OutputSurfaceState {
+        let caps = surface.get_capabilities(&gpu.adapter);
+        let surface_format = caps
+            .formats
+            .iter()
+            .copied()
+            .find(|f| f.is_srgb())
+            .unwrap_or(caps.formats[0]);
+
+        let present_mode = if is_primary {
+            wgpu::PresentMode::AutoVsync
+        } else if caps.present_modes.contains(&wgpu::PresentMode::Mailbox) {
+            wgpu::PresentMode::Mailbox
+        } else if caps.present_modes.contains(&wgpu::PresentMode::Immediate) {
+            wgpu::PresentMode::Immediate
+        } else {
+            wgpu::PresentMode::AutoNoVsync
+        };
+
+        let phys = window.inner_size();
+        let surface_config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: surface_format,
+            width: phys.width.max(1),
+            height: phys.height.max(1),
+            present_mode,
+            alpha_mode: caps.alpha_modes[0],
+            view_formats: vec![],
+            desired_maximum_frame_latency: 2,
+            color_space: wgpu::SurfaceColorSpace::Auto,
+        };
+        surface.configure(&gpu.device, &surface_config);
+
+        let pipeline = Self::create_pipeline(
+            &gpu.device,
+            &gpu.pipeline_layout,
+            &gpu.shader,
+            surface_format,
+            &format!("pipeline_{}", cfg.name),
+        );
+
+        let uniform_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("compositor_uniform_buf"),
+            size: std::mem::size_of::<CompositorUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let slide_texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("slide_layer_rgba8"),
+            size: wgpu::Extent3d {
+                width: LAYER_TEX_WIDTH,
+                height: LAYER_TEX_HEIGHT,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let slide_view = slide_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("compositor_bg"),
+            layout: &gpu.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&slide_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&gpu.sampler),
+                },
+            ],
+        });
+
+        let pid = std::process::id();
+        let shm_path = preview_dir.join(format!("preview-{pid}-{}.op_shm", cfg.id.0));
+        let (preview_bus, preview_ring, preview_pipeline) =
+            match ShmPreviewWriter::create(&shm_path, PREVIEW_WIDTH, PREVIEW_HEIGHT) {
+                Ok(writer) => {
+                    let bus = PreviewBusDescriptor {
+                        output_id: cfg.id,
+                        shm_path: shm_path.to_string_lossy().into_owned(),
+                        width: PREVIEW_WIDTH,
+                        height: PREVIEW_HEIGHT,
+                    };
+                    let ring =
+                        PreviewReadbackRing::new(&gpu.device, PREVIEW_WIDTH, PREVIEW_HEIGHT, writer);
+                    let ppipe = Self::create_pipeline(
+                        &gpu.device,
+                        &gpu.pipeline_layout,
+                        &gpu.shader,
+                        wgpu::TextureFormat::Rgba8UnormSrgb,
+                        "preview_rgba8_pipeline",
+                    );
+                    (Some(bus), Some(ring), Some(ppipe))
+                }
+                Err(err) => {
+                    warn!("failed to create SHM preview ring for {}: {err}", cfg.name);
+                    (None, None, None)
+                }
+            };
+
+        OutputSurfaceState {
+            config_meta: cfg,
+            window,
+            surface,
+            surface_config,
+            pipeline,
+            uniform_buffer,
+            slide_texture,
+            uploaded_revision: 0,
+            bind_group,
+            preview_bus,
+            preview_ring,
+            preview_pipeline,
+            frames_presented: 0,
+        }
+    }
+
+    fn current_preview_buses(&self) -> Vec<PreviewBusDescriptor> {
+        self.ordered_windows
+            .iter()
+            .filter_map(|wid| self.outputs.get(wid))
+            .filter_map(|o| o.preview_bus.clone())
+            .collect()
+    }
+
+    /// Reconciles live `winit` + `wgpu` output windows with `SceneState.outputs` in real time:
+    /// adds newly configured Audience/Stage/Split-Monitor screens, updates placement/monitor/Look
+    /// in-place, and closes removed screens without interrupting remaining live displays.
+    fn sync_outputs_with_scene(&mut self, event_loop: &ActiveEventLoop) {
+        if self.gpu.is_none() {
+            return;
+        }
+        let desired = self.shared.snapshot().state.outputs;
+        let desired_ids: HashSet<OutputId> = desired.iter().map(|o| o.id).collect();
+
+        // 1. Remove closed/deleted outputs
+        let to_remove: Vec<WindowId> = self
+            .outputs
+            .iter()
+            .filter(|(_, state)| !desired_ids.contains(&state.config_meta.id))
+            .map(|(wid, _)| *wid)
             .collect();
 
+        let mut topology_changed = !to_remove.is_empty();
+        for wid in to_remove {
+            if let Some(removed) = self.outputs.remove(&wid) {
+                info!(
+                    output = %removed.config_meta.name,
+                    "removed GPU output window dynamically"
+                );
+            }
+            self.ordered_windows.retain(|&id| id != wid);
+        }
+
+        // 2. Update existing outputs in-place or spawn newly added outputs
+        for (idx, cfg) in desired.into_iter().enumerate() {
+            let existing_wid = self
+                .outputs
+                .iter()
+                .find(|(_, state)| state.config_meta.id == cfg.id)
+                .map(|(wid, _)| *wid);
+
+            if let Some(wid) = existing_wid {
+                if let Some(state) = self.outputs.get_mut(&wid)
+                    && state.config_meta != cfg
+                {
+                    let placement_changed = state.config_meta.monitor_index != cfg.monitor_index
+                        || state.config_meta.effective_placement() != cfg.effective_placement()
+                        || state.config_meta.width != cfg.width
+                        || state.config_meta.height != cfg.height
+                        || state.config_meta.name != cfg.name;
+                    if placement_changed {
+                        Self::apply_live_window_placement(event_loop, &state.window, &cfg);
+                    }
+                    state.config_meta = cfg;
+                    state.uploaded_revision = 0;
+                    topology_changed = true;
+                }
+            } else if let Some(gpu) = self.gpu.as_ref() {
+                let attrs = Self::build_window_attributes(event_loop, &cfg, idx);
+                let window = match event_loop.create_window(attrs) {
+                    Ok(w) => Arc::new(w),
+                    Err(err) => {
+                        error!("failed to spawn live output window '{}': {err}", cfg.name);
+                        continue;
+                    }
+                };
+                let surface = match gpu.instance.create_surface(Arc::clone(&window)) {
+                    Ok(s) => s,
+                    Err(err) => {
+                        error!("failed to create wgpu surface for '{}': {err}", cfg.name);
+                        continue;
+                    }
+                };
+                let is_primary = self.ordered_windows.is_empty();
+                let out_state = Self::build_output_surface_state(
+                    gpu,
+                    &self.preview_dir,
+                    cfg,
+                    window,
+                    surface,
+                    is_primary,
+                );
+                let wid = out_state.window.id();
+                info!(
+                    output = %out_state.config_meta.name,
+                    kind = ?out_state.config_meta.kind,
+                    placement = ?out_state.config_meta.effective_placement(),
+                    "created live GPU output screen"
+                );
+                self.ordered_windows.push(wid);
+                self.outputs.insert(wid, out_state);
+                topology_changed = true;
+            }
+        }
+
+        if topology_changed {
+            let displays = Self::enumerate_displays(event_loop);
+            let buses = self.current_preview_buses();
+            self.shared.update_outputs_metadata(displays, buses);
+        }
+    }
+}
+
+impl ApplicationHandler<EngineWakeEvent> for CompositorApp {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.gpu.is_some() {
+            return;
+        }
+
+        let displays = Self::enumerate_displays(event_loop);
         info!("enumerated {} physical display(s)", displays.len());
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
@@ -712,23 +1085,7 @@ impl ApplicationHandler<EngineWakeEvent> for CompositorApp {
             Vec::with_capacity(output_configs.len());
 
         for (idx, cfg) in output_configs.into_iter().enumerate() {
-            let mut attrs = WindowAttributes::default()
-                .with_title(format!("OpenPresenter Output — {}", cfg.name))
-                .with_inner_size(LogicalSize::new(cfg.width as f64, cfg.height as f64));
-
-            if cfg.fullscreen {
-                let target_mon = cfg
-                    .monitor_index
-                    .and_then(|m| event_loop.available_monitors().nth(m));
-                attrs = attrs.with_fullscreen(Some(Fullscreen::Borderless(target_mon)));
-            } else {
-                // Stagger windowed outputs so Audience and Stage don't completely overlap on launch.
-                attrs = attrs.with_position(PhysicalPosition::new(
-                    60 + (idx as i32) * 90,
-                    60 + (idx as i32) * 70,
-                ));
-            }
-
+            let attrs = Self::build_window_attributes(event_loop, &cfg, idx);
             let window = match event_loop.create_window(attrs) {
                 Ok(w) => Arc::new(w),
                 Err(err) => {
@@ -856,143 +1213,32 @@ impl ApplicationHandler<EngineWakeEvent> for CompositorApp {
             ..Default::default()
         });
 
-        let mut preview_buses = Vec::new();
-        let pid = std::process::id();
+        let gpu = GpuContext {
+            instance,
+            adapter,
+            device,
+            queue,
+            shader,
+            bind_group_layout,
+            pipeline_layout,
+            sampler,
+        };
 
         for (idx, (cfg, window, surface)) in created_windows.into_iter().enumerate() {
-            let caps = surface.get_capabilities(&adapter);
-            let surface_format = caps
-                .formats
-                .iter()
-                .copied()
-                .find(|f| f.is_srgb())
-                .unwrap_or(caps.formats[0]);
-
-            // Pace VSync on Output 0 (Audience) and avoid double-blocking secondary outputs down to 30 fps.
-            let present_mode = if idx == 0 {
-                wgpu::PresentMode::AutoVsync
-            } else if caps.present_modes.contains(&wgpu::PresentMode::Mailbox) {
-                wgpu::PresentMode::Mailbox
-            } else if caps.present_modes.contains(&wgpu::PresentMode::Immediate) {
-                wgpu::PresentMode::Immediate
-            } else {
-                wgpu::PresentMode::AutoNoVsync
-            };
-
-            let phys = window.inner_size();
-            let surface_config = wgpu::SurfaceConfiguration {
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                format: surface_format,
-                width: phys.width.max(1),
-                height: phys.height.max(1),
-                present_mode,
-                alpha_mode: caps.alpha_modes[0],
-                view_formats: vec![],
-                desired_maximum_frame_latency: 2,
-                color_space: wgpu::SurfaceColorSpace::Auto,
-            };
-            surface.configure(&device, &surface_config);
-
-            let pipeline = Self::create_pipeline(
-                &device,
-                &pipeline_layout,
-                &shader,
-                surface_format,
-                &format!("pipeline_{}", cfg.name),
+            let out_state = Self::build_output_surface_state(
+                &gpu,
+                &self.preview_dir,
+                cfg,
+                window,
+                surface,
+                idx == 0,
             );
-
-            let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("compositor_uniform_buf"),
-                size: std::mem::size_of::<CompositorUniforms>() as u64,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-
-            let slide_texture = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("slide_layer_rgba8"),
-                size: wgpu::Extent3d {
-                    width: LAYER_TEX_WIDTH,
-                    height: LAYER_TEX_HEIGHT,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
-            });
-            let slide_view = slide_texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("compositor_bg"),
-                layout: &bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: uniform_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(&slide_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::Sampler(&sampler),
-                    },
-                ],
-            });
-
-            let shm_path = self
-                .preview_dir
-                .join(format!("preview-{pid}-{}.op_shm", cfg.id.0));
-            let (preview_ring, preview_pipeline) =
-                match ShmPreviewWriter::create(&shm_path, PREVIEW_WIDTH, PREVIEW_HEIGHT) {
-                    Ok(writer) => {
-                        preview_buses.push(PreviewBusDescriptor {
-                            output_id: cfg.id,
-                            shm_path: shm_path.to_string_lossy().into_owned(),
-                            width: PREVIEW_WIDTH,
-                            height: PREVIEW_HEIGHT,
-                        });
-                        let ring =
-                            PreviewReadbackRing::new(&device, PREVIEW_WIDTH, PREVIEW_HEIGHT, writer);
-                        let ppipe = Self::create_pipeline(
-                            &device,
-                            &pipeline_layout,
-                            &shader,
-                            wgpu::TextureFormat::Rgba8UnormSrgb,
-                            "preview_rgba8_pipeline",
-                        );
-                        (Some(ring), Some(ppipe))
-                    }
-                    Err(err) => {
-                        warn!("failed to create SHM preview ring for {}: {err}", cfg.name);
-                        (None, None)
-                    }
-                };
-
-            let wid = window.id();
+            let wid = out_state.window.id();
             self.ordered_windows.push(wid);
-            self.outputs.insert(
-                wid,
-                OutputSurfaceState {
-                    config_meta: cfg,
-                    window,
-                    surface,
-                    surface_config,
-                    pipeline,
-                    uniform_buffer,
-                    slide_texture,
-                    uploaded_revision: 0,
-                    bind_group,
-                    preview_ring,
-                    preview_pipeline,
-                    frames_presented: 0,
-                },
-            );
+            self.outputs.insert(wid, out_state);
         }
 
+        let preview_buses = self.current_preview_buses();
         self.shared.set_hardware_metadata(
             adapter_info.name,
             format!("{:?}", adapter_info.backend),
@@ -1000,7 +1246,7 @@ impl ApplicationHandler<EngineWakeEvent> for CompositorApp {
             preview_buses,
         );
 
-        self.gpu = Some(GpuContext { device, queue });
+        self.gpu = Some(gpu);
         self.scene_dirty = true;
         self.next_frame_at = Instant::now();
         // Render initial frame immediately so both Audience and Stage surfaces + SHM rings populate right away.
@@ -1015,6 +1261,7 @@ impl ApplicationHandler<EngineWakeEvent> for CompositorApp {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: EngineWakeEvent) {
         match event {
             EngineWakeEvent::SceneChanged => {
+                self.sync_outputs_with_scene(event_loop);
                 self.scene_dirty = true;
                 self.next_frame_at = Instant::now();
             }
@@ -1039,8 +1286,14 @@ impl ApplicationHandler<EngineWakeEvent> for CompositorApp {
                         removed.config_meta.name,
                         self.outputs.len()
                     );
+                    let _ = self
+                        .shared
+                        .apply_diff(SceneDiff::RemoveOutput(removed.config_meta.id));
                 }
                 self.ordered_windows.retain(|&id| id != window_id);
+                let displays = Self::enumerate_displays(event_loop);
+                let buses = self.current_preview_buses();
+                self.shared.update_outputs_metadata(displays, buses);
                 if self.ordered_windows.is_empty() {
                     info!("all output windows closed; shutting down engine");
                     event_loop.exit();
