@@ -2,6 +2,10 @@
 
 Clean-room, open-source, cross-platform (**Windows, macOS, Linux**) worship presentation engine built in **Rust (`wgpu` 30 + `winit` 30)** with a **Tauri 2 + Svelte 5** operator control surface.
 
+## User Guide
+
+New to OpenPresenter? Read the **[Complete OpenPresenter User Guide (with Screenshots)](docs/USER_GUIDE.md)** for a full walkthrough of every workspace, menu, right-click menu, drag-and-drop workflow, song arrangement, cue recorder, importer, CCLI attribution setting, broadcast output, and keyboard shortcut.
+
 ## Architecture Principles
 
 - **Zero Browser-Rendered Live Outputs:** Physical Audience displays, Stage displays, and broadcast feeds (NDI/OMT/SDI/Syphon/Spout) composite directly on the GPU inside a decoupled sidecar process (`openpresenter-engine`).
