@@ -53,6 +53,8 @@ fn main() {
         .init();
 
     let cli = Cli::parse();
+    let ffmpeg_status = media_engine::probe_dynamic_lgpl_ffmpeg(&[]);
+    info!("media-engine LGPL FFmpeg runtime status: {ffmpeg_status:?}");
     let shared = Arc::new(SharedEngineState::new(SceneState::demo_m0(
         cli.outputs.clamp(1, 2),
     )));
@@ -159,7 +161,7 @@ async fn handle_client(
 
         let response = match cmd {
             EngineCommand::GetSnapshot => EngineEvent::Snapshot(Box::new(shared.snapshot())),
-            EngineCommand::ApplyDiff(diff) => match shared.apply_diff(diff) {
+            EngineCommand::ApplyDiff(diff) => match shared.apply_diff(*diff) {
                 Some(new_state) => {
                     if let Some(p) = proxy.as_ref() {
                         let _ = p.send_event(EngineWakeEvent::SceneChanged);

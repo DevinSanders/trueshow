@@ -1,4 +1,8 @@
-//! Multi-surface `wgpu` 30 + `winit` 30 real-time GPU compositor for OpenPresenter M0.
+//! Multi-surface `wgpu` 30 + `winit` 30 real-time 7-layer GPU compositor for OpenPresenter.
+//!
+//! Integrates `render-text` (`BroadcastRasterizer`) to upload cached premultiplied RGBA8
+//! typography/vector textures to the GPU on slide mutation while compositing motion
+//! backgrounds, transitions, masks, and multiple Looks at locked 60 fps.
 
 pub mod staging;
 
@@ -8,9 +12,10 @@ use core_ipc::{
     PreviewBusDescriptor, ShmPreviewWriter,
 };
 use core_scene::{
-    ColorRgba, LayerKind, LookConfig, OutputConfig, OutputId, OutputKind, SceneDiff, SceneState,
-    Slide, TransitionSpec,
+    BlendMode, ColorRgba, LayerKind, LookConfig, MaskStyle, OutputConfig, OutputId, OutputKind,
+    SceneDiff, SceneState, Slide, StageLayoutConfig,
 };
+use render_text::{BroadcastRasterizer, Vector2DRasterizer};
 use staging::PreviewReadbackRing;
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
@@ -23,10 +28,12 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Fullscreen, Window, WindowAttributes, WindowId};
 
+pub use winit::event_loop::EventLoopProxy;
+
 pub const PREVIEW_WIDTH: u32 = 640;
 pub const PREVIEW_HEIGHT: u32 = 360;
-
-pub use winit::event_loop::EventLoopProxy;
+const LAYER_TEX_WIDTH: u32 = 1280;
+const LAYER_TEX_HEIGHT: u32 = 720;
 
 /// Wakeup events delivered from the IPC control thread to the `winit` main thread.
 #[derive(Debug, Clone)]
@@ -50,8 +57,12 @@ struct CompositorUniforms {
     prev_accent: [f32; 4],
     curr_style: u32,
     prev_style: u32,
+    transition_kind: u32,
+    mask_style: u32,
+    blend_mode: u32,
     _pad0: u32,
     _pad1: u32,
+    _pad2: u32,
 }
 
 /// Thread-safe engine state shared between the GPU compositor thread and the IPC server.
@@ -64,6 +75,7 @@ struct EngineRuntimeState {
     prev_slide: Option<Slide>,
     transition_start: Instant,
     transition_duration: Duration,
+    transition_kind: u32,
     gpu_adapter_name: String,
     gpu_backend: String,
     displays: Vec<DisplayInfo>,
@@ -80,6 +92,7 @@ impl SharedEngineState {
                 prev_slide: initial_slide,
                 transition_start: Instant::now(),
                 transition_duration: Duration::from_millis(1),
+                transition_kind: 0,
                 gpu_adapter_name: "Initializing...".to_string(),
                 gpu_backend: "Pending".to_string(),
                 displays: Vec::new(),
@@ -97,20 +110,20 @@ impl SharedEngineState {
             return None;
         }
         if guard.scene.active_slide != old_slide {
-            guard.prev_slide = old_slide;
-            guard.transition_start = Instant::now();
-            guard.transition_duration = match guard
-                .scene
-                .active_slide
-                .as_ref()
-                .map(|s| s.transition)
-                .unwrap_or_default()
-            {
-                TransitionSpec::Cut => Duration::from_millis(1),
-                TransitionSpec::Dissolve { duration_ms } => {
-                    Duration::from_millis(u64::from(duration_ms.max(1)))
-                }
-            };
+            let old_id = old_slide.as_ref().map(|s| s.id);
+            let new_id = guard.scene.active_slide.as_ref().map(|s| s.id);
+            if old_id != new_id {
+                guard.prev_slide = old_slide;
+                guard.transition_start = Instant::now();
+                let spec = guard
+                    .scene
+                    .active_slide
+                    .as_ref()
+                    .map(|s| s.transition)
+                    .unwrap_or_default();
+                guard.transition_kind = spec.kind_code();
+                guard.transition_duration = Duration::from_millis(u64::from(spec.duration_ms().max(1)));
+            }
         }
         Some(guard.scene.clone())
     }
@@ -164,6 +177,10 @@ impl SharedEngineState {
         }
     }
 
+    fn scene_revision(&self) -> u64 {
+        self.inner.read().map(|g| g.scene.revision).unwrap_or(0)
+    }
+
     fn uniforms_for_output(
         &self,
         output_id: OutputId,
@@ -179,6 +196,7 @@ impl SharedEngineState {
                 enabled_layers: LayerKind::ALL.to_vec(),
                 lower_third_mode: false,
                 transparent_background: false,
+                slide_blend_mode: BlendMode::Normal,
             },
         );
 
@@ -215,6 +233,12 @@ impl SharedEngineState {
         let (c1, c2, ca, cs) = slide_colors(curr);
         let (p1, p2, pa, ps) = slide_colors(prev);
 
+        let mask_style = if look.is_layer_enabled(LayerKind::Masks) {
+            guard.scene.mask_style as u32
+        } else {
+            MaskStyle::None as u32
+        };
+
         CompositorUniforms {
             time_sec: elapsed_sec,
             blend_t,
@@ -228,8 +252,12 @@ impl SharedEngineState {
             prev_accent: pa.to_array(),
             curr_style: cs,
             prev_style: ps,
+            transition_kind: guard.transition_kind,
+            mask_style,
+            blend_mode: look.slide_blend_mode as u32,
             _pad0: 0,
             _pad1: 0,
+            _pad2: 0,
         }
     }
 }
@@ -253,6 +281,8 @@ struct OutputSurfaceState {
     surface_config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
     uniform_buffer: wgpu::Buffer,
+    slide_texture: wgpu::Texture,
+    uploaded_revision: u64,
     bind_group: wgpu::BindGroup,
     preview_ring: Option<PreviewReadbackRing>,
     preview_pipeline: Option<wgpu::RenderPipeline>,
@@ -332,6 +362,7 @@ struct CompositorApp {
     preview_dir: PathBuf,
     start_time: Instant,
     gpu: Option<GpuContext>,
+    rasterizer: BroadcastRasterizer,
     outputs: HashMap<WindowId, OutputSurfaceState>,
     ordered_windows: Vec<WindowId>,
     stats: FrameStats,
@@ -345,6 +376,7 @@ impl CompositorApp {
             preview_dir,
             start_time: Instant::now(),
             gpu: None,
+            rasterizer: BroadcastRasterizer::new(64),
             outputs: HashMap::new(),
             ordered_windows: Vec::new(),
             stats: FrameStats::new(),
@@ -386,7 +418,77 @@ impl CompositorApp {
         })
     }
 
+    fn sync_output_slide_texture(&mut self, window_id: WindowId) {
+        let rev = self.shared.scene_revision();
+        let Some(gpu) = self.gpu.as_ref() else {
+            return;
+        };
+        let Some(out) = self.outputs.get_mut(&window_id) else {
+            return;
+        };
+        if out.uploaded_revision == rev {
+            return;
+        }
+
+        let snap = self.shared.snapshot();
+        let lower_third = snap
+            .state
+            .look_for_output(out.config_meta.id)
+            .map(|l| l.lower_third_mode)
+            .unwrap_or(false);
+
+        let raster = if out.config_meta.kind == OutputKind::Stage {
+            let layout = out
+                .config_meta
+                .stage_layout
+                .clone()
+                .unwrap_or_else(StageLayoutConfig::default);
+            self.rasterizer.rasterize_stage_confidence(
+                snap.state.active_slide.as_ref(),
+                snap.state.next_slide_preview.as_ref(),
+                snap.state.stage_message.as_deref(),
+                snap.state.timer_readout.as_deref(),
+                &layout,
+                LAYER_TEX_WIDTH,
+                LAYER_TEX_HEIGHT,
+            )
+        } else if let Some(slide) = snap.state.active_slide.as_ref() {
+            self.rasterizer
+                .rasterize_slide(slide, LAYER_TEX_WIDTH, LAYER_TEX_HEIGHT, lower_third)
+        } else {
+            render_text::RasterizedLayer {
+                width: LAYER_TEX_WIDTH,
+                height: LAYER_TEX_HEIGHT,
+                content_hash: [0u8; 32],
+                rgba_premul: vec![0u8; (LAYER_TEX_WIDTH * LAYER_TEX_HEIGHT * 4) as usize],
+            }
+        };
+
+        gpu.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &out.slide_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &raster.rgba_premul,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(LAYER_TEX_WIDTH * 4),
+                rows_per_image: Some(LAYER_TEX_HEIGHT),
+            },
+            wgpu::Extent3d {
+                width: LAYER_TEX_WIDTH,
+                height: LAYER_TEX_HEIGHT,
+                depth_or_array_layers: 1,
+            },
+        );
+        out.uploaded_revision = rev;
+    }
+
     fn render_output(&mut self, window_id: WindowId) {
+        self.sync_output_slide_texture(window_id);
+
         let Some(gpu) = self.gpu.as_ref() else {
             return;
         };
@@ -429,7 +531,6 @@ impl CompositorApp {
                 label: Some("compositor_frame_encoder"),
             });
 
-        // 1. Primary physical swapchain render pass
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("output_surface_pass"),
@@ -452,7 +553,6 @@ impl CompositorApp {
             pass.draw(0..3, 0..1);
         }
 
-        // 2. Non-blocking 30 fps offscreen preview readback pass (every 2nd frame)
         let mut submitted_slot = None;
         if let (Some(ring), Some(preview_pipe)) =
             (out.preview_ring.as_mut(), out.preview_pipeline.as_ref())
@@ -614,23 +714,48 @@ impl ApplicationHandler<EngineWakeEvent> for CompositorApp {
         });
 
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("compositor_uniform_bgl"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+            label: Some("compositor_bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("compositor_pipeline_layout"),
             bind_group_layouts: &[Some(&bind_group_layout)],
             immediate_size: 0,
+        });
+
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("slide_layer_sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
         });
 
         let mut preview_buses = Vec::new();
@@ -673,13 +798,39 @@ impl ApplicationHandler<EngineWakeEvent> for CompositorApp {
                 mapped_at_creation: false,
             });
 
+            let slide_texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("slide_layer_rgba8"),
+                size: wgpu::Extent3d {
+                    width: LAYER_TEX_WIDTH,
+                    height: LAYER_TEX_HEIGHT,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let slide_view = slide_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
             let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("compositor_bg"),
                 layout: &bind_group_layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uniform_buffer.as_entire_binding(),
-                }],
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: uniform_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&slide_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Sampler(&sampler),
+                    },
+                ],
             });
 
             let shm_path = self
@@ -722,6 +873,8 @@ impl ApplicationHandler<EngineWakeEvent> for CompositorApp {
                     surface_config,
                     pipeline,
                     uniform_buffer,
+                    slide_texture,
+                    uploaded_revision: 0,
                     bind_group,
                     preview_ring,
                     preview_pipeline,
@@ -809,7 +962,6 @@ impl ApplicationHandler<EngineWakeEvent> for CompositorApp {
     }
 }
 
-/// Creates the `winit` event loop and returns an `EventLoopProxy` for the IPC server thread.
 pub fn create_event_loop() -> Result<(EventLoop<EngineWakeEvent>, EventLoopProxy<EngineWakeEvent>), String> {
     let event_loop = EventLoop::<EngineWakeEvent>::with_user_event()
         .build()
@@ -819,7 +971,6 @@ pub fn create_event_loop() -> Result<(EventLoop<EngineWakeEvent>, EventLoopProxy
     Ok((event_loop, proxy))
 }
 
-/// Runs the native multi-surface GPU compositor on the OS main thread until shutdown.
 pub fn run_compositor(
     event_loop: EventLoop<EngineWakeEvent>,
     shared: Arc<SharedEngineState>,
@@ -839,8 +990,22 @@ mod tests {
     }
 
     #[test]
-    fn shared_state_produces_valid_uniforms_across_looks() {
+    fn shared_state_tracks_transitions_masks_and_looks() {
         let state = SharedEngineState::new(SceneState::demo_m0(2));
+        let target_id = state.snapshot().state.deck[2].id;
+
+        let updated = state
+            .apply_diff(SceneDiff::TriggerSlide {
+                slide_id: target_id,
+                transition_override: Some(core_scene::TransitionSpec::PushLeft { duration_ms: 400 }),
+            })
+            .expect("trigger slide");
+        assert_eq!(updated.active_slide.as_ref().map(|s| s.id), Some(target_id));
+
+        state
+            .apply_diff(SceneDiff::SetMask(MaskStyle::SoftVignette))
+            .expect("set mask");
+
         let u_aud = state.uniforms_for_output(
             core_scene::OUTPUT_AUDIENCE_MAIN,
             OutputKind::Audience,
@@ -854,6 +1019,9 @@ mod tests {
             1.5,
         );
         assert_eq!(u_aud.flags & (1 << 5), 0);
+        assert_eq!(u_aud.transition_kind, 1);
+        assert_eq!(u_aud.mask_style, MaskStyle::SoftVignette as u32);
         assert_ne!(u_stage.flags & (1 << 5), 0);
+        assert_eq!(u_stage.mask_style, MaskStyle::None as u32);
     }
 }

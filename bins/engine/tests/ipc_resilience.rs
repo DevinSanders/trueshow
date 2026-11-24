@@ -41,7 +41,7 @@ async fn engine_survives_abrupt_client_disconnect_and_preserves_scene_state() {
     // Client 1 mutates live scene state.
     write_frame(
         &mut client1,
-        &EngineCommand::ApplyDiff(SceneDiff::ClearLayer(LayerKind::MediaBackground)),
+        &EngineCommand::ApplyDiff(Box::new(SceneDiff::ClearLayer(LayerKind::MediaBackground))),
     )
     .await
     .expect("send clear layer");
@@ -53,7 +53,7 @@ async fn engine_survives_abrupt_client_disconnect_and_preserves_scene_state() {
 
     write_frame(
         &mut client1,
-        &EngineCommand::ApplyDiff(SceneDiff::SetBlackout(true)),
+        &EngineCommand::ApplyDiff(Box::new(SceneDiff::SetBlackout(true))),
     )
     .await
     .expect("send blackout");

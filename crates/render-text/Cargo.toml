@@ -1,0 +1,21 @@
+[package]
+name = "render-text"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Broadcast 2D vector and typography rasterizer behind Vector2DRasterizer trait (cosmic-text + tiny-skia default; optional skia-safe feature)."
+
+[features]
+default = []
+# Optional Google Skia backend (requires skia-bindings prebuilt download or local Skia build)
+skia = []
+
+[dependencies]
+blake3.workspace = true
+core-scene.workspace = true
+cosmic-text.workspace = true
+tiny-skia.workspace = true
+
+[lints]
+workspace = true

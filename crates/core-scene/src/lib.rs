@@ -1,14 +1,16 @@
 //! Canonical, resolution-independent scene graph for OpenPresenter.
 //!
-//! This crate intentionally contains zero OS, GPU, or async I/O dependencies so both
-//! the real-time compositor (`openpresenter-engine`) and operator UI (`apps/desktop`)
-//! operate on an identical single source of truth.
+//! Reference virtual canvas coordinate space is `1920.0 × 1080.0`. Both the native GPU
+//! compositor (`openpresenter-engine`) and the operator editor (`apps/desktop`) share these
+//! exact structures so WYSIWYG previews match sanctuary displays pixel-for-pixel.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
-/// Unique identifier for a logical output (physical screen, Stage, NDI, OMT, SDI, etc.).
+pub const VIRTUAL_CANVAS_WIDTH: f32 = 1920.0;
+pub const VIRTUAL_CANVAS_HEIGHT: f32 = 1080.0;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct OutputId(pub Uuid);
 
@@ -16,7 +18,6 @@ impl OutputId {
     pub fn new() -> Self {
         Self(Uuid::new_v4())
     }
-
     pub const fn from_u128(v: u128) -> Self {
         Self(Uuid::from_u128(v))
     }
@@ -28,7 +29,6 @@ impl Default for OutputId {
     }
 }
 
-/// Unique identifier for a per-output Look configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct LookId(pub Uuid);
 
@@ -38,13 +38,39 @@ impl LookId {
     }
 }
 
-/// Unique identifier for a slide.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct SlideId(pub Uuid);
 
 impl SlideId {
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
     pub const fn from_u128(v: u128) -> Self {
         Self(Uuid::from_u128(v))
+    }
+}
+
+impl Default for SlideId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct ElementId(pub Uuid);
+
+impl ElementId {
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+    pub const fn from_u128(v: u128) -> Self {
+        Self(Uuid::from_u128(v))
+    }
+}
+
+impl Default for ElementId {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -70,6 +96,16 @@ impl LayerKind {
         LayerKind::Masks,
         LayerKind::MessagesAndTimers,
     ];
+}
+
+/// Blend modes supported by the GPU layer compositor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum BlendMode {
+    #[default]
+    Normal = 0,
+    Multiply = 1,
+    Screen = 2,
+    Additive = 3,
 }
 
 /// Normalized RGBA color in [0.0, 1.0].
@@ -102,9 +138,127 @@ impl ColorRgba {
     pub const fn to_array(self) -> [f32; 4] {
         [self.r, self.g, self.b, self.a]
     }
+
+    pub fn to_u8_rgba(self) -> [u8; 4] {
+        [
+            (self.r.clamp(0.0, 1.0) * 255.0).round() as u8,
+            (self.g.clamp(0.0, 1.0) * 255.0).round() as u8,
+            (self.b.clamp(0.0, 1.0) * 255.0).round() as u8,
+            (self.a.clamp(0.0, 1.0) * 255.0).round() as u8,
+        ]
+    }
 }
 
-/// Procedural/static background style used by the M0 GPU compositor (extended to video/media in M1).
+/// Rectangle in `1920×1080` virtual canvas coordinates.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct RectF {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+impl RectF {
+    pub const fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum TextAlign {
+    Left,
+    #[default]
+    Center,
+    Right,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum VerticalAlign {
+    Top,
+    #[default]
+    Middle,
+    Bottom,
+}
+
+/// Broadcast typography style for slide text elements.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TextStyle {
+    pub font_family: String,
+    pub font_size: f32,
+    pub bold: bool,
+    pub italic: bool,
+    pub line_height: f32,
+    pub color: ColorRgba,
+    pub stroke_color: ColorRgba,
+    pub stroke_width: f32,
+    pub shadow_color: ColorRgba,
+    pub shadow_offset_x: f32,
+    pub shadow_offset_y: f32,
+    pub shadow_blur: f32,
+    pub backdrop_color: ColorRgba,
+    pub backdrop_radius: f32,
+    pub backdrop_padding: f32,
+    pub h_align: TextAlign,
+    pub v_align: VerticalAlign,
+    pub auto_shrink: bool,
+}
+
+impl Default for TextStyle {
+    fn default() -> Self {
+        Self {
+            font_family: "sans-serif".to_string(),
+            font_size: 86.0,
+            bold: true,
+            italic: false,
+            line_height: 1.22,
+            color: ColorRgba::WHITE,
+            stroke_color: ColorRgba::rgba(0.0, 0.0, 0.0, 0.92),
+            stroke_width: 4.0,
+            shadow_color: ColorRgba::rgba(0.0, 0.0, 0.0, 0.72),
+            shadow_offset_x: 0.0,
+            shadow_offset_y: 6.0,
+            shadow_blur: 10.0,
+            backdrop_color: ColorRgba::TRANSPARENT,
+            backdrop_radius: 18.0,
+            backdrop_padding: 24.0,
+            h_align: TextAlign::Center,
+            v_align: VerticalAlign::Middle,
+            auto_shrink: true,
+        }
+    }
+}
+
+/// Individual visual element inside a slide.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum SlideElementKind {
+    TextBox {
+        text: String,
+        style: TextStyle,
+    },
+    ShapeRect {
+        fill: ColorRgba,
+        stroke: ColorRgba,
+        stroke_width: f32,
+        corner_radius: f32,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SlideElement {
+    pub id: ElementId,
+    pub name: String,
+    pub bounds: RectF,
+    pub opacity: f32,
+    pub z_index: i32,
+    pub kind: SlideElementKind,
+}
+
+/// Procedural or media motion background style.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ShaderMotionStyle {
     Solid = 0,
@@ -114,11 +268,42 @@ pub enum ShaderMotionStyle {
     LowerThirdAlpha = 4,
 }
 
-/// Transition specification between cues.
+/// GPU-composited mask styles applied to Layer 5 (`Masks`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum MaskStyle {
+    #[default]
+    None = 0,
+    SoftVignette = 1,
+    RoundedFrame = 2,
+    LowerThirdBand = 3,
+}
+
+/// GPU transition specifications between cues.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TransitionSpec {
     Cut,
     Dissolve { duration_ms: u32 },
+    PushLeft { duration_ms: u32 },
+    WipeRight { duration_ms: u32 },
+}
+
+impl TransitionSpec {
+    pub fn duration_ms(self) -> u32 {
+        match self {
+            Self::Cut => 0,
+            Self::Dissolve { duration_ms }
+            | Self::PushLeft { duration_ms }
+            | Self::WipeRight { duration_ms } => duration_ms,
+        }
+    }
+
+    pub fn kind_code(self) -> u32 {
+        match self {
+            Self::Cut | Self::Dissolve { .. } => 0,
+            Self::PushLeft { .. } => 1,
+            Self::WipeRight { .. } => 2,
+        }
+    }
 }
 
 impl Default for TransitionSpec {
@@ -127,7 +312,7 @@ impl Default for TransitionSpec {
     }
 }
 
-/// Canonical slide representation (M0 foundation; extended with rich text/vector items in M1).
+/// Canonical slide representation with vector elements and optional ChordPro notes for Stage displays.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Slide {
     pub id: SlideId,
@@ -135,21 +320,43 @@ pub struct Slide {
     pub group: String,
     pub headline: String,
     pub body: String,
+    pub chords_line: Option<String>,
+    pub ccli_number: Option<String>,
+    pub media_path: Option<String>,
     pub primary_color: ColorRgba,
     pub secondary_color: ColorRgba,
     pub accent_color: ColorRgba,
     pub motion_style: ShaderMotionStyle,
     pub transition: TransitionSpec,
+    pub elements: Vec<SlideElement>,
 }
 
-/// Physical or logical output classification.
+impl Slide {
+    /// Returns the combined lyric/scripture text for stage confidence & search indexing.
+    pub fn plain_text(&self) -> String {
+        let mut parts = Vec::new();
+        for el in &self.elements {
+            if let SlideElementKind::TextBox { text, .. } = &el.kind
+                && !text.trim().is_empty()
+            {
+                parts.push(text.trim().to_string());
+            }
+        }
+        if parts.is_empty() {
+            format!("{}\n{}", self.headline, self.body)
+        } else {
+            parts.join("\n")
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OutputKind {
     Audience,
     Stage,
 }
 
-/// Per-output Look defining layer visibility and broadcast keying behavior.
+/// Per-output Look defining layer visibility, blend modes, and broadcast keying behavior.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LookConfig {
     pub id: LookId,
@@ -157,11 +364,36 @@ pub struct LookConfig {
     pub enabled_layers: Vec<LayerKind>,
     pub lower_third_mode: bool,
     pub transparent_background: bool,
+    pub slide_blend_mode: BlendMode,
 }
 
 impl LookConfig {
     pub fn is_layer_enabled(&self, layer: LayerKind) -> bool {
         self.enabled_layers.contains(&layer)
+    }
+}
+
+/// Customizable Stage Display layout configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StageLayoutConfig {
+    pub show_current_slide: bool,
+    pub show_next_slide: bool,
+    pub show_chords: bool,
+    pub show_clock: bool,
+    pub show_timer: bool,
+    pub show_stage_message: bool,
+}
+
+impl Default for StageLayoutConfig {
+    fn default() -> Self {
+        Self {
+            show_current_slide: true,
+            show_next_slide: true,
+            show_chords: true,
+            show_clock: true,
+            show_timer: true,
+            show_stage_message: true,
+        }
     }
 }
 
@@ -176,6 +408,7 @@ pub struct OutputConfig {
     pub height: u32,
     pub fullscreen: bool,
     pub look_id: LookId,
+    pub stage_layout: Option<StageLayoutConfig>,
 }
 
 /// Complete live compositor state synchronized between control surface and sidecar engine.
@@ -184,9 +417,16 @@ pub struct SceneState {
     pub revision: u64,
     pub blackout: bool,
     pub active_slide: Option<Slide>,
+    pub next_slide_preview: Option<Slide>,
+    pub video_input_active: bool,
     pub media_layer_active: bool,
     pub slide_layer_active: bool,
+    pub announcements_layer_active: bool,
     pub overlay_layer_active: bool,
+    pub mask_style: MaskStyle,
+    pub announcement_text: Option<String>,
+    pub stage_message: Option<String>,
+    pub timer_readout: Option<String>,
     pub looks: BTreeMap<LookId, LookConfig>,
     pub outputs: Vec<OutputConfig>,
     pub deck: Vec<Slide>,
@@ -202,6 +442,13 @@ pub enum SceneDiff {
     TriggerCustomSlide {
         slide: Slide,
     },
+    UpsertSlide {
+        slide: Slide,
+    },
+    UpdateElement {
+        slide_id: SlideId,
+        element: SlideElement,
+    },
     ClearLayer(LayerKind),
     ClearAll,
     SetBlackout(bool),
@@ -210,9 +457,13 @@ pub enum SceneDiff {
         look_id: LookId,
     },
     ToggleOverlayLayer(bool),
+    SetMask(MaskStyle),
+    SetAnnouncement(Option<String>),
+    SetStageMessage(Option<String>),
+    SetTimerReadout(Option<String>),
+    ReplaceDeck(Vec<Slide>),
 }
 
-// Well-known deterministic M0 IDs for out-of-the-box demo sessions.
 pub const LOOK_AUDIENCE_FULL: LookId = LookId::from_u128(1);
 pub const LOOK_STAGE_CONFIDENCE: LookId = LookId::from_u128(2);
 pub const LOOK_BROADCAST_LOWER_THIRD: LookId = LookId::from_u128(3);
@@ -221,7 +472,7 @@ pub const OUTPUT_AUDIENCE_MAIN: OutputId = OutputId::from_u128(101);
 pub const OUTPUT_STAGE_MAIN: OutputId = OutputId::from_u128(102);
 
 impl SceneState {
-    /// Creates a ready-to-run M0 demonstration state with 2 outputs, 3 Looks, and 5 worship test cues.
+    /// Creates a ready-to-run demonstration state with 2 outputs, 3 Looks, and rich worship slides.
     pub fn demo_m0(output_count: usize) -> Self {
         let mut looks = BTreeMap::new();
         looks.insert(
@@ -232,6 +483,7 @@ impl SceneState {
                 enabled_layers: LayerKind::ALL.to_vec(),
                 lower_third_mode: false,
                 transparent_background: false,
+                slide_blend_mode: BlendMode::Normal,
             },
         );
         looks.insert(
@@ -242,6 +494,7 @@ impl SceneState {
                 enabled_layers: vec![LayerKind::Slide, LayerKind::MessagesAndTimers],
                 lower_third_mode: false,
                 transparent_background: false,
+                slide_blend_mode: BlendMode::Normal,
             },
         );
         looks.insert(
@@ -252,6 +505,7 @@ impl SceneState {
                 enabled_layers: vec![LayerKind::Slide, LayerKind::PropsAndOverlays],
                 lower_third_mode: true,
                 transparent_background: true,
+                slide_blend_mode: BlendMode::Normal,
             },
         );
 
@@ -264,6 +518,7 @@ impl SceneState {
             height: 720,
             fullscreen: false,
             look_id: LOOK_AUDIENCE_FULL,
+            stage_layout: None,
         }];
 
         if output_count >= 2 {
@@ -276,37 +531,47 @@ impl SceneState {
                 height: 540,
                 fullscreen: false,
                 look_id: LOOK_STAGE_CONFIDENCE,
+                stage_layout: Some(StageLayoutConfig::default()),
             });
         }
 
         let deck = demo_deck();
         let first_slide = deck.first().cloned();
+        let next_slide = deck.get(1).cloned();
 
         Self {
             revision: 1,
             blackout: false,
             active_slide: first_slide,
+            next_slide_preview: next_slide,
+            video_input_active: false,
             media_layer_active: true,
             slide_layer_active: true,
+            announcements_layer_active: false,
             overlay_layer_active: true,
+            mask_style: MaskStyle::None,
+            announcement_text: None,
+            stage_message: None,
+            timer_readout: Some("05:00".to_string()),
             looks,
             outputs,
             deck,
         }
     }
 
-    /// Applies a `SceneDiff` deterministically and increments `revision`.
     pub fn apply(&mut self, diff: SceneDiff) -> bool {
         match diff {
             SceneDiff::TriggerSlide {
                 slide_id,
                 transition_override,
             } => {
-                if let Some(mut slide) = self.deck.iter().find(|s| s.id == slide_id).cloned() {
+                if let Some(idx) = self.deck.iter().position(|s| s.id == slide_id) {
+                    let mut slide = self.deck[idx].clone();
                     if let Some(t) = transition_override {
                         slide.transition = t;
                     }
                     self.active_slide = Some(slide);
+                    self.next_slide_preview = self.deck.get(idx + 1).cloned();
                     self.media_layer_active = true;
                     self.slide_layer_active = true;
                     self.blackout = false;
@@ -324,27 +589,68 @@ impl SceneState {
                 self.revision += 1;
                 true
             }
+            SceneDiff::UpsertSlide { slide } => {
+                if let Some(existing) = self.deck.iter_mut().find(|s| s.id == slide.id) {
+                    *existing = slide.clone();
+                } else {
+                    self.deck.push(slide.clone());
+                }
+                if self.active_slide.as_ref().map(|s| s.id) == Some(slide.id) {
+                    self.active_slide = Some(slide);
+                }
+                self.revision += 1;
+                true
+            }
+            SceneDiff::UpdateElement { slide_id, element } => {
+                let mut updated = false;
+                if let Some(slide) = self.deck.iter_mut().find(|s| s.id == slide_id) {
+                    if let Some(el) = slide.elements.iter_mut().find(|e| e.id == element.id) {
+                        *el = element.clone();
+                    } else {
+                        slide.elements.push(element.clone());
+                    }
+                    if let SlideElementKind::TextBox { text, .. } = &element.kind
+                        && slide.elements.first().map(|e| e.id) == Some(element.id)
+                    {
+                        slide.headline = text.lines().next().unwrap_or_default().to_string();
+                    }
+                    if self.active_slide.as_ref().map(|s| s.id) == Some(slide_id) {
+                        self.active_slide = Some(slide.clone());
+                    }
+                    updated = true;
+                }
+                if updated {
+                    self.revision += 1;
+                }
+                updated
+            }
             SceneDiff::ClearLayer(layer) => {
                 match layer {
-                    LayerKind::MediaBackground | LayerKind::VideoInput => {
-                        self.media_layer_active = false;
+                    LayerKind::VideoInput => self.video_input_active = false,
+                    LayerKind::MediaBackground => self.media_layer_active = false,
+                    LayerKind::Slide => self.slide_layer_active = false,
+                    LayerKind::Announcements => {
+                        self.announcements_layer_active = false;
+                        self.announcement_text = None;
                     }
-                    LayerKind::Slide | LayerKind::Announcements => {
-                        self.slide_layer_active = false;
-                    }
-                    LayerKind::PropsAndOverlays
-                    | LayerKind::Masks
-                    | LayerKind::MessagesAndTimers => {
-                        self.overlay_layer_active = false;
+                    LayerKind::PropsAndOverlays => self.overlay_layer_active = false,
+                    LayerKind::Masks => self.mask_style = MaskStyle::None,
+                    LayerKind::MessagesAndTimers => {
+                        self.stage_message = None;
+                        self.timer_readout = None;
                     }
                 }
                 self.revision += 1;
                 true
             }
             SceneDiff::ClearAll => {
+                self.video_input_active = false;
                 self.media_layer_active = false;
                 self.slide_layer_active = false;
+                self.announcements_layer_active = false;
                 self.overlay_layer_active = false;
+                self.announcement_text = None;
+                self.mask_style = MaskStyle::None;
                 self.revision += 1;
                 true
             }
@@ -370,6 +676,34 @@ impl SceneState {
                 self.revision += 1;
                 true
             }
+            SceneDiff::SetMask(style) => {
+                self.mask_style = style;
+                self.revision += 1;
+                true
+            }
+            SceneDiff::SetAnnouncement(text) => {
+                self.announcements_layer_active = text.is_some();
+                self.announcement_text = text;
+                self.revision += 1;
+                true
+            }
+            SceneDiff::SetStageMessage(msg) => {
+                self.stage_message = msg;
+                self.revision += 1;
+                true
+            }
+            SceneDiff::SetTimerReadout(readout) => {
+                self.timer_readout = readout;
+                self.revision += 1;
+                true
+            }
+            SceneDiff::ReplaceDeck(deck) => {
+                self.deck = deck;
+                self.active_slide = self.deck.first().cloned();
+                self.next_slide_preview = self.deck.get(1).cloned();
+                self.revision += 1;
+                true
+            }
         }
     }
 
@@ -379,68 +713,159 @@ impl SceneState {
     }
 }
 
-/// Built-in M0 cue deck demonstrating GPU motion shaders, crossfades, and alpha lower-third modes.
+fn default_lyric_elements(base_id: u128, primary_text: &str, sub_text: Option<&str>) -> Vec<SlideElement> {
+    let mut els = vec![SlideElement {
+        id: ElementId::from_u128(base_id),
+        name: "Primary Lyrics".to_string(),
+        bounds: RectF::new(160.0, 250.0, 1600.0, 480.0),
+        opacity: 1.0,
+        z_index: 10,
+        kind: SlideElementKind::TextBox {
+            text: primary_text.to_string(),
+            style: TextStyle::default(),
+        },
+    }];
+
+    if let Some(sub) = sub_text {
+        els.push(SlideElement {
+            id: ElementId::from_u128(base_id + 1),
+            name: "Reference / Subtitle".to_string(),
+            bounds: RectF::new(260.0, 770.0, 1400.0, 140.0),
+            opacity: 0.92,
+            z_index: 11,
+            kind: SlideElementKind::TextBox {
+                text: sub.to_string(),
+                style: TextStyle {
+                    font_size: 46.0,
+                    bold: false,
+                    stroke_width: 2.5,
+                    color: ColorRgba::rgba(0.90, 0.94, 1.0, 0.95),
+                    ..TextStyle::default()
+                },
+            },
+        });
+    }
+    els
+}
+
+/// Built-in demonstration deck with real worship lyrics, Scripture, chords, and broadcast cues.
 pub fn demo_deck() -> Vec<Slide> {
     vec![
         Slide {
             id: SlideId::from_u128(1001),
-            label: "01 — Prelude Aurora".to_string(),
+            label: "01 — Prelude Welcome".to_string(),
             group: "Pre-Service".to_string(),
             headline: "WELCOME TO WORSHIP".to_string(),
-            body: "M0 GPU Compositor — 60 fps Aurora Motion Shader".to_string(),
+            body: "Sunday Morning Gathering".to_string(),
+            chords_line: None,
+            ccli_number: None,
+            media_path: None,
             primary_color: ColorRgba::rgb(0.06, 0.14, 0.28),
             secondary_color: ColorRgba::rgb(0.08, 0.42, 0.56),
             accent_color: ColorRgba::rgb(0.95, 0.78, 0.35),
             motion_style: ShaderMotionStyle::AuroraWave,
             transition: TransitionSpec::Dissolve { duration_ms: 500 },
+            elements: default_lyric_elements(
+                5001,
+                "WELCOME TO WORSHIP",
+                Some("Sunday Morning Gathering • OpenPresenter Native GPU"),
+            ),
         },
         Slide {
             id: SlideId::from_u128(1002),
-            label: "02 — Worship Warm Glow".to_string(),
-            group: "Chorus 1".to_string(),
-            headline: "SANCTUARY WARM MOTION".to_string(),
-            body: "Smooth GPU crossfade across Audience & Stage swapchains".to_string(),
+            label: "02 — Amazing Grace (V1)".to_string(),
+            group: "Verse 1".to_string(),
+            headline: "Amazing grace! How sweet the sound".to_string(),
+            body: "That saved a wretch like me".to_string(),
+            chords_line: Some(
+                "[G]Amazing [C]grace! How [G]sweet the sound / That saved a [D7]wretch like me"
+                    .to_string(),
+            ),
+            ccli_number: Some("22025".to_string()),
+            media_path: None,
             primary_color: ColorRgba::rgb(0.24, 0.08, 0.05),
             secondary_color: ColorRgba::rgb(0.76, 0.32, 0.10),
             accent_color: ColorRgba::rgb(1.0, 0.88, 0.62),
             motion_style: ShaderMotionStyle::SanctuaryGlow,
             transition: TransitionSpec::Dissolve { duration_ms: 600 },
+            elements: default_lyric_elements(
+                5010,
+                "Amazing grace! How sweet the sound\nThat saved a wretch like me\nI once was lost, but now am found\nWas blind, but now I see",
+                Some("CCLI #22025 • Public Domain"),
+            ),
         },
         Slide {
             id: SlideId::from_u128(1003),
-            label: "03 — Scripture Indigo".to_string(),
+            label: "03 — Psalm 100:1-2 (KJV)".to_string(),
             group: "Scripture".to_string(),
-            headline: "PSALM 100:1-5".to_string(),
-            body: "Clean high-contrast readability backdrop".to_string(),
+            headline: "Make a joyful noise unto the LORD".to_string(),
+            body: "Psalm 100:1-2 (KJV)".to_string(),
+            chords_line: None,
+            ccli_number: None,
+            media_path: None,
             primary_color: ColorRgba::rgb(0.07, 0.09, 0.19),
             secondary_color: ColorRgba::rgb(0.22, 0.18, 0.44),
             accent_color: ColorRgba::rgb(0.68, 0.82, 1.0),
             motion_style: ShaderMotionStyle::AuroraWave,
-            transition: TransitionSpec::Dissolve { duration_ms: 350 },
+            transition: TransitionSpec::PushLeft { duration_ms: 450 },
+            elements: default_lyric_elements(
+                5020,
+                "Make a joyful noise unto the LORD, all ye lands.\nServe the LORD with gladness:\ncome before his presence with singing.",
+                Some("PSALM 100:1-2 (KJV)"),
+            ),
         },
         Slide {
             id: SlideId::from_u128(1004),
             label: "04 — Broadcast Alignment Grid".to_string(),
             group: "Engineering".to_string(),
             headline: "SIGNAL & SAFE-AREA TEST".to_string(),
-            body: "16:9 / Action-Safe / Title-Safe calibration pattern".to_string(),
+            body: "16:9 / Action-Safe / Title-Safe".to_string(),
+            chords_line: None,
+            ccli_number: None,
+            media_path: None,
             primary_color: ColorRgba::rgb(0.08, 0.10, 0.12),
             secondary_color: ColorRgba::rgb(0.18, 0.24, 0.30),
             accent_color: ColorRgba::rgb(0.20, 0.90, 0.55),
             motion_style: ShaderMotionStyle::BroadcastGrid,
             transition: TransitionSpec::Cut,
+            elements: default_lyric_elements(
+                5030,
+                "BROADCAST SAFE-AREA TEST",
+                Some("1920×1080 Reference • 60 fps GPU Compositor"),
+            ),
         },
         Slide {
             id: SlideId::from_u128(1005),
-            label: "05 — Lower-Third Key Preview".to_string(),
+            label: "05 — Lower-Third Key".to_string(),
             group: "Broadcast".to_string(),
-            headline: "LOWER THIRD ALPHA BAND".to_string(),
-            body: "Key/Fill transparent region validation".to_string(),
+            headline: "Pastor David Miller — Lead Pastor".to_string(),
+            body: "Lower-Third Alpha Key/Fill Band".to_string(),
+            chords_line: None,
+            ccli_number: None,
+            media_path: None,
             primary_color: ColorRgba::rgba(0.05, 0.07, 0.11, 0.0),
             secondary_color: ColorRgba::rgba(0.12, 0.44, 0.88, 0.92),
             accent_color: ColorRgba::rgb(1.0, 1.0, 1.0),
             motion_style: ShaderMotionStyle::LowerThirdAlpha,
-            transition: TransitionSpec::Dissolve { duration_ms: 300 },
+            transition: TransitionSpec::WipeRight { duration_ms: 350 },
+            elements: vec![SlideElement {
+                id: ElementId::from_u128(5040),
+                name: "Lower Third Pill".to_string(),
+                bounds: RectF::new(140.0, 810.0, 1640.0, 170.0),
+                opacity: 1.0,
+                z_index: 12,
+                kind: SlideElementKind::TextBox {
+                    text: "Make a joyful noise unto the LORD, all ye lands".to_string(),
+                    style: TextStyle {
+                        font_size: 56.0,
+                        backdrop_color: ColorRgba::rgba(0.06, 0.10, 0.18, 0.86),
+                        backdrop_radius: 20.0,
+                        backdrop_padding: 28.0,
+                        h_align: TextAlign::Left,
+                        ..TextStyle::default()
+                    },
+                },
+            }],
         },
     ]
 }
@@ -455,11 +880,12 @@ mod tests {
         assert_eq!(state.outputs.len(), 2);
         assert_eq!(state.looks.len(), 3);
         assert!(state.active_slide.is_some());
+        assert!(state.next_slide_preview.is_some());
         assert!(!state.blackout);
     }
 
     #[test]
-    fn apply_diffs_updates_state_and_revision_deterministically() {
+    fn apply_diffs_updates_state_elements_and_masks_deterministically() {
         let mut state = SceneState::demo_m0(2);
         let initial_rev = state.revision;
 
@@ -470,28 +896,29 @@ mod tests {
         let target_id = state.deck[1].id;
         assert!(state.apply(SceneDiff::TriggerSlide {
             slide_id: target_id,
-            transition_override: Some(TransitionSpec::Cut),
+            transition_override: Some(TransitionSpec::PushLeft { duration_ms: 300 }),
         }));
         assert!(!state.blackout);
         assert_eq!(state.active_slide.as_ref().map(|s| s.id), Some(target_id));
-        assert_eq!(
-            state.active_slide.as_ref().map(|s| s.transition),
-            Some(TransitionSpec::Cut)
-        );
 
-        assert!(state.apply(SceneDiff::ClearLayer(LayerKind::MediaBackground)));
-        assert!(!state.media_layer_active);
-        assert!(state.slide_layer_active);
+        assert!(state.apply(SceneDiff::SetMask(MaskStyle::RoundedFrame)));
+        assert_eq!(state.mask_style, MaskStyle::RoundedFrame);
 
-        assert!(state.apply(SceneDiff::SetOutputLook {
-            output_id: OUTPUT_AUDIENCE_MAIN,
-            look_id: LOOK_BROADCAST_LOWER_THIRD,
+        let mut el = state.deck[1].elements[0].clone();
+        if let SlideElementKind::TextBox { ref mut text, .. } = el.kind {
+            *text = "Updated Lyric Line".to_string();
+        }
+        assert!(state.apply(SceneDiff::UpdateElement {
+            slide_id: target_id,
+            element: el,
         }));
         assert!(
             state
-                .look_for_output(OUTPUT_AUDIENCE_MAIN)
-                .map(|l| l.lower_third_mode)
-                .unwrap_or(false)
+                .active_slide
+                .as_ref()
+                .expect("active slide")
+                .plain_text()
+                .contains("Updated Lyric Line")
         );
     }
 
@@ -508,5 +935,61 @@ mod tests {
             look_id: LookId::from_u128(999_999),
         }));
         assert_eq!(state.revision, rev);
+    }
+
+    #[test]
+    fn covers_all_layers_transitions_ids_and_diffs() {
+        let _ = OutputId::default();
+        let _ = SlideId::default();
+        let _ = ElementId::default();
+        assert_eq!(ColorRgba::WHITE.to_array(), [1.0, 1.0, 1.0, 1.0]);
+        assert_eq!(ColorRgba::rgba(1.0, 0.5, 0.0, 0.5).to_u8_rgba(), [255, 128, 0, 128]);
+        assert_eq!(TransitionSpec::Cut.duration_ms(), 0);
+        assert_eq!(TransitionSpec::Cut.kind_code(), 0);
+        assert_eq!(TransitionSpec::Dissolve { duration_ms: 250 }.duration_ms(), 250);
+        assert_eq!(TransitionSpec::PushLeft { duration_ms: 300 }.kind_code(), 1);
+        assert_eq!(TransitionSpec::WipeRight { duration_ms: 350 }.kind_code(), 2);
+
+        let mut state = SceneState::demo_m0(2);
+        let mut custom = state.deck[0].clone();
+        custom.id = SlideId::new();
+        custom.elements.clear();
+        assert!(custom.plain_text().contains("WELCOME"));
+
+        assert!(state.apply(SceneDiff::TriggerCustomSlide { slide: custom.clone() }));
+        assert!(state.apply(SceneDiff::UpsertSlide { slide: custom.clone() }));
+        // Update existing slide via UpsertSlide
+        custom.label = "Updated Label".into();
+        assert!(state.apply(SceneDiff::UpsertSlide { slide: custom.clone() }));
+
+        // Add new element via UpdateElement
+        let new_el = SlideElement {
+            id: ElementId::new(),
+            name: "Shape".into(),
+            bounds: RectF::new(10.0, 10.0, 100.0, 50.0),
+            opacity: 1.0,
+            z_index: 1,
+            kind: SlideElementKind::ShapeRect {
+                fill: ColorRgba::BLACK,
+                stroke: ColorRgba::WHITE,
+                stroke_width: 2.0,
+                corner_radius: 8.0,
+            },
+        };
+        assert!(state.apply(SceneDiff::UpdateElement {
+            slide_id: custom.id,
+            element: new_el,
+        }));
+
+        assert!(state.apply(SceneDiff::ToggleOverlayLayer(false)));
+        assert!(state.apply(SceneDiff::SetAnnouncement(Some("Welcome guests".into()))));
+        assert!(state.apply(SceneDiff::SetStageMessage(Some("Wrap up".into()))));
+        assert!(state.apply(SceneDiff::SetTimerReadout(Some("02:00".into()))));
+        for layer in LayerKind::ALL {
+            assert!(state.apply(SceneDiff::ClearLayer(layer)));
+        }
+        assert!(state.apply(SceneDiff::ClearAll));
+        assert!(state.apply(SceneDiff::ReplaceDeck(demo_deck())));
+        assert!(state.look_for_output(OutputId::new()).is_none());
     }
 }

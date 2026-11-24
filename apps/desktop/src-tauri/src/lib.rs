@@ -1,20 +1,24 @@
-//! Tauri 2 Rust bridge for the OpenPresenter operator control surface.
+//! Tauri 2 Rust bridge for the OpenPresenter operator control surface (M1).
 //!
-//! Strictly acts as an IPC client to the decoupled `openpresenter-engine` sidecar process:
-//! - Sends framed binary `EngineCommand` requests over local sockets (`interprocess`).
-//! - Reads downscaled RGBA8 preview frames from lock-free shared memory (`ShmPreviewReader`)
-//!   and streams them to Svelte 5 via Tauri 2 raw binary `Channel<Response>` (`ArrayBuffer`).
+//! Strictly acts as an IPC client to `openpresenter-engine` + local offline SQLite library host:
+//! - Control plane: framed binary `EngineCommand` over `interprocess` local sockets.
+//! - Preview plane: lock-free shared-memory RGBA8 ring streamed via Tauri `Channel<Response>`.
+//! - Local library: offline SQLite WAL + FTS5 persistence (`core-library`).
 
 use core_ipc::{
     EngineCommand, EngineEvent, EngineSnapshot, EngineTelemetry, PreviewBusDescriptor,
     ShmPreviewReader, default_socket_name, read_frame, to_local_socket_name, write_frame,
 };
-use core_scene::{LayerKind, LookId, OutputId, SceneDiff, SceneState, SlideId, TransitionSpec};
+use core_library::{LibraryStore, PlaylistRecord, SongRecord};
+use core_scene::{
+    LayerKind, LookId, MaskStyle, OutputId, SceneDiff, SceneState, Slide, SlideElement, SlideId,
+    TransitionSpec,
+};
 use interprocess::local_socket::tokio::{Stream, prelude::*};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 use tauri::State;
 use tauri::ipc::{Channel, Response};
@@ -26,14 +30,24 @@ struct EngineBridgeState {
     socket_name: String,
     conn: Mutex<Option<Stream>>,
     preview_buses: Mutex<HashMap<OutputId, PreviewBusDescriptor>>,
+    library: StdMutex<LibraryStore>,
 }
 
 impl EngineBridgeState {
     fn new() -> Self {
+        let db_path = std::env::temp_dir()
+            .join("openpresenter-data")
+            .join("library.sqlite3");
+        let store = LibraryStore::open(&db_path)
+            .or_else(|_| LibraryStore::open_in_memory())
+            .expect("open local SQLite library");
+        let _ = store.seed_demo_if_empty();
+
         Self {
             socket_name: default_socket_name(),
             conn: Mutex::new(None),
             preview_buses: Mutex::new(HashMap::new()),
+            library: StdMutex::new(store),
         }
     }
 
@@ -47,18 +61,14 @@ impl EngineBridgeState {
         if guard.is_some() {
             return Ok(());
         }
-
         if let Ok(stream) = self.try_connect_once().await {
             *guard = Some(stream);
             return Ok(());
         }
-
         if !auto_spawn {
             return Err("openpresenter-engine is not running".to_string());
         }
-
         spawn_engine_sidecar(&self.socket_name)?;
-
         for _ in 0..40 {
             tokio::time::sleep(Duration::from_millis(125)).await;
             if let Ok(stream) = self.try_connect_once().await {
@@ -66,7 +76,6 @@ impl EngineBridgeState {
                 return Ok(());
             }
         }
-
         Err(format!(
             "timed out waiting for openpresenter-engine on socket '{}'",
             self.socket_name
@@ -102,22 +111,21 @@ fn find_engine_binary() -> Option<PathBuf> {
         "openpresenter-engine"
     };
 
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let sibling = dir.join(bin_name);
-            if sibling.exists() {
-                return Some(sibling);
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        let sibling = dir.join(bin_name);
+        if sibling.exists() {
+            return Some(sibling);
+        }
+        for ancestor in dir.ancestors().take(6) {
+            let debug_bin = ancestor.join("target").join("debug").join(bin_name);
+            if debug_bin.exists() {
+                return Some(debug_bin);
             }
-            // During `cargo` / `tauri dev`, workspace engine binary lives in `<root>/target/debug/`
-            for ancestor in dir.ancestors().take(6) {
-                let candidate = ancestor.join("target").join("debug").join(bin_name);
-                if candidate.exists() {
-                    return Some(candidate);
-                }
-                let release_candidate = ancestor.join("target").join("release").join(bin_name);
-                if release_candidate.exists() {
-                    return Some(release_candidate);
-                }
+            let release_bin = ancestor.join("target").join("release").join(bin_name);
+            if release_bin.exists() {
+                return Some(release_bin);
             }
         }
     }
@@ -130,7 +138,6 @@ fn find_engine_binary() -> Option<PathBuf> {
             }
         }
     }
-
     None
 }
 
@@ -139,7 +146,6 @@ fn spawn_engine_sidecar(socket_name: &str) -> Result<(), String> {
         "could not locate `openpresenter-engine` binary; run `cargo build --bin openpresenter-engine` first"
             .to_string()
     })?;
-
     info!("spawning decoupled engine sidecar: {}", bin.display());
     Command::new(&bin)
         .arg("--socket")
@@ -151,7 +157,6 @@ fn spawn_engine_sidecar(socket_name: &str) -> Result<(), String> {
         .stderr(Stdio::inherit())
         .spawn()
         .map_err(|e| format!("failed to spawn {}: {e}", bin.display()))?;
-
     Ok(())
 }
 
@@ -186,7 +191,10 @@ async fn apply_scene_diff(
     bridge: &EngineBridgeState,
     diff: SceneDiff,
 ) -> Result<SceneState, String> {
-    match bridge.request(EngineCommand::ApplyDiff(diff), false).await? {
+    match bridge
+        .request(EngineCommand::ApplyDiff(Box::new(diff)), false)
+        .await?
+    {
         EngineEvent::StateUpdated(state) => Ok(*state),
         EngineEvent::Error(msg) => Err(msg),
         other => Err(format!("unexpected response to ApplyDiff: {other:?}")),
@@ -197,22 +205,60 @@ async fn apply_scene_diff(
 async fn trigger_slide(
     bridge: State<'_, Arc<EngineBridgeState>>,
     slide_id: String,
+    transition_kind: Option<String>,
     duration_ms: u32,
 ) -> Result<SceneState, String> {
     let id = SlideId(Uuid::parse_str(&slide_id).map_err(|e| e.to_string())?);
-    let transition = if duration_ms == 0 {
-        TransitionSpec::Cut
-    } else {
-        TransitionSpec::Dissolve { duration_ms }
+    let transition = match transition_kind.as_deref().unwrap_or("Dissolve") {
+        "Cut" => TransitionSpec::Cut,
+        "PushLeft" => TransitionSpec::PushLeft { duration_ms },
+        "WipeRight" => TransitionSpec::WipeRight { duration_ms },
+        _ if duration_ms == 0 => TransitionSpec::Cut,
+        _ => TransitionSpec::Dissolve { duration_ms },
     };
-    apply_scene_diff(
+    let state = apply_scene_diff(
         &bridge,
         SceneDiff::TriggerSlide {
             slide_id: id,
             transition_override: Some(transition),
         },
     )
+    .await?;
+
+    // Automatic CCLI projection audit logging when a song slide with a CCLI number goes live.
+    if let Some(slide) = &state.active_slide
+        && let Some(ccli) = &slide.ccli_number
+        && let Ok(lib) = bridge.library.lock()
+    {
+        let _ = lib.record_ccli_usage("Default Service", &slide.label, ccli, "", 60);
+    }
+
+    Ok(state)
+}
+
+#[tauri::command]
+async fn update_slide_element(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    slide_id: String,
+    element: SlideElement,
+) -> Result<SceneState, String> {
+    let id = SlideId(Uuid::parse_str(&slide_id).map_err(|e| e.to_string())?);
+    apply_scene_diff(
+        &bridge,
+        SceneDiff::UpdateElement {
+            slide_id: id,
+            element,
+        },
+    )
     .await
+}
+
+#[tauri::command]
+async fn upsert_slide(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    slide: Slide,
+) -> Result<SceneState, String> {
+    apply_scene_diff(&bridge, SceneDiff::UpsertSlide { slide }).await
 }
 
 #[tauri::command]
@@ -245,6 +291,22 @@ async fn toggle_overlay(
 }
 
 #[tauri::command]
+async fn set_mask(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    mask: MaskStyle,
+) -> Result<SceneState, String> {
+    apply_scene_diff(&bridge, SceneDiff::SetMask(mask)).await
+}
+
+#[tauri::command]
+async fn set_stage_message(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    message: Option<String>,
+) -> Result<SceneState, String> {
+    apply_scene_diff(&bridge, SceneDiff::SetStageMessage(message)).await
+}
+
+#[tauri::command]
 async fn set_output_look(
     bridge: State<'_, Arc<EngineBridgeState>>,
     output_id: String,
@@ -263,6 +325,23 @@ async fn set_output_look(
 }
 
 #[tauri::command]
+fn search_library_songs(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    query: String,
+) -> Result<Vec<SongRecord>, String> {
+    let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    lib.search_songs(&query, 50).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_playlists(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+) -> Result<Vec<PlaylistRecord>, String> {
+    let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    lib.list_playlists().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn shutdown_engine(bridge: State<'_, Arc<EngineBridgeState>>) -> Result<(), String> {
     let _ = bridge.request(EngineCommand::Shutdown, false).await?;
     let mut guard = bridge.conn.lock().await;
@@ -270,8 +349,6 @@ async fn shutdown_engine(bridge: State<'_, Arc<EngineBridgeState>>) -> Result<()
     Ok(())
 }
 
-/// Streams raw binary RGBA8 preview frames from the engine's shared-memory ring into
-/// the Svelte 5 `<canvas>` via a Tauri 2 binary `Channel<Response>` (`ArrayBuffer`).
 #[tauri::command]
 async fn start_preview_stream(
     bridge: State<'_, Arc<EngineBridgeState>>,
@@ -331,11 +408,17 @@ pub fn run() {
             connect_engine,
             get_telemetry,
             trigger_slide,
+            update_slide_element,
+            upsert_slide,
             clear_layer,
             clear_all,
             set_blackout,
             toggle_overlay,
+            set_mask,
+            set_stage_message,
             set_output_look,
+            search_library_songs,
+            list_playlists,
             shutdown_engine,
             start_preview_stream,
         ])

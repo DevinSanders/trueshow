@@ -63,7 +63,7 @@ mod tests {
     #[tokio::test]
     async fn round_trips_commands_and_events() {
         let (mut client, mut server) = tokio::io::duplex(4096);
-        let cmd = EngineCommand::ApplyDiff(SceneDiff::ClearLayer(LayerKind::Slide));
+        let cmd = EngineCommand::ApplyDiff(Box::new(SceneDiff::ClearLayer(LayerKind::Slide)));
         write_frame(&mut client, &cmd).await.expect("write command");
 
         let received: EngineCommand = read_frame(&mut server).await.expect("read command");
@@ -85,6 +85,22 @@ mod tests {
         let err = read_frame::<_, EngineCommand>(&mut server)
             .await
             .expect_err("must reject oversized frame");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[tokio::test]
+    async fn rejects_corrupt_postcard_payload() {
+        let (mut client, mut server) = tokio::io::duplex(64);
+        let garbage = [0xFFu8; 5];
+        client
+            .write_all(&(garbage.len() as u32).to_le_bytes())
+            .await
+            .expect("write len");
+        client.write_all(&garbage).await.expect("write garbage");
+
+        let err = read_frame::<_, EngineCommand>(&mut server)
+            .await
+            .expect_err("must fail on corrupt postcard");
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     }
 }

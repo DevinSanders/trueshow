@@ -4,13 +4,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Multi-surface wgpu 30 + winit 30 real-time GPU compositor with async staging readback for OpenPresenter."
+description = "Multi-surface wgpu 30 + winit 30 7-layer real-time GPU compositor with render-text integration and async staging readback."
 
 [dependencies]
 bytemuck.workspace = true
 core-ipc.workspace = true
 core-scene.workspace = true
 pollster.workspace = true
+render-text.workspace = true
 tracing.workspace = true
 wgpu.workspace = true
 winit.workspace = true

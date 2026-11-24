@@ -304,4 +304,47 @@ mod tests {
 
         let _ = std::fs::remove_file(&path);
     }
+
+    #[test]
+    fn rejects_invalid_buffer_size_header_and_truncated_files() {
+        let base = std::env::temp_dir().join(format!(
+            "openpresenter-shm-err-{}.op_shm",
+            std::process::id()
+        ));
+        let mut writer = ShmPreviewWriter::create(&base, 8, 8).expect("create");
+        assert_eq!(writer.path(), base.as_path());
+        assert_eq!(writer.dimensions(), (8, 8));
+        assert!(matches!(
+            writer.publish_rgba(&[0u8; 4], 10),
+            Err(ShmError::BufferSizeMismatch { .. })
+        ));
+
+        let reader = ShmPreviewReader::open(&base).expect("open");
+        assert_eq!(reader.dimensions(), (8, 8));
+        drop(reader);
+        drop(writer);
+        let _ = std::fs::remove_file(&base);
+
+        // Missing file -> Io error
+        let missing = std::env::temp_dir().join("openpresenter-definitely-missing.op_shm");
+        assert!(matches!(ShmPreviewReader::open(&missing), Err(ShmError::Io(_))));
+
+        // Truncated file (< 64 bytes)
+        let trunc = std::env::temp_dir().join(format!("openpresenter-trunc-{}.op_shm", std::process::id()));
+        std::fs::write(&trunc, b"tiny").expect("write trunc");
+        assert!(matches!(
+            ShmPreviewReader::open(&trunc),
+            Err(ShmError::Truncated { .. })
+        ));
+        let _ = std::fs::remove_file(&trunc);
+
+        // Invalid magic header
+        let bad_hdr = std::env::temp_dir().join(format!("openpresenter-badhdr-{}.op_shm", std::process::id()));
+        std::fs::write(&bad_hdr, vec![0x11u8; 128]).expect("write bad hdr");
+        assert!(matches!(
+            ShmPreviewReader::open(&bad_hdr),
+            Err(ShmError::InvalidHeader)
+        ));
+        let _ = std::fs::remove_file(&bad_hdr);
+    }
 }

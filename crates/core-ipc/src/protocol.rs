@@ -128,7 +128,7 @@ pub struct EngineSnapshot {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum EngineCommand {
     GetSnapshot,
-    ApplyDiff(SceneDiff),
+    ApplyDiff(Box<SceneDiff>),
     ListDisplays,
     GetTelemetry,
     Ping(u64),
@@ -145,4 +145,25 @@ pub enum EngineEvent {
     Pong(u64),
     ShuttingDown,
     Error(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn socket_names_and_defaults_are_valid() {
+        let sock = default_socket_name();
+        assert!(sock.contains("openpresenter"));
+        assert!(to_local_socket_name(&sock).is_ok());
+        cleanup_stale_socket(&sock);
+
+        let dir = default_preview_dir();
+        assert!(dir.to_string_lossy().contains("openpresenter-preview"));
+
+        let tel = EngineTelemetry::default();
+        assert_eq!(tel.total_frames, 0);
+        assert_eq!(tel.dropped_frames, 0);
+        assert!(tel.outputs.is_empty());
+    }
 }

@@ -1,0 +1,18 @@
+[package]
+name = "media-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Hardware-accelerated video decoding (dynamic LGPL FFmpeg + OS HW zero-copy descriptors), seamless motion looper, and lock-free multi-channel cpal/symphonia audio engine."
+
+[dependencies]
+cpal.workspace = true
+libloading.workspace = true
+rtrb.workspace = true
+serde.workspace = true
+symphonia.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

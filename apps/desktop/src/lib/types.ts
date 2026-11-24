@@ -5,9 +5,63 @@ export interface ColorRgba {
   a: number;
 }
 
+export interface RectF {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export type TextAlign = "Left" | "Center" | "Right";
+export type VerticalAlign = "Top" | "Middle" | "Bottom";
+export type MaskStyle = "None" | "SoftVignette" | "RoundedFrame" | "LowerThirdBand";
+
+export interface TextStyle {
+  font_family: string;
+  font_size: number;
+  bold: boolean;
+  italic: boolean;
+  line_height: number;
+  color: ColorRgba;
+  stroke_color: ColorRgba;
+  stroke_width: number;
+  shadow_color: ColorRgba;
+  shadow_offset_x: number;
+  shadow_offset_y: number;
+  shadow_blur: number;
+  backdrop_color: ColorRgba;
+  backdrop_radius: number;
+  backdrop_padding: number;
+  h_align: TextAlign;
+  v_align: VerticalAlign;
+  auto_shrink: boolean;
+}
+
+export type SlideElementKind =
+  | { TextBox: { text: string; style: TextStyle } }
+  | {
+      ShapeRect: {
+        fill: ColorRgba;
+        stroke: ColorRgba;
+        stroke_width: number;
+        corner_radius: number;
+      };
+    };
+
+export interface SlideElement {
+  id: string;
+  name: string;
+  bounds: RectF;
+  opacity: number;
+  z_index: number;
+  kind: SlideElementKind;
+}
+
 export type TransitionSpec =
   | "Cut"
-  | { Dissolve: { duration_ms: number } };
+  | { Dissolve: { duration_ms: number } }
+  | { PushLeft: { duration_ms: number } }
+  | { WipeRight: { duration_ms: number } };
 
 export type LayerKind =
   | "VideoInput"
@@ -24,11 +78,15 @@ export interface Slide {
   group: string;
   headline: string;
   body: string;
+  chords_line: string | null;
+  ccli_number: string | null;
+  media_path: string | null;
   primary_color: ColorRgba;
   secondary_color: ColorRgba;
   accent_color: ColorRgba;
   motion_style: string;
   transition: TransitionSpec;
+  elements: SlideElement[];
 }
 
 export interface LookConfig {
@@ -37,6 +95,7 @@ export interface LookConfig {
   enabled_layers: LayerKind[];
   lower_third_mode: boolean;
   transparent_background: boolean;
+  slide_blend_mode: string;
 }
 
 export interface OutputConfig {
@@ -54,9 +113,16 @@ export interface SceneState {
   revision: number;
   blackout: boolean;
   active_slide: Slide | null;
+  next_slide_preview: Slide | null;
+  video_input_active: boolean;
   media_layer_active: boolean;
   slide_layer_active: boolean;
+  announcements_layer_active: boolean;
   overlay_layer_active: boolean;
+  mask_style: MaskStyle;
+  announcement_text: string | null;
+  stage_message: string | null;
+  timer_readout: string | null;
   looks: Record<string, LookConfig>;
   outputs: OutputConfig[];
   deck: Slide[];
@@ -105,4 +171,24 @@ export interface EngineSnapshot {
   displays: DisplayInfo[];
   preview_buses: PreviewBusDescriptor[];
   telemetry: EngineTelemetry;
+}
+
+export interface SongRecord {
+  id: string;
+  title: string;
+  author: string;
+  copyright: string;
+  ccli_number: string | null;
+  key_signature: string | null;
+  bpm: number | null;
+  lyrics_plain: string;
+  slides: Slide[];
+  updated_at: string;
+}
+
+export interface PlaylistRecord {
+  id: string;
+  name: string;
+  item_song_ids: string[];
+  updated_at: string;
 }
