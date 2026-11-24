@@ -1,7 +1,9 @@
 export type DragPayload =
   | { type: "song"; songId: string; title: string }
   | { type: "playlist-cue"; fromIdx: number }
-  | { type: "media"; blake3_hash: string; kind: string; file_name: string };
+  | { type: "media"; blake3_hash: string; kind: string; file_name: string }
+  | { type: "master-group"; group: string }
+  | { type: "arrangement-slot"; fromIdx: number };
 
 let activePayload: DragPayload | null = null;
 
@@ -19,6 +21,12 @@ export function startAppDrag(event: DragEvent, payload: DragPayload): void {
     dt.setData("text/plain", payload.title || payload.songId);
   } else if (payload.type === "playlist-cue") {
     dt.setData("application/x-openpresenter-playlist-idx", String(payload.fromIdx));
+    dt.setData("text/plain", String(payload.fromIdx));
+  } else if (payload.type === "master-group") {
+    dt.setData("application/x-openpresenter-master-group", payload.group);
+    dt.setData("text/plain", payload.group);
+  } else if (payload.type === "arrangement-slot") {
+    dt.setData("application/x-openpresenter-arr-idx", String(payload.fromIdx));
     dt.setData("text/plain", String(payload.fromIdx));
   } else {
     dt.setData("application/x-openpresenter-media", JSON.stringify(payload));
@@ -97,6 +105,28 @@ export function readDroppedMedia(
       kind: fromStore.kind,
       file_name: fromStore.file_name,
     };
+  }
+  return null;
+}
+
+export function readDroppedArrangementPayload(
+  event: DragEvent,
+): { kind: "master-group"; group: string } | { kind: "arrangement-slot"; fromIdx: number } | null {
+  const storeSnap = activePayload;
+  const dtGroup = event.dataTransfer?.getData("application/x-openpresenter-master-group") || "";
+  const dtIdxRaw = event.dataTransfer?.getData("application/x-openpresenter-arr-idx") || "";
+  activePayload = null;
+  if (dtIdxRaw !== "" && !Number.isNaN(Number(dtIdxRaw))) {
+    return { kind: "arrangement-slot", fromIdx: Number(dtIdxRaw) };
+  }
+  if (storeSnap?.type === "arrangement-slot") {
+    return { kind: "arrangement-slot", fromIdx: storeSnap.fromIdx };
+  }
+  if (dtGroup) {
+    return { kind: "master-group", group: dtGroup };
+  }
+  if (storeSnap?.type === "master-group") {
+    return { kind: "master-group", group: storeSnap.group };
   }
   return null;
 }

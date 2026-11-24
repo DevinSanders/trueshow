@@ -19,11 +19,11 @@ use core_library::{
     slide_from_text,
 };
 use core_scene::{
-    ActiveBackground, ActiveMessage, Arrangement, AudioPlaybackState, ColorRgba, ForegroundMedia,
-    LOOK_AUDIENCE_FULL, LOOK_STAGE_CONFIDENCE, LayerKind, LookConfig, LookId, MaskStyle,
-    MediaCueRole, MediaTransportState, MessageTemplate, MonitorRegion, OutputCalibration,
-    OutputConfig, OutputId, OutputKind, OutputPlacement, OverlayItem, SceneDiff, SceneState,
-    ShaderMotionStyle, Slide, SlideAction, SlideElement, SlideId, SlideMediaCue,
+    ActiveBackground, ActiveMessage, Arrangement, AudioPlaybackState, AutoPlayTrack, ColorRgba,
+    ForegroundMedia, LOOK_AUDIENCE_FULL, LOOK_STAGE_CONFIDENCE, LayerKind, LookConfig, LookId,
+    MaskStyle, MediaCueRole, MediaTransportState, MessageTemplate, MonitorRegion,
+    OutputCalibration, OutputConfig, OutputId, OutputKind, OutputPlacement, OverlayItem, SceneDiff,
+    SceneState, ShaderMotionStyle, Slide, SlideAction, SlideElement, SlideId, SlideMediaCue,
     StageLayoutConfig, TemplateConfig, TemplateId, TransitionSpec, render_message_template,
     split_monitor_regions,
 };
@@ -66,6 +66,7 @@ struct EngineBridgeState {
     library: StdMutex<LibraryStore>,
     timers: StdMutex<show_control::TimerEngine>,
     broadcast_profile: StdMutex<BroadcastProfileState>,
+    active_song_id: StdMutex<Option<String>>,
     diagnostics: DiagnosticsPaths,
     logging: Option<LoggingController>,
     last_gpu_summary: StdMutex<Option<String>>,
@@ -89,6 +90,7 @@ impl EngineBridgeState {
             library: StdMutex::new(store),
             timers: StdMutex::new(show_control::TimerEngine::new()),
             broadcast_profile: StdMutex::new(BroadcastProfileState::default()),
+            active_song_id: StdMutex::new(None),
             diagnostics,
             logging,
             last_gpu_summary: StdMutex::new(None),
@@ -492,14 +494,21 @@ async fn save_arrangements(
     arrangements: Vec<Arrangement>,
     active_id: Option<String>,
 ) -> Result<SceneState, String> {
-    apply_scene_diff(
+    let state = apply_scene_diff(
         &bridge,
         SceneDiff::SetArrangements {
-            arrangements,
+            arrangements: arrangements.clone(),
             active_id,
         },
     )
-    .await
+    .await?;
+    if let Ok(guard) = bridge.active_song_id.lock()
+        && let Some(song_id) = guard.as_deref()
+        && let Ok(lib) = bridge.library.lock()
+    {
+        let _ = lib.update_song_arrangements(song_id, &arrangements);
+    }
+    Ok(state)
 }
 
 #[tauri::command]
@@ -579,6 +588,7 @@ async fn present_scripture(
                 .join("\n"),
             slides: slides.clone(),
             arrangements: Vec::new(),
+            cue_tracks: Vec::new(),
             updated_at: chrono::Utc::now(),
         };
         let lib = bridge.library.lock().map_err(|e| e.to_string())?;
@@ -625,6 +635,7 @@ async fn parse_and_save_quick_lyrics(
             .join("\n"),
         slides: slides.clone(),
         arrangements: arrangements.clone(),
+        cue_tracks: Vec::new(),
         updated_at: chrono::Utc::now(),
     };
     {
@@ -632,13 +643,25 @@ async fn parse_and_save_quick_lyrics(
         lib.upsert_song(&rec).map_err(|e| e.to_string())?;
     }
     if load_to_deck {
+        if let Ok(mut g) = bridge.active_song_id.lock() {
+            *g = Some(rec.id.clone());
+        }
         let active_id = arrangements.first().map(|a| a.id.clone());
-        let state = apply_scene_diff(
+        let _ = apply_scene_diff(
             &bridge,
             SceneDiff::LoadPresentation {
                 slides,
                 arrangements,
                 active_arrangement_id: active_id,
+            },
+        )
+        .await?;
+        let _ = apply_scene_diff(&bridge, SceneDiff::SetCueTracks(Vec::new())).await;
+        let state = apply_scene_diff(
+            &bridge,
+            SceneDiff::SetActivePresentationMeta {
+                id: Some(rec.id),
+                title: Some(rec.title),
             },
         )
         .await?;
@@ -1197,6 +1220,7 @@ fn create_presentation(
             .join("\n"),
         slides,
         arrangements: Vec::new(),
+        cue_tracks: Vec::new(),
         updated_at: chrono::Utc::now(),
     };
     let lib = bridge.library.lock().map_err(|e| e.to_string())?;
@@ -1218,7 +1242,7 @@ async fn load_presentation_to_deck(
     bridge: State<'_, Arc<EngineBridgeState>>,
     song_id: String,
 ) -> Result<SceneState, String> {
-    let (slides, arrangements) = {
+    let (title, slides, arrangements, cue_tracks) = {
         let lib = bridge.library.lock().map_err(|e| e.to_string())?;
         let song = lib
             .get_song(&song_id)
@@ -1234,15 +1258,27 @@ async fn load_presentation_to_deck(
         } else {
             song.slides
         };
-        (s, song.arrangements)
+        (song.title, s, song.arrangements, song.cue_tracks)
     };
+    if let Ok(mut g) = bridge.active_song_id.lock() {
+        *g = Some(song_id.clone());
+    }
     let active_arrangement_id = arrangements.first().map(|a| a.id.clone());
-    apply_scene_diff(
+    let _ = apply_scene_diff(
         &bridge,
         SceneDiff::LoadPresentation {
             slides,
             arrangements,
             active_arrangement_id,
+        },
+    )
+    .await?;
+    let _ = apply_scene_diff(&bridge, SceneDiff::SetCueTracks(cue_tracks)).await;
+    apply_scene_diff(
+        &bridge,
+        SceneDiff::SetActivePresentationMeta {
+            id: Some(song_id),
+            title: Some(title),
         },
     )
     .await
@@ -1928,7 +1964,7 @@ async fn set_slide_automation(
     actions: Vec<SlideAction>,
 ) -> Result<SceneState, String> {
     let sid = SlideId(Uuid::parse_str(&slide_id).map_err(|e| e.to_string())?);
-    apply_scene_diff(
+    let state = apply_scene_diff(
         &bridge,
         SceneDiff::SetSlideAutomation {
             slide_id: sid,
@@ -1937,7 +1973,87 @@ async fn set_slide_automation(
             actions,
         },
     )
-    .await
+    .await?;
+    if let Ok(guard) = bridge.active_song_id.lock()
+        && let Some(song_id) = guard.as_deref()
+        && let Ok(lib) = bridge.library.lock()
+    {
+        let slides_to_save = if state.master_deck.is_empty() {
+            &state.deck
+        } else {
+            &state.master_deck
+        };
+        let _ = lib.update_song_slides_and_cues(song_id, Some(slides_to_save), None);
+    }
+    Ok(state)
+}
+
+#[derive(serde::Deserialize)]
+struct SlideTimingInput {
+    slide_id: String,
+    auto_advance_secs: Option<f32>,
+    loop_to_first: bool,
+}
+
+#[tauri::command]
+async fn apply_recorded_cues(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    timings: Vec<SlideTimingInput>,
+    cue_track: Option<AutoPlayTrack>,
+) -> Result<SceneState, String> {
+    let mut parsed = Vec::with_capacity(timings.len());
+    for t in timings {
+        let sid = SlideId(Uuid::parse_str(&t.slide_id).map_err(|e| e.to_string())?);
+        parsed.push((sid, t.auto_advance_secs, t.loop_to_first));
+    }
+    let mut state = if !parsed.is_empty() {
+        apply_scene_diff(&bridge, SceneDiff::BatchSetSlideTimings { timings: parsed }).await?
+    } else {
+        refresh_snapshot_and_buses(&bridge, None).await?.state
+    };
+    if let Some(track) = cue_track {
+        let mut tracks = state.active_cue_tracks.clone();
+        if let Some(existing) = tracks.iter_mut().find(|x| x.id == track.id) {
+            *existing = track;
+        } else {
+            tracks.push(track);
+        }
+        state = apply_scene_diff(&bridge, SceneDiff::SetCueTracks(tracks)).await?;
+    }
+    if let Ok(guard) = bridge.active_song_id.lock()
+        && let Some(song_id) = guard.as_deref()
+        && let Ok(lib) = bridge.library.lock()
+    {
+        let slides_to_save = if state.master_deck.is_empty() {
+            &state.deck
+        } else {
+            &state.master_deck
+        };
+        let _ = lib.update_song_slides_and_cues(
+            song_id,
+            Some(slides_to_save),
+            Some(&state.active_cue_tracks),
+        );
+    }
+    Ok(state)
+}
+
+#[tauri::command]
+async fn delete_cue_track(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    track_id: String,
+) -> Result<SceneState, String> {
+    let cur = refresh_snapshot_and_buses(&bridge, None).await?.state;
+    let mut tracks = cur.active_cue_tracks;
+    tracks.retain(|t| t.id != track_id);
+    let state = apply_scene_diff(&bridge, SceneDiff::SetCueTracks(tracks)).await?;
+    if let Ok(guard) = bridge.active_song_id.lock()
+        && let Some(song_id) = guard.as_deref()
+        && let Ok(lib) = bridge.library.lock()
+    {
+        let _ = lib.update_song_slides_and_cues(song_id, None, Some(&state.active_cue_tracks));
+    }
+    Ok(state)
 }
 
 #[tauri::command]
@@ -2201,6 +2317,7 @@ fn persist_imported_presentation(
             .join("\n"),
         slides: imported.slides,
         arrangements: Vec::new(),
+        cue_tracks: Vec::new(),
         updated_at: chrono::Utc::now(),
     };
     lib.upsert_song(&rec).map_err(|e| e.to_string())?;
@@ -2235,6 +2352,7 @@ fn import_worship_document(
                 lyrics_plain: song.slides.iter().map(|s| s.plain_text()).collect::<Vec<_>>().join("\n"),
                 slides: song.slides,
                 arrangements: Vec::new(),
+                cue_tracks: Vec::new(),
                 updated_at: chrono::Utc::now(),
             };
             lib.upsert_song(&rec).map_err(|e| e.to_string())?;
@@ -2260,6 +2378,7 @@ fn import_worship_document(
                 lyrics_plain: song.slides.iter().map(|s| s.plain_text()).collect::<Vec<_>>().join("\n"),
                 slides: song.slides,
                 arrangements: Vec::new(),
+                cue_tracks: Vec::new(),
                 updated_at: chrono::Utc::now(),
             };
             lib.upsert_song(&rec).map_err(|e| e.to_string())?;
@@ -2770,6 +2889,8 @@ pub fn run() {
             clear_message,
             set_variable,
             set_slide_automation,
+            apply_recorded_cues,
+            delete_cue_track,
             list_macros,
             save_macro,
             delete_macro,

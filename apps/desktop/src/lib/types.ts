@@ -273,6 +273,19 @@ export interface Arrangement {
   group_order: string[];
 }
 
+export interface RecordedCue {
+  slide_id: string;
+  delay_secs: number;
+  label: string;
+}
+
+export interface AutoPlayTrack {
+  id: string;
+  name: string;
+  loop_playback: boolean;
+  cues: RecordedCue[];
+}
+
 export interface BibleVerseRecord {
   translation: string;
   book: string;
@@ -311,8 +324,11 @@ export interface SceneState {
   outputs: OutputConfig[];
   deck: Slide[];
   master_deck?: Slide[];
+  active_presentation_id?: string | null;
+  active_presentation_title?: string | null;
   active_arrangements?: Arrangement[];
   active_arrangement_id?: string | null;
+  active_cue_tracks?: AutoPlayTrack[];
 }
 
 export interface DisplayInfo {

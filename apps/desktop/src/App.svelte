@@ -2,6 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
   import PreviewCanvas from "./lib/PreviewCanvas.svelte";
+  import ArrangementsCuesBar from "./lib/ArrangementsCuesBar.svelte";
   import BroadcastPanel from "./lib/BroadcastPanel.svelte";
   import ContextMenu from "./lib/ContextMenu.svelte";
   import DiagnosticsPanel from "./lib/DiagnosticsPanel.svelte";
@@ -19,7 +20,7 @@
   import SlideEditor from "./lib/SlideEditor.svelte";
   import StageDesignerPanel from "./lib/StageDesignerPanel.svelte";
   import StatusBar from "./lib/StatusBar.svelte";
-  import { allowDrop, readDroppedMedia } from "./lib/dragStore";
+  import { allowDrop, clearAppDrag, readDroppedMedia, startAppDrag } from "./lib/dragStore";
   import type {
     DiagnosticsStatus,
     EngineSnapshot,
@@ -38,8 +39,7 @@
   let statusMessage = $state("Connecting to openpresenter-engine sidecar...");
   let errorText = $state<string | null>(null);
   let activeTab = $state<WorkspaceTab>("show");
-  let autoLoopActive = $state(false);
-  let autoLoopSecs = $state(8);
+  let editingTimerSlideId = $state<string | null>(null);
   let crashCount = $state(0);
   let showLibraryDrawer = $state(true);
   let showLayerDock = $state(true);
@@ -77,6 +77,7 @@
     const items: ContextMenuItem[] = [
       { id: "live", label: "Go Live (Trigger Slide)" },
       { id: "edit", label: "Edit in Slide Editor" },
+      { id: "timer", label: "Set Auto-Play Timer…" },
       { id: "clear-slide", label: "Clear Slide Layer", shortcut: "F2" },
     ];
     if (slide.media_cue) {
@@ -92,6 +93,7 @@
       (id) => {
         if (id === "live") void triggerSlide(slide.id);
         else if (id === "edit") { void triggerSlide(slide.id); selectTab("editor"); }
+        else if (id === "timer") editingTimerSlideId = slide.id;
         else if (id === "clear-slide") void clearLayer("Slide");
         else if (id === "clear-cue") void attachMediaToSlide(slide.id, null);
         else if (id === "blackout") void toggleBlackout();
@@ -490,22 +492,7 @@
 
     let consecutiveErrors = 0;
     let telemetryInFlight = false;
-    let loopTicks = 0;
     const timer = setInterval(async () => {
-      if (autoLoopActive && scene && scene.deck.length > 1) {
-        loopTicks += 1;
-        if (loopTicks >= Math.max(1, Number(autoLoopSecs))) {
-          loopTicks = 0;
-          const curIdx = scene.active_slide
-            ? scene.deck.findIndex((s) => s.id === scene.active_slide?.id)
-            : -1;
-          const nextIdx = (curIdx + 1) % scene.deck.length;
-          const target = scene.deck[nextIdx];
-          if (target) void triggerSlide(target.id);
-        }
-      } else {
-        loopTicks = 0;
-      }
       if (!snapshot || telemetryInFlight) return;
       telemetryInFlight = true;
       try {
@@ -615,10 +602,6 @@
             </label>
             {#if scene}
               <label>
-                <input type="checkbox" bind:checked={autoLoopActive} />
-                Loop ({autoLoopSecs}s)
-              </label>
-              <label>
                 Media Fit:
                 <select
                   aria-label="Media Fit Mode"
@@ -648,6 +631,15 @@
         </div>
 
         {#if scene}
+          <ArrangementsCuesBar
+            {scene}
+            {editingTimerSlideId}
+            onSceneChange={applySceneState}
+            onTriggerSlide={(id) => void triggerSlide(id)}
+            onError={setError}
+            onClearTimerTarget={() => (editingTimerSlideId = null)}
+          />
+
           <div class="slide-grid">
             {#each scene.deck as slide (slide.id)}
               {@const isLive = scene.active_slide?.id === slide.id && !scene.blackout}
@@ -663,6 +655,9 @@
                 class="slide-card-wrap"
                 class:drag-over={dragOverSlideId === slide.id}
                 role="group"
+                draggable="true"
+                ondragstart={(e) => startAppDrag(e, { type: "master-group", group: slide.group })}
+                ondragend={clearAppDrag}
                 ondragenter={(e) => {
                   if (allowDrop(e, ["media"], "copy")) dragOverSlideId = slide.id;
                 }}
@@ -689,6 +684,10 @@
                     </span>
                     {#if isLive}
                       <span class="on-air">LIVE</span>
+                    {:else if slide.auto_advance_secs}
+                      <span class="timer-tag" title="Auto-advance cue timer">
+                        {slide.loop_to_first ? "↻" : "⏱"} {slide.auto_advance_secs.toFixed(1)}s
+                      </span>
                     {/if}
                     <div class="swatch-headline">{slide.headline}</div>
                     <div class="swatch-accent" style={`background:${cssRgb(slide.accent_color)}`}></div>
@@ -1006,6 +1005,20 @@
     color: #fff;
     font-size: 10px;
     font-weight: 800;
+  }
+
+  .timer-tag {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: rgba(15, 23, 42, 0.78);
+    border: 1px solid rgba(56, 189, 248, 0.5);
+    color: #bae6fd;
+    font-size: 10px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
   }
 
   .swatch-headline {

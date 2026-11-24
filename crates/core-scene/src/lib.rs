@@ -396,6 +396,26 @@ pub struct Arrangement {
     pub group_order: Vec<String>,
 }
 
+/// Single timed slide cue event inside an [`AutoPlayTrack`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecordedCue {
+    pub slide_id: SlideId,
+    /// Duration (seconds) to remain on this slide before advancing to the next cue.
+    pub delay_secs: f32,
+    pub label: String,
+}
+
+/// Named recorded or manually authored auto-play cue sequence stored per presentation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AutoPlayTrack {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub loop_playback: bool,
+    #[serde(default)]
+    pub cues: Vec<RecordedCue>,
+}
+
 /// Expands a master slide list according to an optional [`Arrangement`], preserving
 /// slide content while allowing groups (e.g. Chorus) to repeat cleanly without duplicating data.
 pub fn expand_deck_by_arrangement(master: &[Slide], arrangement: Option<&Arrangement>) -> Vec<Slide> {
@@ -968,9 +988,15 @@ pub struct SceneState {
     #[serde(default)]
     pub master_deck: Vec<Slide>,
     #[serde(default)]
+    pub active_presentation_id: Option<String>,
+    #[serde(default)]
+    pub active_presentation_title: Option<String>,
+    #[serde(default)]
     pub active_arrangements: Vec<Arrangement>,
     #[serde(default)]
     pub active_arrangement_id: Option<String>,
+    #[serde(default)]
+    pub active_cue_tracks: Vec<AutoPlayTrack>,
 }
 
 /// Deterministic mutation commands applied to `SceneState`.
@@ -1065,6 +1091,17 @@ pub enum SceneDiff {
         loop_to_first: bool,
         actions: Vec<SlideAction>,
     },
+    /// Atomically updates per-slide auto-advance timings `(slide_id, auto_advance_secs, loop_to_first)`.
+    BatchSetSlideTimings {
+        timings: Vec<(SlideId, Option<f32>, bool)>,
+    },
+    /// Updates the currently loaded presentation's SQLite ID & display title metadata.
+    SetActivePresentationMeta {
+        id: Option<String>,
+        title: Option<String>,
+    },
+    /// Replaces the saved auto-play cue tracks attached to the currently loaded presentation.
+    SetCueTracks(Vec<AutoPlayTrack>),
     SyncOverlays(Vec<OverlayItem>),
     SetPointer(Option<TelestratorPointer>),
     DeleteSlideElement {
@@ -1420,8 +1457,28 @@ impl SceneState {
             outputs,
             master_deck: deck.clone(),
             deck,
-            active_arrangements: Vec::new(),
+            active_presentation_id: None,
+            active_presentation_title: Some("Sunday Demo Service".to_string()),
+            active_arrangements: vec![
+                Arrangement {
+                    id: "arr-demo-full".to_string(),
+                    name: "Full Service".to_string(),
+                    group_order: vec![
+                        "Pre-Service".into(),
+                        "Verse 1".into(),
+                        "Chorus".into(),
+                        "Scripture".into(),
+                        "Announcements".into(),
+                    ],
+                },
+                Arrangement {
+                    id: "arr-demo-worship".to_string(),
+                    name: "Worship Only".to_string(),
+                    group_order: vec!["Verse 1".into(), "Chorus".into(), "Chorus".into()],
+                },
+            ],
             active_arrangement_id: None,
+            active_cue_tracks: Vec::new(),
         }
     }
 
@@ -2082,6 +2139,40 @@ impl SceneState {
                     self.revision += 1;
                 }
                 found
+            }
+            SceneDiff::BatchSetSlideTimings { timings } => {
+                let mut changed = false;
+                for (sid, secs, loop_first) in timings {
+                    let clean_secs = secs.map(|v| v.clamp(0.2, 3600.0));
+                    for list in [&mut self.deck, &mut self.master_deck] {
+                        if let Some(s) = list.iter_mut().find(|s| s.id == sid) {
+                            s.auto_advance_secs = clean_secs;
+                            s.loop_to_first = loop_first;
+                            changed = true;
+                        }
+                    }
+                    if self.active_slide.as_ref().map(|s| s.id) == Some(sid)
+                        && let Some(active) = self.active_slide.as_mut()
+                    {
+                        active.auto_advance_secs = clean_secs;
+                        active.loop_to_first = loop_first;
+                    }
+                }
+                if changed {
+                    self.revision += 1;
+                }
+                changed
+            }
+            SceneDiff::SetActivePresentationMeta { id, title } => {
+                self.active_presentation_id = id;
+                self.active_presentation_title = title;
+                self.revision += 1;
+                true
+            }
+            SceneDiff::SetCueTracks(tracks) => {
+                self.active_cue_tracks = tracks;
+                self.revision += 1;
+                true
             }
             SceneDiff::SyncOverlays(items) => {
                 for item in items {
@@ -2986,5 +3077,36 @@ mod tests {
             state.look_for_output(OUTPUT_AUDIENCE_MAIN).map(|l| l.id),
             Some(LOOK_BROADCAST_LOWER_THIRD)
         );
+
+        // Batch recorded slide timings, presentation metadata, and saved AutoPlayTracks
+        let s0 = state.deck[0].id;
+        assert!(state.apply(SceneDiff::BatchSetSlideTimings {
+            timings: vec![(s0, Some(6.5), false), (target_slide, Some(12.0), true)],
+        }));
+        assert_eq!(state.deck[0].auto_advance_secs, Some(6.5));
+        assert_eq!(state.deck[1].auto_advance_secs, Some(12.0));
+        assert!(state.deck[1].loop_to_first);
+        assert!(!state.apply(SceneDiff::BatchSetSlideTimings {
+            timings: vec![(SlideId::new(), Some(5.0), false)],
+        }));
+
+        assert!(state.apply(SceneDiff::SetActivePresentationMeta {
+            id: Some("song-9001".into()),
+            title: Some("Amazing Grace".into()),
+        }));
+        assert_eq!(state.active_presentation_id.as_deref(), Some("song-9001"));
+        assert_eq!(state.active_presentation_title.as_deref(), Some("Amazing Grace"));
+
+        assert!(state.apply(SceneDiff::SetCueTracks(vec![AutoPlayTrack {
+            id: "track-1".into(),
+            name: "Sunday Rehearsal Take".into(),
+            loop_playback: false,
+            cues: vec![RecordedCue {
+                slide_id: s0,
+                delay_secs: 6.5,
+                label: "Slide 1".into(),
+            }],
+        }])));
+        assert_eq!(state.active_cue_tracks.len(), 1);
     }
 }

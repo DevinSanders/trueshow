@@ -6,8 +6,8 @@
 
 use chrono::{DateTime, Utc};
 use core_scene::{
-    Arrangement, LOOK_AUDIENCE_FULL, LOOK_STAGE_CONFIDENCE, LookConfig, LookId, MessageTemplate,
-    OverlayItem, Slide, SlideId, TemplateConfig, TemplateId, default_looks,
+    Arrangement, AutoPlayTrack, LOOK_AUDIENCE_FULL, LOOK_STAGE_CONFIDENCE, LookConfig, LookId,
+    MessageTemplate, OverlayItem, Slide, SlideId, TemplateConfig, TemplateId, default_looks,
     default_message_templates, default_overlays, default_templates,
 };
 use rusqlite::{Connection, OptionalExtension, params};
@@ -68,6 +68,8 @@ pub struct SongRecord {
     pub slides: Vec<Slide>,
     #[serde(default)]
     pub arrangements: Vec<Arrangement>,
+    #[serde(default)]
+    pub cue_tracks: Vec<AutoPlayTrack>,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -230,6 +232,7 @@ impl LibraryStore {
                 lyrics_plain TEXT NOT NULL DEFAULT '',
                 slides_json TEXT NOT NULL,
                 arrangements_json TEXT NOT NULL DEFAULT '[]',
+                cue_tracks_json TEXT NOT NULL DEFAULT '[]',
                 updated_at TEXT NOT NULL
             );
 
@@ -359,6 +362,10 @@ impl LibraryStore {
             [],
         );
         let _ = self.conn.execute(
+            "ALTER TABLE songs ADD COLUMN cue_tracks_json TEXT NOT NULL DEFAULT '[]'",
+            [],
+        );
+        let _ = self.conn.execute(
             "ALTER TABLE media_assets ADD COLUMN bin_id TEXT NOT NULL DEFAULT 'backgrounds'",
             [],
         );
@@ -417,6 +424,7 @@ impl LibraryStore {
     pub fn upsert_song(&self, song: &SongRecord) -> Result<(), LibraryError> {
         let slides_json = serde_json::to_string(&song.slides)?;
         let arrangements_json = serde_json::to_string(&song.arrangements)?;
+        let cue_tracks_json = serde_json::to_string(&song.cue_tracks)?;
         let lib_id = if song.library_id.trim().is_empty() {
             DEFAULT_LIBRARY_ID
         } else {
@@ -424,8 +432,8 @@ impl LibraryStore {
         };
         self.conn.execute(
             r#"
-            INSERT INTO songs (id, library_id, title, author, copyright, ccli_number, key_signature, bpm, lyrics_plain, slides_json, arrangements_json, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            INSERT INTO songs (id, library_id, title, author, copyright, ccli_number, key_signature, bpm, lyrics_plain, slides_json, arrangements_json, cue_tracks_json, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
             ON CONFLICT(id) DO UPDATE SET
                 library_id = excluded.library_id,
                 title = excluded.title,
@@ -437,6 +445,7 @@ impl LibraryStore {
                 lyrics_plain = excluded.lyrics_plain,
                 slides_json = excluded.slides_json,
                 arrangements_json = excluded.arrangements_json,
+                cue_tracks_json = excluded.cue_tracks_json,
                 updated_at = excluded.updated_at
             "#,
             params![
@@ -451,6 +460,7 @@ impl LibraryStore {
                 song.lyrics_plain,
                 slides_json,
                 arrangements_json,
+                cue_tracks_json,
                 song.updated_at.to_rfc3339(),
             ],
         )?;
@@ -496,6 +506,46 @@ impl LibraryStore {
         Ok(updated > 0)
     }
 
+    /// Persists updated non-destructive song arrangements directly onto an existing presentation.
+    pub fn update_song_arrangements(
+        &self,
+        song_id: &str,
+        arrangements: &[Arrangement],
+    ) -> Result<bool, LibraryError> {
+        let arrangements_json = serde_json::to_string(arrangements)?;
+        let updated = self.conn.execute(
+            "UPDATE songs SET arrangements_json = ?1, updated_at = ?2 WHERE id = ?3",
+            params![arrangements_json, Utc::now().to_rfc3339(), song_id],
+        )?;
+        Ok(updated > 0)
+    }
+
+    /// Persists updated master slides (with per-slide `auto_advance_secs` / `loop_to_first`) and recorded `cue_tracks`.
+    pub fn update_song_slides_and_cues(
+        &self,
+        song_id: &str,
+        slides: Option<&[Slide]>,
+        cue_tracks: Option<&[AutoPlayTrack]>,
+    ) -> Result<bool, LibraryError> {
+        let now = Utc::now().to_rfc3339();
+        let mut updated = 0usize;
+        if let Some(s) = slides {
+            let slides_json = serde_json::to_string(s)?;
+            updated += self.conn.execute(
+                "UPDATE songs SET slides_json = ?1, updated_at = ?2 WHERE id = ?3",
+                params![slides_json, now, song_id],
+            )?;
+        }
+        if let Some(tracks) = cue_tracks {
+            let cues_json = serde_json::to_string(tracks)?;
+            updated += self.conn.execute(
+                "UPDATE songs SET cue_tracks_json = ?1, updated_at = ?2 WHERE id = ?3",
+                params![cues_json, now, song_id],
+            )?;
+        }
+        Ok(updated > 0)
+    }
+
     pub fn list_songs(&self) -> Result<Vec<SongRecord>, LibraryError> {
         self.list_songs_in_library(None)
     }
@@ -507,7 +557,7 @@ impl LibraryStore {
         let mut out = Vec::new();
         if let Some(lib_id) = library_id {
             let mut stmt = self.conn.prepare(
-                "SELECT id, library_id, title, author, copyright, ccli_number, key_signature, bpm, lyrics_plain, slides_json, arrangements_json, updated_at FROM songs WHERE library_id = ?1 ORDER BY title COLLATE NOCASE ASC",
+                "SELECT id, library_id, title, author, copyright, ccli_number, key_signature, bpm, lyrics_plain, slides_json, arrangements_json, cue_tracks_json, updated_at FROM songs WHERE library_id = ?1 ORDER BY title COLLATE NOCASE ASC",
             )?;
             let rows = stmt.query_map(params![lib_id], row_to_song)?;
             for row in rows {
@@ -515,7 +565,7 @@ impl LibraryStore {
             }
         } else {
             let mut stmt = self.conn.prepare(
-                "SELECT id, library_id, title, author, copyright, ccli_number, key_signature, bpm, lyrics_plain, slides_json, arrangements_json, updated_at FROM songs ORDER BY title COLLATE NOCASE ASC",
+                "SELECT id, library_id, title, author, copyright, ccli_number, key_signature, bpm, lyrics_plain, slides_json, arrangements_json, cue_tracks_json, updated_at FROM songs ORDER BY title COLLATE NOCASE ASC",
             )?;
             let rows = stmt.query_map([], row_to_song)?;
             for row in rows {
@@ -528,7 +578,7 @@ impl LibraryStore {
     pub fn get_song(&self, id: &str) -> Result<Option<SongRecord>, LibraryError> {
         self.conn
             .query_row(
-                "SELECT id, library_id, title, author, copyright, ccli_number, key_signature, bpm, lyrics_plain, slides_json, arrangements_json, updated_at FROM songs WHERE id = ?1",
+                "SELECT id, library_id, title, author, copyright, ccli_number, key_signature, bpm, lyrics_plain, slides_json, arrangements_json, cue_tracks_json, updated_at FROM songs WHERE id = ?1",
                 params![id],
                 row_to_song,
             )
@@ -559,7 +609,7 @@ impl LibraryStore {
         if let Some(lib_id) = library_id {
             let mut stmt = self.conn.prepare(
                 r#"
-                SELECT s.id, s.library_id, s.title, s.author, s.copyright, s.ccli_number, s.key_signature, s.bpm, s.lyrics_plain, s.slides_json, s.arrangements_json, s.updated_at
+                SELECT s.id, s.library_id, s.title, s.author, s.copyright, s.ccli_number, s.key_signature, s.bpm, s.lyrics_plain, s.slides_json, s.arrangements_json, s.cue_tracks_json, s.updated_at
                 FROM songs_fts f
                 JOIN songs s ON s.id = f.song_id
                 WHERE songs_fts MATCH ?1 AND s.library_id = ?2
@@ -574,7 +624,7 @@ impl LibraryStore {
         } else {
             let mut stmt = self.conn.prepare(
                 r#"
-                SELECT s.id, s.library_id, s.title, s.author, s.copyright, s.ccli_number, s.key_signature, s.bpm, s.lyrics_plain, s.slides_json, s.arrangements_json, s.updated_at
+                SELECT s.id, s.library_id, s.title, s.author, s.copyright, s.ccli_number, s.key_signature, s.bpm, s.lyrics_plain, s.slides_json, s.arrangements_json, s.cue_tracks_json, s.updated_at
                 FROM songs_fts f
                 JOIN songs s ON s.id = f.song_id
                 WHERE songs_fts MATCH ?1
@@ -1684,8 +1734,27 @@ impl LibraryStore {
             lyrics_plain: deck[0].plain_text(),
             slides: vec![deck[0].clone(), deck[3].clone(), deck[4].clone()],
             arrangements: Vec::new(),
+            cue_tracks: Vec::new(),
             updated_at: now,
         };
+        let ag_v2 = slide_from_text(
+            "Amazing Grace (V2)",
+            "Verse 2",
+            "'Twas grace that taught my heart to fear\nAnd grace my fears relieved",
+            Some("22025".to_string()),
+        );
+        let ag_chorus = slide_from_text(
+            "Amazing Grace (Chorus)",
+            "Chorus",
+            "My chains are gone, I've been set free\nMy God, my Savior has ransomed me",
+            Some("22025".to_string()),
+        );
+        let ag_v3 = slide_from_text(
+            "Amazing Grace (V3)",
+            "Verse 3",
+            "When we've been there ten thousand years\nBright shining as the sun",
+            Some("22025".to_string()),
+        );
         let song = SongRecord {
             id: Uuid::from_u128(9001).to_string(),
             library_id: "worship-songs".to_string(),
@@ -1695,13 +1764,32 @@ impl LibraryStore {
             ccli_number: Some("22025".to_string()),
             key_signature: Some("G".to_string()),
             bpm: Some(72.0),
-            lyrics_plain: deck[1].plain_text(),
-            slides: vec![deck[1].clone()],
-            arrangements: vec![Arrangement {
-                id: "arr-default".to_string(),
-                name: "Default".to_string(),
-                group_order: vec!["Verse 1".to_string()],
-            }],
+            lyrics_plain: format!("{}\n{}\n{}", deck[1].plain_text(), ag_v2.plain_text(), ag_chorus.plain_text()),
+            slides: vec![deck[1].clone(), ag_chorus, ag_v2, ag_v3],
+            arrangements: vec![
+                Arrangement {
+                    id: "arr-sunday-standard".to_string(),
+                    name: "Sunday Standard".to_string(),
+                    group_order: vec![
+                        "Verse 1".to_string(),
+                        "Chorus".to_string(),
+                        "Verse 2".to_string(),
+                        "Chorus".to_string(),
+                        "Verse 3".to_string(),
+                        "Chorus".to_string(),
+                    ],
+                },
+                Arrangement {
+                    id: "arr-acoustic-short".to_string(),
+                    name: "Acoustic Short".to_string(),
+                    group_order: vec![
+                        "Verse 1".to_string(),
+                        "Verse 3".to_string(),
+                        "Chorus".to_string(),
+                    ],
+                },
+            ],
+            cue_tracks: Vec::new(),
             updated_at: now,
         };
         let scripture = SongRecord {
@@ -1716,6 +1804,7 @@ impl LibraryStore {
             lyrics_plain: deck[2].plain_text(),
             slides: vec![deck[2].clone()],
             arrangements: Vec::new(),
+            cue_tracks: Vec::new(),
             updated_at: now,
         };
         self.upsert_song(&welcome)?;
@@ -1751,10 +1840,13 @@ pub fn infer_media_kind(path: &Path) -> &'static str {
 fn row_to_song(row: &rusqlite::Row<'_>) -> rusqlite::Result<SongRecord> {
     let slides_json: String = row.get(9)?;
     let arrangements_json: String = row.get(10)?;
-    let updated_str: String = row.get(11)?;
+    let cue_tracks_json: String = row.get(11)?;
+    let updated_str: String = row.get(12)?;
     let slides: Vec<Slide> = serde_json::from_str(&slides_json).unwrap_or_default();
     let arrangements: Vec<Arrangement> =
         serde_json::from_str(&arrangements_json).unwrap_or_default();
+    let cue_tracks: Vec<AutoPlayTrack> =
+        serde_json::from_str(&cue_tracks_json).unwrap_or_default();
     Ok(SongRecord {
         id: row.get(0)?,
         library_id: row.get(1)?,
@@ -1767,6 +1859,7 @@ fn row_to_song(row: &rusqlite::Row<'_>) -> rusqlite::Result<SongRecord> {
         lyrics_plain: row.get(8)?,
         slides,
         arrangements,
+        cue_tracks,
         updated_at: DateTime::parse_from_rfc3339(&updated_str)
             .map(|dt| dt.with_timezone(&Utc))
             .unwrap_or_else(|_| Utc::now()),
@@ -2444,5 +2537,36 @@ mod tests {
             store.list_macros().expect("orig macros").len()
         );
         let _ = std::fs::remove_file(&bundle_path);
+
+        // Persistent Song Arrangements & Recorded AutoPlay Cue Tracks
+        let ag_id = Uuid::from_u128(9001).to_string();
+        let ag_before = store.get_song(&ag_id).expect("get ag").expect("ag exists");
+        assert_eq!(ag_before.arrangements.len(), 2);
+        let custom_arrs = vec![Arrangement {
+            id: "arr-easter".into(),
+            name: "Easter Choir".into(),
+            group_order: vec!["Verse 1".into(), "Chorus".into(), "Chorus".into()],
+        }];
+        assert!(store.update_song_arrangements(&ag_id, &custom_arrs).expect("save arrs"));
+        let track = AutoPlayTrack {
+            id: "cue-track-1".into(),
+            name: "Rehearsal Timing".into(),
+            loop_playback: true,
+            cues: vec![core_scene::RecordedCue {
+                slide_id: ag_before.slides[0].id,
+                delay_secs: 9.5,
+                label: "Verse 1".into(),
+            }],
+        };
+        assert!(
+            store
+                .update_song_slides_and_cues(&ag_id, Some(&ag_before.slides), Some(&[track]))
+                .expect("save cues")
+        );
+        let ag_after = store.get_song(&ag_id).expect("get ag 2").expect("ag exists 2");
+        assert_eq!(ag_after.arrangements.len(), 1);
+        assert_eq!(ag_after.arrangements[0].name, "Easter Choir");
+        assert_eq!(ag_after.cue_tracks.len(), 1);
+        assert_eq!(ag_after.cue_tracks[0].cues[0].delay_secs, 9.5);
     }
 }
