@@ -13,6 +13,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+broadcast-io = { path = "../../../crates/broadcast-io" }
 chrono = { version = "0.4", features = ["serde"] }
 core-ipc = { path = "../../../crates/core-ipc" }
 core-library = { path = "../../../crates/core-library" }

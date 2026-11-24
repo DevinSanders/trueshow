@@ -341,6 +341,38 @@ fn list_playlists(
     lib.list_playlists().map_err(|e| e.to_string())
 }
 
+#[derive(serde::Serialize)]
+struct BroadcastCapabilitiesDto {
+    ndi_status: String,
+    omt_ready: bool,
+    decklink_status: String,
+    virtual_output_backend: String,
+    web_stage_url: String,
+}
+
+#[tauri::command]
+fn get_broadcast_capabilities() -> BroadcastCapabilitiesDto {
+    let ndi_status = match broadcast_io::probe_ndi_runtime(&[]) {
+        broadcast_io::NdiRuntimeStatus::Available { library_path } => {
+            format!("Available ({library_path})")
+        }
+        broadcast_io::NdiRuntimeStatus::NotInstalled { install_hint, .. } => install_hint,
+    };
+    let decklink_status = match broadcast_io::probe_decklink_runtime(&[]) {
+        broadcast_io::DeckLinkStatus::DriverDetected { library_path } => {
+            format!("Driver Detected ({library_path})")
+        }
+        broadcast_io::DeckLinkStatus::DriverNotInstalled { install_hint } => install_hint,
+    };
+    BroadcastCapabilitiesDto {
+        ndi_status,
+        omt_ready: true,
+        decklink_status,
+        virtual_output_backend: format!("{:?}", broadcast_io::VirtualOutputBackend::native_for_host()),
+        web_stage_url: "http://127.0.0.1:<ephemeral-stage-port>".to_string(),
+    }
+}
+
 #[tauri::command]
 async fn shutdown_engine(bridge: State<'_, Arc<EngineBridgeState>>) -> Result<(), String> {
     let _ = bridge.request(EngineCommand::Shutdown, false).await?;
@@ -419,6 +451,7 @@ pub fn run() {
             set_output_look,
             search_library_songs,
             list_playlists,
+            get_broadcast_capabilities,
             shutdown_engine,
             start_preview_stream,
         ])

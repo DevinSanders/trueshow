@@ -1,0 +1,23 @@
+[package]
+name = "show-control"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "LAN WebSocket Stage Display, timers, macros, MIDI, OSC, SMPTE LTC/MTC, and Bitfocus Companion show control."
+
+[dependencies]
+axum.workspace = true
+core-scene.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+http = "1.5"
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
+
+[lints]
+workspace = true

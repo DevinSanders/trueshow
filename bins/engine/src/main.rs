@@ -54,7 +54,11 @@ fn main() {
 
     let cli = Cli::parse();
     let ffmpeg_status = media_engine::probe_dynamic_lgpl_ffmpeg(&[]);
-    info!("media-engine LGPL FFmpeg runtime status: {ffmpeg_status:?}");
+    let ndi_status = broadcast_io::probe_ndi_runtime(&[]);
+    let decklink_status = broadcast_io::probe_decklink_runtime(&[]);
+    info!("media-engine LGPL FFmpeg status: {ffmpeg_status:?}");
+    info!("broadcast-io NDI 6 dynamic runtime status: {ndi_status:?}");
+    info!("broadcast-io DeckLink dynamic driver status: {decklink_status:?}");
     let shared = Arc::new(SharedEngineState::new(SceneState::demo_m0(
         cli.outputs.clamp(1, 2),
     )));
@@ -126,14 +130,31 @@ async fn run_ipc_server(
 
     info!("IPC control server listening on '{socket_id}' (survives UI disconnects)");
 
+    let stage_server = match show_control::WebStageServer::bind(
+        "127.0.0.1:0",
+        show_control::payload_from_scene(&shared.snapshot().state),
+    )
+    .await
+    {
+        Ok(srv) => {
+            info!("LAN Web Stage Display listening at {}", srv.url());
+            Some(Arc::new(srv))
+        }
+        Err(err) => {
+            warn!("could not start LAN Web Stage server: {err}");
+            None
+        }
+    };
+
     loop {
         match listener.accept().await {
             Ok(stream) => {
                 info!("operator control client attached");
                 let shared_c = Arc::clone(&shared);
                 let proxy_c = proxy.clone();
+                let stage_c = stage_server.clone();
                 tokio::spawn(async move {
-                    if let Err(err) = handle_client(stream, shared_c, proxy_c).await {
+                    if let Err(err) = handle_client(stream, shared_c, proxy_c, stage_c).await {
                         warn!("operator control client detached ({err}); live outputs remain active");
                     } else {
                         info!("operator control client detached cleanly; live outputs remain active");
@@ -151,6 +172,7 @@ async fn handle_client(
     mut stream: Stream,
     shared: Arc<SharedEngineState>,
     proxy: Option<EventLoopProxy<EngineWakeEvent>>,
+    stage_server: Option<Arc<show_control::WebStageServer>>,
 ) -> std::io::Result<()> {
     loop {
         let cmd: EngineCommand = match read_frame(&mut stream).await {
@@ -163,6 +185,9 @@ async fn handle_client(
             EngineCommand::GetSnapshot => EngineEvent::Snapshot(Box::new(shared.snapshot())),
             EngineCommand::ApplyDiff(diff) => match shared.apply_diff(*diff) {
                 Some(new_state) => {
+                    if let Some(srv) = stage_server.as_ref() {
+                        srv.publish(show_control::payload_from_scene(&new_state));
+                    }
                     if let Some(p) = proxy.as_ref() {
                         let _ = p.send_event(EngineWakeEvent::SceneChanged);
                     }

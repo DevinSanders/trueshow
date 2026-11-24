@@ -6,6 +6,8 @@ members = [
     "crates/core-library",
     "crates/render-text",
     "crates/media-engine",
+    "crates/broadcast-io",
+    "crates/show-control",
     "crates/render-wgpu",
     "bins/engine",
 ]
@@ -14,12 +16,13 @@ exclude = [
 ]
 
 [workspace.package]
-version = "0.1.0-m1"
+version = "0.1.0-m2"
 edition = "2024"
 license = "MPL-2.0"
 repository = "https://github.com/openpresenter/OpenPresenter"
 
 [workspace.dependencies]
+axum = { version = "0.8", features = ["ws"] }
 blake3 = "1.8"
 bytemuck = { version = "1.22", features = ["derive"] }
 chrono = { version = "0.4", features = ["serde"] }
@@ -49,6 +52,8 @@ core-scene = { path = "crates/core-scene" }
 core-ipc = { path = "crates/core-ipc" }
 render-text = { path = "crates/render-text" }
 media-engine = { path = "crates/media-engine" }
+broadcast-io = { path = "crates/broadcast-io" }
+show-control = { path = "crates/show-control" }
 render-wgpu = { path = "crates/render-wgpu" }
 
 [workspace.lints.rust]

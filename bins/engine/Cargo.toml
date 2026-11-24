@@ -11,12 +11,14 @@ name = "openpresenter-engine"
 path = "src/main.rs"
 
 [dependencies]
+broadcast-io.workspace = true
 clap.workspace = true
 core-ipc.workspace = true
 core-scene.workspace = true
 interprocess.workspace = true
 media-engine.workspace = true
 render-wgpu.workspace = true
+show-control.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
