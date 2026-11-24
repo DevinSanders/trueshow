@@ -64,6 +64,7 @@ fn main() {
     )));
 
     if cli.headless {
+        shared.mark_headless_ready();
         info!(
             "starting openpresenter-engine in headless IPC mode on socket '{}'",
             cli.socket
@@ -74,6 +75,16 @@ fn main() {
             .expect("create tokio runtime");
         rt.block_on(run_ipc_server(cli.socket, shared, None));
         return;
+    }
+
+    // Best-effort cleanup of stale SHM files from exited engine instances (locked files are skipped).
+    if let Ok(entries) = std::fs::read_dir(&cli.preview_dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.extension().and_then(|e| e.to_str()) == Some("op_shm") {
+                let _ = std::fs::remove_file(&p);
+            }
+        }
     }
 
     let (event_loop, proxy) = create_event_loop().expect("failed to initialize winit event loop");
@@ -182,7 +193,17 @@ async fn handle_client(
         };
 
         let response = match cmd {
-            EngineCommand::GetSnapshot => EngineEvent::Snapshot(Box::new(shared.snapshot())),
+            EngineCommand::GetSnapshot => {
+                // Wait briefly for GPU surfaces and SHM preview rings to finish initializing
+                // so newly attached control surfaces never observe empty preview_buses.
+                for _ in 0..200 {
+                    if shared.is_hardware_ready() {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                }
+                EngineEvent::Snapshot(Box::new(shared.snapshot()))
+            }
             EngineCommand::ApplyDiff(diff) => match shared.apply_diff(*diff) {
                 Some(new_state) => {
                     if let Some(srv) = stage_server.as_ref() {

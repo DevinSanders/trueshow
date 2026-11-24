@@ -155,7 +155,7 @@ fn spawn_engine_sidecar(socket_name: &str) -> Result<(), String> {
         .arg("--outputs")
         .arg("2")
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .spawn()
         .map_err(|e| format!("failed to spawn {}: {e}", bin.display()))?;
@@ -166,7 +166,11 @@ fn spawn_engine_sidecar(socket_name: &str) -> Result<(), String> {
 async fn connect_engine(
     bridge: State<'_, Arc<EngineBridgeState>>,
 ) -> Result<EngineSnapshot, String> {
-    match bridge.request(EngineCommand::GetSnapshot, true).await? {
+    let event = match bridge.request(EngineCommand::GetSnapshot, true).await {
+        Ok(evt) => evt,
+        Err(_) => bridge.request(EngineCommand::GetSnapshot, true).await?,
+    };
+    match event {
         EngineEvent::Snapshot(snap) => {
             let mut map = bridge.preview_buses.lock().await;
             map.clear();

@@ -23,7 +23,7 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
 use winit::application::ApplicationHandler;
-use winit::dpi::LogicalSize;
+use winit::dpi::{LogicalSize, PhysicalPosition};
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Fullscreen, Window, WindowAttributes, WindowId};
@@ -76,6 +76,7 @@ struct EngineRuntimeState {
     transition_start: Instant,
     transition_duration: Duration,
     transition_kind: u32,
+    hardware_ready: bool,
     gpu_adapter_name: String,
     gpu_backend: String,
     displays: Vec<DisplayInfo>,
@@ -93,12 +94,25 @@ impl SharedEngineState {
                 transition_start: Instant::now(),
                 transition_duration: Duration::from_millis(1),
                 transition_kind: 0,
+                hardware_ready: false,
                 gpu_adapter_name: "Initializing...".to_string(),
                 gpu_backend: "Pending".to_string(),
                 displays: Vec::new(),
                 preview_buses: Vec::new(),
                 telemetry: EngineTelemetry::default(),
             }),
+        }
+    }
+
+    pub fn is_hardware_ready(&self) -> bool {
+        self.inner.read().map(|g| g.hardware_ready).unwrap_or(false)
+    }
+
+    pub fn mark_headless_ready(&self) {
+        if let Ok(mut guard) = self.inner.write() {
+            guard.hardware_ready = true;
+            guard.gpu_adapter_name = "Headless Test Engine".to_string();
+            guard.gpu_backend = "Headless".to_string();
         }
     }
 
@@ -164,6 +178,7 @@ impl SharedEngineState {
         preview_buses: Vec<PreviewBusDescriptor>,
     ) {
         if let Ok(mut guard) = self.inner.write() {
+            guard.hardware_ready = true;
             guard.gpu_adapter_name = adapter;
             guard.gpu_backend = backend;
             guard.displays = displays;
@@ -361,6 +376,8 @@ struct CompositorApp {
     shared: Arc<SharedEngineState>,
     preview_dir: PathBuf,
     start_time: Instant,
+    next_frame_at: Instant,
+    scene_dirty: bool,
     gpu: Option<GpuContext>,
     rasterizer: BroadcastRasterizer,
     outputs: HashMap<WindowId, OutputSurfaceState>,
@@ -371,10 +388,13 @@ struct CompositorApp {
 
 impl CompositorApp {
     fn new(shared: Arc<SharedEngineState>, preview_dir: PathBuf) -> Self {
+        let now = Instant::now();
         Self {
             shared,
             preview_dir,
-            start_time: Instant::now(),
+            start_time: now,
+            next_frame_at: now,
+            scene_dirty: true,
             gpu: None,
             rasterizer: BroadcastRasterizer::new(64),
             outputs: HashMap::new(),
@@ -405,7 +425,7 @@ impl CompositorApp {
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    blend: Some(wgpu::BlendState::REPLACE),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: Default::default(),
@@ -486,7 +506,7 @@ impl CompositorApp {
         out.uploaded_revision = rev;
     }
 
-    fn render_output(&mut self, window_id: WindowId) {
+    fn render_output(&mut self, window_id: WindowId, force_preview: bool) {
         self.sync_output_slide_texture(window_id);
 
         let Some(gpu) = self.gpu.as_ref() else {
@@ -495,6 +515,17 @@ impl CompositorApp {
         let Some(out) = self.outputs.get_mut(&window_id) else {
             return;
         };
+
+        let phys = out.window.inner_size();
+        let minimized = out.window.is_minimized().unwrap_or(false) || phys.width == 0 || phys.height == 0;
+
+        if !minimized
+            && (phys.width != out.surface_config.width || phys.height != out.surface_config.height)
+        {
+            out.surface_config.width = phys.width;
+            out.surface_config.height = phys.height;
+            out.surface.configure(&gpu.device, &out.surface_config);
+        }
 
         let elapsed_sec = self.start_time.elapsed().as_secs_f32();
         let aspect = (out.surface_config.width as f32) / (out.surface_config.height.max(1) as f32);
@@ -507,23 +538,34 @@ impl CompositorApp {
         gpu.queue
             .write_buffer(&out.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
 
-        let frame = match out.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(frame)
-            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
-            wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
-                out.surface.configure(&gpu.device, &out.surface_config);
-                return;
+        let mut surface_frame = None;
+        if !minimized {
+            match out.surface.get_current_texture() {
+                wgpu::CurrentSurfaceTexture::Success(frame)
+                | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
+                    surface_frame = Some(frame);
+                }
+                wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
+                    let cur = out.window.inner_size();
+                    if cur.width > 0 && cur.height > 0 {
+                        out.surface_config.width = cur.width;
+                        out.surface_config.height = cur.height;
+                        out.surface.configure(&gpu.device, &out.surface_config);
+                    }
+                }
+                wgpu::CurrentSurfaceTexture::Timeout
+                | wgpu::CurrentSurfaceTexture::Occluded
+                | wgpu::CurrentSurfaceTexture::Validation => {}
             }
-            wgpu::CurrentSurfaceTexture::Timeout
-            | wgpu::CurrentSurfaceTexture::Occluded
-            | wgpu::CurrentSurfaceTexture::Validation => {
-                return;
-            }
-        };
+        }
 
-        let surface_view = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
+        let want_preview = force_preview || self.preview_tick_counter.is_multiple_of(2);
+        if surface_frame.is_none() && !want_preview {
+            if let Some(ring) = out.preview_ring.as_mut() {
+                ring.drain_ready(&gpu.device);
+            }
+            return;
+        }
 
         let mut encoder = gpu
             .device
@@ -531,7 +573,12 @@ impl CompositorApp {
                 label: Some("compositor_frame_encoder"),
             });
 
-        {
+        let mut encoded_any = false;
+
+        if let Some(frame) = surface_frame.as_ref() {
+            let surface_view = frame
+                .texture
+                .create_view(&wgpu::TextureViewDescriptor::default());
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("output_surface_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -551,6 +598,7 @@ impl CompositorApp {
             pass.set_pipeline(&out.pipeline);
             pass.set_bind_group(0, &out.bind_group, &[]);
             pass.draw(0..3, 0..1);
+            encoded_any = true;
         }
 
         let mut submitted_slot = None;
@@ -558,7 +606,7 @@ impl CompositorApp {
             (out.preview_ring.as_mut(), out.preview_pipeline.as_ref())
         {
             ring.drain_ready(&gpu.device);
-            if self.preview_tick_counter.is_multiple_of(2) {
+            if want_preview {
                 {
                     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("preview_downsample_pass"),
@@ -581,16 +629,46 @@ impl CompositorApp {
                     pass.draw(0..3, 0..1);
                 }
                 submitted_slot = ring.encode_copy(&mut encoder);
+                encoded_any = true;
             }
         }
 
-        gpu.queue.submit(std::iter::once(encoder.finish()));
+        if encoded_any {
+            gpu.queue.submit(std::iter::once(encoder.finish()));
+        }
         if let (Some(slot), Some(ring)) = (submitted_slot, out.preview_ring.as_mut()) {
             ring.begin_map(slot);
         }
 
-        gpu.queue.present(frame);
-        out.frames_presented += 1;
+        if let Some(frame) = surface_frame {
+            gpu.queue.present(frame);
+            out.frames_presented += 1;
+        }
+    }
+
+    fn render_all_outputs(&mut self, force_preview: bool) {
+        if self.gpu.is_none() || self.ordered_windows.is_empty() {
+            return;
+        }
+        let ids: Vec<WindowId> = self.ordered_windows.clone();
+        for wid in ids {
+            self.render_output(wid, force_preview);
+        }
+        self.preview_tick_counter += 1;
+        if let Some(mut telemetry) = self.stats.record_frame() {
+            telemetry.outputs = self
+                .ordered_windows
+                .iter()
+                .filter_map(|id| self.outputs.get(id))
+                .map(|o| OutputTelemetry {
+                    output_id: o.config_meta.id,
+                    width: o.surface_config.width,
+                    height: o.surface_config.height,
+                    frames_presented: o.frames_presented,
+                })
+                .collect();
+            self.shared.update_telemetry(telemetry);
+        }
     }
 }
 
@@ -643,6 +721,12 @@ impl ApplicationHandler<EngineWakeEvent> for CompositorApp {
                     .monitor_index
                     .and_then(|m| event_loop.available_monitors().nth(m));
                 attrs = attrs.with_fullscreen(Some(Fullscreen::Borderless(target_mon)));
+            } else {
+                // Stagger windowed outputs so Audience and Stage don't completely overlap on launch.
+                attrs = attrs.with_position(PhysicalPosition::new(
+                    60 + (idx as i32) * 90,
+                    60 + (idx as i32) * 70,
+                ));
             }
 
             let window = match event_loop.create_window(attrs) {
@@ -708,6 +792,10 @@ impl ApplicationHandler<EngineWakeEvent> for CompositorApp {
             }
         };
 
+        device.on_uncaptured_error(Arc::new(|err| {
+            error!("wgpu uncaptured device error (suppressed to keep live outputs alive): {err}");
+        }));
+
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("openpresenter_compositor_wgsl"),
             source: wgpu::ShaderSource::Wgsl(include_str!("compositor.wgsl").into()),
@@ -759,8 +847,9 @@ impl ApplicationHandler<EngineWakeEvent> for CompositorApp {
         });
 
         let mut preview_buses = Vec::new();
+        let pid = std::process::id();
 
-        for (cfg, window, surface) in created_windows {
+        for (idx, (cfg, window, surface)) in created_windows.into_iter().enumerate() {
             let caps = surface.get_capabilities(&adapter);
             let surface_format = caps
                 .formats
@@ -769,13 +858,24 @@ impl ApplicationHandler<EngineWakeEvent> for CompositorApp {
                 .find(|f| f.is_srgb())
                 .unwrap_or(caps.formats[0]);
 
+            // Pace VSync on Output 0 (Audience) and avoid double-blocking secondary outputs down to 30 fps.
+            let present_mode = if idx == 0 {
+                wgpu::PresentMode::AutoVsync
+            } else if caps.present_modes.contains(&wgpu::PresentMode::Mailbox) {
+                wgpu::PresentMode::Mailbox
+            } else if caps.present_modes.contains(&wgpu::PresentMode::Immediate) {
+                wgpu::PresentMode::Immediate
+            } else {
+                wgpu::PresentMode::AutoNoVsync
+            };
+
             let phys = window.inner_size();
             let surface_config = wgpu::SurfaceConfiguration {
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
                 format: surface_format,
                 width: phys.width.max(1),
                 height: phys.height.max(1),
-                present_mode: wgpu::PresentMode::AutoVsync,
+                present_mode,
                 alpha_mode: caps.alpha_modes[0],
                 view_formats: vec![],
                 desired_maximum_frame_latency: 2,
@@ -835,7 +935,7 @@ impl ApplicationHandler<EngineWakeEvent> for CompositorApp {
 
             let shm_path = self
                 .preview_dir
-                .join(format!("preview-{}.op_shm", cfg.id.0));
+                .join(format!("preview-{pid}-{}.op_shm", cfg.id.0));
             let (preview_ring, preview_pipeline) =
                 match ShmPreviewWriter::create(&shm_path, PREVIEW_WIDTH, PREVIEW_HEIGHT) {
                     Ok(writer) => {
@@ -851,7 +951,7 @@ impl ApplicationHandler<EngineWakeEvent> for CompositorApp {
                             &device,
                             &pipeline_layout,
                             &shader,
-                            wgpu::TextureFormat::Rgba8Unorm,
+                            wgpu::TextureFormat::Rgba8UnormSrgb,
                             "preview_rgba8_pipeline",
                         );
                         (Some(ring), Some(ppipe))
@@ -891,14 +991,22 @@ impl ApplicationHandler<EngineWakeEvent> for CompositorApp {
         );
 
         self.gpu = Some(GpuContext { device, queue });
+        self.scene_dirty = true;
+        self.next_frame_at = Instant::now();
+        // Render initial frame immediately so both Audience and Stage surfaces + SHM rings populate right away.
+        self.render_all_outputs(true);
+        // Reset frame timing baseline after one-time GPU/font startup so telemetry reflects steady-state FPS.
+        self.stats = FrameStats::new();
+        event_loop.set_control_flow(ControlFlow::WaitUntil(
+            Instant::now() + Duration::from_micros(16_000),
+        ));
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: EngineWakeEvent) {
         match event {
             EngineWakeEvent::SceneChanged => {
-                for out in self.outputs.values() {
-                    out.window.request_redraw();
-                }
+                self.scene_dirty = true;
+                self.next_frame_at = Instant::now();
             }
             EngineWakeEvent::Shutdown => {
                 info!("received explicit Shutdown event; closing compositor outputs");
@@ -915,8 +1023,18 @@ impl ApplicationHandler<EngineWakeEvent> for CompositorApp {
     ) {
         match event {
             WindowEvent::CloseRequested => {
-                info!("output window closed by user; shutting down engine");
-                event_loop.exit();
+                if let Some(removed) = self.outputs.remove(&window_id) {
+                    info!(
+                        "output window '{}' closed by user ({} remaining)",
+                        removed.config_meta.name,
+                        self.outputs.len()
+                    );
+                }
+                self.ordered_windows.retain(|&id| id != window_id);
+                if self.ordered_windows.is_empty() {
+                    info!("all output windows closed; shutting down engine");
+                    event_loop.exit();
+                }
             }
             WindowEvent::Resized(new_size) => {
                 if let (Some(gpu), Some(out)) =
@@ -927,38 +1045,27 @@ impl ApplicationHandler<EngineWakeEvent> for CompositorApp {
                     out.surface_config.width = new_size.width;
                     out.surface_config.height = new_size.height;
                     out.surface.configure(&gpu.device, &out.surface_config);
+                    self.scene_dirty = true;
                 }
             }
             WindowEvent::RedrawRequested => {
-                self.render_output(window_id);
-                if self.ordered_windows.first().copied() == Some(window_id) {
-                    self.preview_tick_counter += 1;
-                    if let Some(mut telemetry) = self.stats.record_frame() {
-                        telemetry.outputs = self
-                            .ordered_windows
-                            .iter()
-                            .filter_map(|id| self.outputs.get(id))
-                            .map(|o| OutputTelemetry {
-                                output_id: o.config_meta.id,
-                                width: o.surface_config.width,
-                                height: o.surface_config.height,
-                                frames_presented: o.frames_presented,
-                            })
-                            .collect();
-                        self.shared.update_telemetry(telemetry);
-                    }
-                }
+                self.render_output(window_id, false);
             }
             _ => {}
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        for wid in &self.ordered_windows {
-            if let Some(out) = self.outputs.get(wid) {
-                out.window.request_redraw();
-            }
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let now = Instant::now();
+        if self.scene_dirty || now >= self.next_frame_at {
+            let force_preview = self.scene_dirty;
+            self.scene_dirty = false;
+            self.render_all_outputs(force_preview);
+            // Anchor next deadline to frame start so VSync-paced frames run at full 60 fps
+            // while minimized/occluded frames still sleep instead of busy-spinning.
+            self.next_frame_at = now + Duration::from_micros(16_000);
         }
+        event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_frame_at));
     }
 }
 
@@ -966,7 +1073,9 @@ pub fn create_event_loop() -> Result<(EventLoop<EngineWakeEvent>, EventLoopProxy
     let event_loop = EventLoop::<EngineWakeEvent>::with_user_event()
         .build()
         .map_err(|e| e.to_string())?;
-    event_loop.set_control_flow(ControlFlow::Poll);
+    event_loop.set_control_flow(ControlFlow::WaitUntil(
+        Instant::now() + Duration::from_micros(16_000),
+    ));
     let proxy = event_loop.create_proxy();
     Ok((event_loop, proxy))
 }

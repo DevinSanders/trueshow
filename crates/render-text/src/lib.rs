@@ -286,18 +286,28 @@ impl BroadcastRasterizer {
                 let gy = physical.y + run.line_y.round() as i32 - image.placement.top;
                 let gw = image.placement.width as i32;
                 let gh = image.placement.height as i32;
-                // Extract alpha mask (swash AlphaMask has 1 byte/px; Color has 4 bytes/px).
-                let mask = if image.data.len() == (gw * gh) as usize {
-                    image.data.clone()
-                } else {
-                    image
+                let expected_px = (gw * gh) as usize;
+                // Extract alpha mask safely across Mask (1B/px), SubpixelMask (3B/px), and Color (4B/px).
+                let mask: Vec<u8> = match image.content {
+                    cosmic_text::SwashContent::Mask => image.data.clone(),
+                    cosmic_text::SwashContent::SubpixelMask => image
+                        .data
+                        .as_chunks::<3>()
+                        .0
+                        .iter()
+                        .map(|rgb| rgb[0].max(rgb[1]).max(rgb[2]))
+                        .collect(),
+                    cosmic_text::SwashContent::Color => image
                         .data
                         .as_chunks::<4>()
                         .0
                         .iter()
                         .map(|c| c[3])
-                        .collect::<Vec<u8>>()
+                        .collect(),
                 };
+                if mask.len() < expected_px {
+                    continue;
+                }
                 glyphs.push(PlacedGlyph {
                     x: gx,
                     y: gy,
@@ -397,7 +407,7 @@ fn blit_glyph_mask(
             if px < 0 || px >= dst_w {
                 continue;
             }
-            let m = mask[(row * gw + col) as usize];
+            let m = mask.get((row * gw + col) as usize).copied().unwrap_or(0);
             if m == 0 {
                 continue;
             }

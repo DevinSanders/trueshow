@@ -183,12 +183,18 @@
 
   onMount(() => {
     void attachEngine();
+    let consecutiveErrors = 0;
     const timer = setInterval(async () => {
       if (!snapshot) return;
       try {
         telemetry = await invoke<EngineTelemetry>("get_telemetry");
-      } catch {
-        // Keep current UI state; user can click Reconnect if engine exited.
+        consecutiveErrors = 0;
+      } catch (err) {
+        consecutiveErrors += 1;
+        if (consecutiveErrors >= 3) {
+          errorText = `Engine connection lost (${String(err)}). Click Reconnect to re-attach.`;
+          statusMessage = "Engine disconnected";
+        }
       }
     }, 500);
     return () => clearInterval(timer);
@@ -396,6 +402,7 @@
                 label={output.name}
                 kind={output.kind}
                 {connected}
+                enginePid={snapshot?.engine_pid ?? 0}
               />
               <div class="look-row">
                 <span>Look:</span>

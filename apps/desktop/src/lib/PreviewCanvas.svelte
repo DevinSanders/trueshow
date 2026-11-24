@@ -7,9 +7,10 @@
     label: string;
     kind: "Audience" | "Stage";
     connected: boolean;
+    enginePid?: number;
   }
 
-  let { outputId, label, kind, connected }: Props = $props();
+  let { outputId, label, kind, connected, enginePid = 0 }: Props = $props();
 
   let canvasEl: HTMLCanvasElement | undefined = $state();
   let streamFps = $state(0);
@@ -20,6 +21,7 @@
   let lastFpsStamp = performance.now();
 
   $effect(() => {
+    void enginePid;
     if (!connected || !canvasEl) return;
 
     stopStream = false;
