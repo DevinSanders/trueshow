@@ -96,7 +96,7 @@ describe("LayerManager (7-Layer Stack Inspection, Clearing & Drag-Drop)", () => 
     await fireEvent.click(screen.getByText("Clear All"));
     expect(onClearAll).toHaveBeenCalledTimes(1);
 
-    await fireEvent.click(screen.getByText("Blackout"));
+    await fireEvent.click(screen.getByText("BLACKOUT"));
     expect(onToggleBlackout).toHaveBeenCalledTimes(1);
 
     // Drag & drop media onto Background layer row (plus dragLeave & non-droppable layer)

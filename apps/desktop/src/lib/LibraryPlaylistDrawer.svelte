@@ -1,6 +1,13 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
+  import {
+    allowDrop,
+    clearAppDrag,
+    readDroppedPlaylistIndex,
+    readDroppedSongId,
+    startAppDrag,
+  } from "./dragStore";
   import type {
     PlaylistRecord,
     PresentationLibraryRecord,
@@ -272,15 +279,14 @@
     }
   }
 
-  function startSongDrag(event: DragEvent, songId: string) {
-    event.dataTransfer?.setData("application/x-openpresenter-song", songId);
-    event.dataTransfer?.setData("text/plain", songId);
+  function startSongDrag(event: DragEvent, song: SongRecord) {
+    startAppDrag(event, { type: "song", songId: song.id, title: song.title });
   }
 
   function handleDropOnLibrary(event: DragEvent, targetLibId: string) {
     dragOverLibraryId = null;
     event.preventDefault();
-    const songId = event.dataTransfer?.getData("application/x-openpresenter-song");
+    const songId = readDroppedSongId(event);
     if (songId) {
       void moveSongToLibrary(songId, targetLibId);
     }
@@ -290,7 +296,7 @@
     dragOverPlaylistId = null;
     dragOverPlaylistList = false;
     event.preventDefault();
-    const songId = event.dataTransfer?.getData("application/x-openpresenter-song");
+    const songId = readDroppedSongId(event);
     if (songId) {
       void addSongToPlaylistById(playlistId, songId);
     }
@@ -299,15 +305,12 @@
   function handleDropOnCueRow(event: DragEvent, targetIdx: number) {
     dragOverCueIdx = null;
     event.preventDefault();
-    const fromRaw = event.dataTransfer?.getData("application/x-openpresenter-playlist-idx");
-    if (fromRaw !== undefined && fromRaw !== "") {
-      const fromIdx = Number(fromRaw);
-      if (!Number.isNaN(fromIdx)) {
-        void reorderPlaylistDrag(fromIdx, targetIdx);
-        return;
-      }
+    const fromIdx = readDroppedPlaylistIndex(event);
+    if (fromIdx !== null) {
+      void reorderPlaylistDrag(fromIdx, targetIdx);
+      return;
     }
-    const songId = event.dataTransfer?.getData("application/x-openpresenter-song");
+    const songId = readDroppedSongId(event);
     if (songId && activePlaylist) {
       void addSongToPlaylistById(activePlaylist.id, songId);
     }
@@ -353,9 +356,11 @@
         <li
           class="folder-row"
           class:drag-over={dragOverLibraryId === lib.id}
+          ondragenter={(e) => {
+            if (allowDrop(e, ["song"], "move")) dragOverLibraryId = lib.id;
+          }}
           ondragover={(e) => {
-            e.preventDefault();
-            dragOverLibraryId = lib.id;
+            if (allowDrop(e, ["song"], "move")) dragOverLibraryId = lib.id;
           }}
           ondragleave={() => {
             if (dragOverLibraryId === lib.id) dragOverLibraryId = null;
@@ -425,7 +430,8 @@
         <li
           class="item-row"
           draggable="true"
-          ondragstart={(e) => startSongDrag(e, song.id)}
+          ondragstart={(e) => startSongDrag(e, song)}
+          ondragend={clearAppDrag}
           title="Drag onto a library to move, or onto a playlist to add"
         >
           <button class="item-main" onclick={() => void openPresentation(song.id)}>
@@ -485,9 +491,11 @@
           class:active={activePlaylist?.id === pl.id}
           class:drag-over={dragOverPlaylistId === pl.id}
           role="group"
+          ondragenter={(e) => {
+            if (allowDrop(e, ["song"], "copy")) dragOverPlaylistId = pl.id;
+          }}
           ondragover={(e) => {
-            e.preventDefault();
-            dragOverPlaylistId = pl.id;
+            if (allowDrop(e, ["song"], "copy")) dragOverPlaylistId = pl.id;
           }}
           ondragleave={() => {
             if (dragOverPlaylistId === pl.id) dragOverPlaylistId = null;
@@ -514,9 +522,11 @@
       <ul
         class="item-list compact"
         class:drag-over={dragOverPlaylistList}
+        ondragenter={(e) => {
+          if (allowDrop(e, ["song", "playlist-cue"], "copy")) dragOverPlaylistList = true;
+        }}
         ondragover={(e) => {
-          e.preventDefault();
-          dragOverPlaylistList = true;
+          if (allowDrop(e, ["song", "playlist-cue"], "copy")) dragOverPlaylistList = true;
         }}
         ondragleave={() => {
           dragOverPlaylistList = false;
@@ -529,13 +539,15 @@
             class="item-row"
             class:drag-over={dragOverCueIdx === idx}
             draggable="true"
-            ondragstart={(e) => {
-              e.dataTransfer?.setData("application/x-openpresenter-playlist-idx", String(idx));
+            ondragstart={(e) => startAppDrag(e, { type: "playlist-cue", fromIdx: idx })}
+            ondragend={clearAppDrag}
+            ondragenter={(e) => {
+              e.stopPropagation();
+              if (allowDrop(e, ["playlist-cue", "song"], "move")) dragOverCueIdx = idx;
             }}
             ondragover={(e) => {
-              e.preventDefault();
               e.stopPropagation();
-              dragOverCueIdx = idx;
+              if (allowDrop(e, ["playlist-cue", "song"], "move")) dragOverCueIdx = idx;
             }}
             ondragleave={() => {
               if (dragOverCueIdx === idx) dragOverCueIdx = null;

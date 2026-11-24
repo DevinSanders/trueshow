@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
+  import { allowDrop, clearAppDrag, readDroppedMedia, startAppDrag } from "./dragStore";
   import type { MediaAssetRecord, MediaBinRecord, SceneState } from "./types";
 
   interface Props {
@@ -141,29 +142,20 @@
   }
 
   function startMediaDrag(event: DragEvent, asset: MediaAssetRecord) {
-    event.dataTransfer?.setData(
-      "application/x-openpresenter-media",
-      JSON.stringify({
-        blake3_hash: asset.blake3_hash,
-        kind: asset.kind,
-        file_name: asset.file_name,
-      }),
-    );
-    event.dataTransfer?.setData("text/plain", asset.file_name);
+    startAppDrag(event, {
+      type: "media",
+      blake3_hash: asset.blake3_hash,
+      kind: asset.kind,
+      file_name: asset.file_name,
+    });
   }
 
   function handleDropOnBin(event: DragEvent, targetBinId: string) {
     dragOverBinId = null;
     event.preventDefault();
-    const raw = event.dataTransfer?.getData("application/x-openpresenter-media");
-    if (!raw) return;
-    try {
-      const parsed = JSON.parse(raw) as { blake3_hash?: string };
-      if (parsed.blake3_hash) {
-        void moveAssetToBin(parsed.blake3_hash, targetBinId);
-      }
-    } catch {
-      // Ignore non-OpenPresenter drag payload
+    const media = readDroppedMedia(event);
+    if (media?.blake3_hash) {
+      void moveAssetToBin(media.blake3_hash, targetBinId);
     }
   }
 
@@ -237,9 +229,11 @@
         <li
           class="bin-row"
           class:drag-over={dragOverBinId === bin.id}
+          ondragenter={(e) => {
+            if (allowDrop(e, ["media"], "move")) dragOverBinId = bin.id;
+          }}
           ondragover={(e) => {
-            e.preventDefault();
-            dragOverBinId = bin.id;
+            if (allowDrop(e, ["media"], "move")) dragOverBinId = bin.id;
           }}
           ondragleave={() => {
             if (dragOverBinId === bin.id) dragOverBinId = null;
@@ -329,6 +323,7 @@
           draggable="true"
           role="group"
           ondragstart={(e) => startMediaDrag(e, asset)}
+          ondragend={clearAppDrag}
           title="Click to fire (BG stays behind slides; FG clears on next slide). Drag onto any Slide, Layer, or Bin."
         >
           <button

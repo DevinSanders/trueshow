@@ -10,6 +10,7 @@
   import ScreensPanel from "./lib/ScreensPanel.svelte";
   import ShowControlPanel from "./lib/ShowControlPanel.svelte";
   import SlideEditor from "./lib/SlideEditor.svelte";
+  import { allowDrop, readDroppedMedia } from "./lib/dragStore";
   import type {
     DiagnosticsStatus,
     EngineSnapshot,
@@ -27,6 +28,7 @@
   let activeTab = $state<"show" | "screens" | "editor" | "broadcast" | "ecosystem" | "diagnostics">("show");
   let crashCount = $state(0);
   let showLibraryDrawer = $state(true);
+  let showLayerDock = $state(true);
   let showMediaDrawer = $state(true);
 
   let transitionKind = $state<"Cut" | "Dissolve" | "PushLeft" | "WipeRight">("Dissolve");
@@ -200,15 +202,9 @@
   function handleDropMediaOnSlide(event: DragEvent, slideId: string) {
     dragOverSlideId = null;
     event.preventDefault();
-    const raw = event.dataTransfer?.getData("application/x-openpresenter-media");
-    if (!raw) return;
-    try {
-      const parsed = JSON.parse(raw) as { blake3_hash?: string };
-      if (parsed.blake3_hash) {
-        void attachMediaToSlide(slideId, parsed.blake3_hash);
-      }
-    } catch {
-      // Ignore external drag payload
+    const media = readDroppedMedia(event);
+    if (media?.blake3_hash) {
+      void attachMediaToSlide(slideId, media.blake3_hash);
     }
   }
 
@@ -348,6 +344,13 @@
       </button>
       <button
         class="btn"
+        class:toggled={showLayerDock}
+        onclick={() => (showLayerDock = !showLayerDock)}
+      >
+        Layers
+      </button>
+      <button
+        class="btn"
         class:toggled={showMediaDrawer}
         onclick={() => (showMediaDrawer = !showMediaDrawer)}
       >
@@ -450,13 +453,23 @@
           <div class="slide-grid">
             {#each scene.deck as slide (slide.id)}
               {@const isLive = scene.active_slide?.id === slide.id && !scene.blackout}
+              {@const swatchPrimary =
+                slide.media_cue?.role === "Background"
+                  ? slide.media_cue.primary_color
+                  : slide.primary_color}
+              {@const swatchSecondary =
+                slide.media_cue?.role === "Background"
+                  ? slide.media_cue.secondary_color
+                  : slide.secondary_color}
               <div
                 class="slide-card-wrap"
                 class:drag-over={dragOverSlideId === slide.id}
                 role="group"
+                ondragenter={(e) => {
+                  if (allowDrop(e, ["media"], "copy")) dragOverSlideId = slide.id;
+                }}
                 ondragover={(e) => {
-                  e.preventDefault();
-                  dragOverSlideId = slide.id;
+                  if (allowDrop(e, ["media"], "copy")) dragOverSlideId = slide.id;
                 }}
                 ondragleave={() => {
                   if (dragOverSlideId === slide.id) dragOverSlideId = null;
@@ -470,7 +483,7 @@
                 >
                   <div
                     class="swatch"
-                    style={`background: linear-gradient(135deg, ${cssRgb(slide.primary_color)}, ${cssRgb(slide.secondary_color)});`}
+                    style={`background: linear-gradient(135deg, ${cssRgb(swatchPrimary)}, ${cssRgb(swatchSecondary)});`}
                   >
                     <span class="group-tag">{slide.group}</span>
                     {#if isLive}
@@ -508,23 +521,6 @@
             />
             <button class="btn" onclick={sendStageMessage}>Send Stage Msg</button>
           </div>
-
-          <div class="layer-bar">
-            <span class="bar-label">Layers:</span>
-            <button class="btn" onclick={() => clearLayer("MediaBackground")}>Clear Media</button>
-            <button class="btn" onclick={() => clearLayer("Slide")}>Clear Slide</button>
-            <button class="btn" class:toggled={scene.overlay_layer_active} onclick={toggleOverlay}>
-              Overlay Bug: {scene.overlay_layer_active ? "ON" : "OFF"}
-            </button>
-            <button class="btn" onclick={clearAll}>Clear All</button>
-            <button
-              class="btn blackout"
-              class:engaged={scene.blackout}
-              onclick={toggleBlackout}
-            >
-              {scene.blackout ? "BLACKOUT ACTIVE" : "BLACKOUT"}
-            </button>
-          </div>
         {:else}
           <div class="empty-state">
             <p>{statusMessage}</p>
@@ -541,15 +537,6 @@
       </div>
 
       {#if scene}
-        <LayerManager
-          {scene}
-          onClearLayer={(layer) => void clearLayer(layer)}
-          onClearAll={() => void clearAll()}
-          onToggleBlackout={() => void toggleBlackout()}
-          onToggleOverlay={() => void toggleOverlay()}
-          onToggleVideoInput={() => void toggleVideoInput()}
-          onDropMediaToLayer={(hash, role) => void triggerMediaOnLayer(hash, role)}
-        />
         <div class="monitors">
           {#each scene.outputs as output (output.id)}
             <div class="output-block">
@@ -578,6 +565,18 @@
       {/if}
     </aside>
   </main>
+
+  {#if showLayerDock && scene}
+    <LayerManager
+      {scene}
+      onClearLayer={(layer) => void clearLayer(layer)}
+      onClearAll={() => void clearAll()}
+      onToggleBlackout={() => void toggleBlackout()}
+      onToggleOverlay={() => void toggleOverlay()}
+      onToggleVideoInput={() => void toggleVideoInput()}
+      onDropMediaToLayer={(hash, role) => void triggerMediaOnLayer(hash, role)}
+    />
+  {/if}
 
   {#if showMediaDrawer}
     <MediaBinDrawer
@@ -887,24 +886,6 @@
     gap: 8px;
   }
 
-  .layer-bar {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 8px;
-    padding: 10px 12px;
-    background: var(--bg-1);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-  }
-
-  .bar-label {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--text-1);
-    margin-right: 4px;
-  }
-
   .btn {
     padding: 6px 11px;
     border-radius: 6px;
@@ -941,18 +922,6 @@
     border-color: #ef4444;
     color: #fff;
     font-weight: 600;
-  }
-
-  .btn.blackout {
-    margin-left: auto;
-    border-color: rgba(239, 68, 68, 0.6);
-    color: #fecaca;
-  }
-
-  .btn.blackout.engaged {
-    background: var(--danger);
-    border-color: var(--danger);
-    color: #fff;
   }
 
   .monitors {

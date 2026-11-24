@@ -350,11 +350,14 @@ describe("OpenPresenter Operator Control Surface UI (Happy & Failure Paths)", ()
     await waitFor(() => expect(screen.getByText("BLACKOUT")).toBeTruthy());
 
     // 4. Toggle overlay, clear slide, clear all, change mask, change look, send stage message, drop media on slide & layer
-    await fireEvent.click(screen.getByText(/Overlay Bug:/));
-    await fireEvent.click(screen.getByText("Clear Slide"));
-    await fireEvent.click(screen.getAllByText("Clear All")[0]);
-    await fireEvent.click(screen.getByLabelText("Toggle Video Input"));
     await fireEvent.click(screen.getByLabelText("Toggle Props & Overlays"));
+    await fireEvent.click(screen.getByLabelText("Clear Slide / Foreground"));
+    await fireEvent.click(screen.getByText("Clear All"));
+    await fireEvent.click(screen.getByLabelText("Toggle Video Input"));
+    await fireEvent.click(screen.getByText("Layers"));
+    expect(screen.queryByTestId("layer-manager")).toBeNull();
+    await fireEvent.click(screen.getByText("Layers"));
+    expect(screen.getByTestId("layer-manager")).toBeTruthy();
     const bgLayerRow = screen.getByText("Media / Background").closest("li")!;
     await fireEvent.drop(bgLayerRow, {
       dataTransfer: {
