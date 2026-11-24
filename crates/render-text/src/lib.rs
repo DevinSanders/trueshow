@@ -8,10 +8,11 @@
 //! content hash so the `wgpu` compositor runs 60 fps transitions and scaling at 0% CPU.
 
 use core_scene::{
-    ActiveMessage, ColorRgba, MediaFitMode, OverlayItem, RectF, Slide, SlideElement,
-    SlideElementKind, StageLayoutConfig, TelestratorPointer, TemplateConfig, TextAlign, TextStyle,
+    ActiveMessage, ChordChartDocument, ChordChartLine, ChordChartSection, ColorRgba, MediaFitMode,
+    OverlayItem, RectF, SheetMusicDocument, SheetMusicPage, Slide, SlideElement, SlideElementKind,
+    StageLayoutConfig, TelestratorPointer, TemplateConfig, TextAlign, TextStyle,
     VIRTUAL_CANVAS_HEIGHT, VIRTUAL_CANVAS_WIDTH, VerticalAlign, apply_template_to_slide_mut,
-    resolve_dynamic_tokens,
+    resolve_dynamic_tokens, transpose_chord_line, transpose_chord_token,
 };
 use cosmic_text::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Style, SwashCache, Weight};
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -259,6 +260,895 @@ impl BroadcastRasterizer {
         self.render_text_box(&mut pixmap, cfg.bounds, ccli_text, &style, 1.0, scale_x, scale_y);
         if pixmap.data().len() == rgba_premul.len() {
             rgba_premul.copy_from_slice(pixmap.data());
+        }
+    }
+
+    /// Renders a dedicated **Musician Chord Chart Stage Display** synchronized to the active slide.
+    /// Unlike vocalist confidence displays (which show 2-4 lyric lines), this shows the **entire active
+    /// section** with aligned monospaced chords + lyrics on the left AND **`chord_lookahead_sections`
+    /// upcoming sections / extra lines** on the right, with live per-display key transposition.
+    #[allow(clippy::too_many_arguments)]
+    pub fn rasterize_musician_chord_chart(
+        &mut self,
+        chart: Option<&ChordChartDocument>,
+        deck: &[Slide],
+        active_slide: Option<&Slide>,
+        song_title: Option<&str>,
+        stage_message: Option<&str>,
+        timer_readout: Option<&str>,
+        layout: &StageLayoutConfig,
+        target_width: u32,
+        target_height: u32,
+    ) -> RasterizedLayer {
+        let w = target_width.max(16);
+        let h = target_height.max(16);
+        let transpose = layout.transpose_semitones.clamp(-6, 6);
+        let lookahead_secs = layout.chord_lookahead_sections.clamp(1, 4) as usize;
+        let max_extra_lines = layout.chord_extra_lines.clamp(4, 24) as usize;
+
+        // Build effective chord chart from imported chart or synthesize from full deck sections.
+        let synthesized;
+        let effective_chart: &ChordChartDocument = if let Some(c) = chart {
+            c
+        } else {
+            let mut sections: Vec<ChordChartSection> = Vec::new();
+            for s in deck {
+                let mut lines = Vec::new();
+                let lyric_lines: Vec<&str> = s.body.lines().collect();
+                for (idx, ln) in lyric_lines.iter().enumerate() {
+                    lines.push(ChordChartLine {
+                        chords: if idx == 0 { s.chords_line.clone() } else { None },
+                        lyrics: (*ln).to_string(),
+                    });
+                }
+                if let Some(existing) = sections
+                    .iter_mut()
+                    .find(|sec| sec.group.eq_ignore_ascii_case(&s.group))
+                {
+                    existing.lines.extend(lines);
+                } else {
+                    sections.push(ChordChartSection {
+                        group: s.group.clone(),
+                        lines,
+                    });
+                }
+            }
+            synthesized = ChordChartDocument {
+                title: song_title.unwrap_or("Live Worship Chart").to_string(),
+                key_signature: None,
+                tempo_bpm: None,
+                time_signature: None,
+                sections,
+            };
+            &synthesized
+        };
+
+        let active_group = active_slide
+            .map(|s| s.group.as_str())
+            .unwrap_or_else(|| {
+                effective_chart
+                    .sections
+                    .first()
+                    .map(|s| s.group.as_str())
+                    .unwrap_or("Verse 1")
+            });
+
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"musician-chart-v1");
+        hasher.update(&w.to_le_bytes());
+        hasher.update(&h.to_le_bytes());
+        hasher.update(effective_chart.title.as_bytes());
+        hasher.update(active_group.as_bytes());
+        hasher.update(&[transpose as u8, lookahead_secs as u8, max_extra_lines as u8]);
+        hasher.update(&(effective_chart.sections.len() as u32).to_le_bytes());
+        for sec in &effective_chart.sections {
+            hasher.update(sec.group.as_bytes());
+            for ln in &sec.lines {
+                if let Some(c) = &ln.chords {
+                    hasher.update(c.as_bytes());
+                }
+                hasher.update(ln.lyrics.as_bytes());
+            }
+        }
+        if let Some(m) = stage_message {
+            hasher.update(m.as_bytes());
+        }
+        if let Some(t) = timer_readout {
+            hasher.update(t.as_bytes());
+        }
+        let key = *hasher.finalize().as_bytes();
+        if let Some(hit) = self.cache.get(&key) {
+            return hit.clone();
+        }
+
+        let mut pixmap =
+            Pixmap::new(w, h).unwrap_or_else(|| Pixmap::new(16, 16).expect("fallback pixmap"));
+        let scale_x = w as f32 / VIRTUAL_CANVAS_WIDTH;
+        let scale_y = h as f32 / VIRTUAL_CANVAS_HEIGHT;
+
+        // Solid stage-dark musician backdrop
+        Self::draw_rounded_rect(
+            &mut pixmap,
+            0.0,
+            0.0,
+            w as f32,
+            h as f32,
+            0.0,
+            ColorRgba::rgba(0.03, 0.05, 0.09, 1.0),
+            None,
+        );
+
+        // Top header bar (Title, Key + Transpose, BPM/Time, Timer)
+        Self::draw_rounded_rect(
+            &mut pixmap,
+            24.0 * scale_x,
+            18.0 * scale_y,
+            1872.0 * scale_x,
+            88.0 * scale_y,
+            12.0 * scale_x.min(scale_y),
+            ColorRgba::rgba(0.08, 0.12, 0.20, 0.96),
+            Some((ColorRgba::rgba(0.22, 0.34, 0.54, 0.7), 1.5)),
+        );
+
+        let key_display = effective_chart
+            .key_signature
+            .as_deref()
+            .map(|k| {
+                let tk = transpose_chord_token(k.trim(), transpose);
+                if transpose != 0 {
+                    format!("KEY {tk} ({transpose:+})")
+                } else {
+                    format!("KEY {tk}")
+                }
+            })
+            .unwrap_or_else(|| {
+                if transpose != 0 {
+                    format!("TRANSPOSE {transpose:+}")
+                } else {
+                    "CHORD CHART".to_string()
+                }
+            });
+        let tempo_str = effective_chart
+            .tempo_bpm
+            .map(|b| format!(" · {:.0} BPM", b))
+            .unwrap_or_default();
+        let time_str = effective_chart
+            .time_signature
+            .as_deref()
+            .map(|t| format!(" · {t}"))
+            .unwrap_or_default();
+        let header_title = format!("{}   |   {}{}{}", effective_chart.title, key_display, tempo_str, time_str);
+
+        let head_style = TextStyle {
+            font_size: 34.0,
+            bold: true,
+            color: ColorRgba::WHITE,
+            stroke_width: 0.0,
+            shadow_color: ColorRgba::TRANSPARENT,
+            h_align: TextAlign::Left,
+            v_align: VerticalAlign::Middle,
+            ..TextStyle::default()
+        };
+        self.render_text_box(
+            &mut pixmap,
+            RectF::new(48.0, 22.0, 1420.0, 80.0),
+            &header_title,
+            &head_style,
+            1.0,
+            scale_x,
+            scale_y,
+        );
+
+        if layout.show_timer
+            && let Some(timer) = timer_readout
+        {
+            let t_style = TextStyle {
+                font_size: 44.0,
+                bold: true,
+                color: ColorRgba::rgb(0.28, 0.94, 0.58),
+                stroke_width: 0.0,
+                shadow_color: ColorRgba::TRANSPARENT,
+                h_align: TextAlign::Right,
+                v_align: VerticalAlign::Middle,
+                ..TextStyle::default()
+            };
+            self.render_text_box(
+                &mut pixmap,
+                RectF::new(1500.0, 22.0, 370.0, 80.0),
+                timer,
+                &t_style,
+                1.0,
+                scale_x,
+                scale_y,
+            );
+        }
+
+        // Locate active section index inside chart
+        let active_sec_idx = effective_chart
+            .sections
+            .iter()
+            .position(|s| {
+                let a = s.group.to_ascii_lowercase();
+                let b = active_group.to_ascii_lowercase();
+                a == b || a.starts_with(&b) || b.starts_with(&a)
+            })
+            .unwrap_or(0);
+
+        // Roadmap strip (shows song flow with active section highlighted)
+        let roadmap_text = effective_chart
+            .sections
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                if i == active_sec_idx {
+                    format!("▶ [{}]", s.group.to_uppercase())
+                } else {
+                    s.group.clone()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("   ·   ");
+        let roadmap_style = TextStyle {
+            font_size: 24.0,
+            bold: true,
+            color: ColorRgba::rgb(0.56, 0.80, 1.0),
+            stroke_width: 0.0,
+            shadow_color: ColorRgba::TRANSPARENT,
+            h_align: TextAlign::Left,
+            v_align: VerticalAlign::Middle,
+            ..TextStyle::default()
+        };
+        self.render_text_box(
+            &mut pixmap,
+            RectF::new(40.0, 114.0, 1840.0, 44.0),
+            &roadmap_text,
+            &roadmap_style,
+            1.0,
+            scale_x,
+            scale_y,
+        );
+
+        let body_bottom = if layout.show_stage_message && stage_message.is_some_and(|m| !m.trim().is_empty()) {
+            945.0
+        } else {
+            1050.0
+        };
+        let body_h = body_bottom - 168.0;
+
+        // Left column: ACTIVE SECTION (full multi-line chords + lyrics)
+        Self::draw_rounded_rect(
+            &mut pixmap,
+            24.0 * scale_x,
+            168.0 * scale_y,
+            980.0 * scale_x,
+            body_h * scale_y,
+            14.0 * scale_x.min(scale_y),
+            ColorRgba::rgba(0.07, 0.11, 0.20, 0.96),
+            Some((ColorRgba::rgba(0.24, 0.65, 1.0, 0.92), 3.0)),
+        );
+
+        if let Some(sec) = effective_chart.sections.get(active_sec_idx) {
+            self.render_chord_section_block(
+                &mut pixmap,
+                sec,
+                transpose,
+                true,
+                RectF::new(44.0, 184.0, 940.0, body_h - 32.0),
+                12,
+                scale_x,
+                scale_y,
+            );
+        }
+
+        // Right column: UPCOMING SECTIONS / EXTRA LOOKAHEAD LINES
+        Self::draw_rounded_rect(
+            &mut pixmap,
+            1024.0 * scale_x,
+            168.0 * scale_y,
+            872.0 * scale_x,
+            body_h * scale_y,
+            14.0 * scale_x.min(scale_y),
+            ColorRgba::rgba(0.05, 0.08, 0.14, 0.92),
+            Some((ColorRgba::rgba(0.22, 0.30, 0.44, 0.7), 1.5)),
+        );
+
+        let mut remaining_lines = max_extra_lines;
+        let mut cursor_y = 184.0f32;
+        for offset in 1..=lookahead_secs {
+            if remaining_lines == 0 || cursor_y >= body_bottom - 60.0 {
+                break;
+            }
+            let Some(next_sec) = effective_chart.sections.get(active_sec_idx + offset) else {
+                break;
+            };
+            let take_lines = next_sec.lines.len().min(remaining_lines).max(1);
+            let slot_h = (56.0 + take_lines as f32 * 76.0).min(body_bottom - cursor_y - 14.0);
+            self.render_chord_section_block(
+                &mut pixmap,
+                next_sec,
+                transpose,
+                false,
+                RectF::new(1044.0, cursor_y, 832.0, slot_h),
+                take_lines,
+                scale_x,
+                scale_y,
+            );
+            remaining_lines = remaining_lines.saturating_sub(take_lines);
+            cursor_y += slot_h + 18.0;
+        }
+
+        // Optional Stage Message Banner
+        if layout.show_stage_message
+            && let Some(msg) = stage_message
+            && !msg.trim().is_empty()
+        {
+            let msg_style = TextStyle {
+                font_size: 40.0,
+                color: ColorRgba::WHITE,
+                backdrop_color: ColorRgba::rgba(0.84, 0.16, 0.16, 0.95),
+                backdrop_radius: 12.0,
+                backdrop_padding: 14.0,
+                stroke_width: 0.0,
+                shadow_color: ColorRgba::TRANSPARENT,
+                ..TextStyle::default()
+            };
+            self.render_text_box(
+                &mut pixmap,
+                RectF::new(24.0, 962.0, 1872.0, 96.0),
+                msg,
+                &msg_style,
+                1.0,
+                scale_x,
+                scale_y,
+            );
+        }
+
+        let layer = RasterizedLayer {
+            width: pixmap.width(),
+            height: pixmap.height(),
+            content_hash: key,
+            rgba_premul: pixmap.take(),
+        };
+        self.insert_cache(key, layer.clone());
+        layer
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_chord_section_block(
+        &mut self,
+        pixmap: &mut Pixmap,
+        section: &ChordChartSection,
+        transpose: i8,
+        is_active: bool,
+        bounds: RectF,
+        max_lines: usize,
+        scale_x: f32,
+        scale_y: f32,
+    ) {
+        let tag_label = if is_active {
+            format!("NOW: {}", section.group.to_uppercase())
+        } else {
+            format!("NEXT: {}", section.group.to_uppercase())
+        };
+        let tag_style = TextStyle {
+            font_size: if is_active { 32.0 } else { 26.0 },
+            bold: true,
+            color: if is_active {
+                ColorRgba::rgb(0.38, 0.85, 1.0)
+            } else {
+                ColorRgba::rgb(0.68, 0.78, 0.90)
+            },
+            stroke_width: 0.0,
+            shadow_color: ColorRgba::TRANSPARENT,
+            h_align: TextAlign::Left,
+            v_align: VerticalAlign::Top,
+            ..TextStyle::default()
+        };
+        self.render_text_box(
+            pixmap,
+            RectF::new(bounds.x, bounds.y, bounds.width, 46.0),
+            &tag_label,
+            &tag_style,
+            1.0,
+            scale_x,
+            scale_y,
+        );
+
+        let mut y = bounds.y + 52.0;
+        let max_y = bounds.y + bounds.height;
+        let chord_size = if is_active { 32.0 } else { 25.0 };
+        let lyric_size = if is_active { 34.0 } else { 26.0 };
+        let chord_h = if is_active { 38.0 } else { 30.0 };
+        let lyric_h = if is_active { 44.0 } else { 34.0 };
+
+        for line in section.lines.iter().take(max_lines) {
+            if y + chord_h > max_y {
+                break;
+            }
+            if let Some(ref chords) = line.chords {
+                let transposed = transpose_chord_line(chords, transpose);
+                let c_style = TextStyle {
+                    font_family: "monospace".to_string(),
+                    font_size: chord_size,
+                    bold: true,
+                    color: if is_active {
+                        ColorRgba::rgb(0.99, 0.82, 0.28)
+                    } else {
+                        ColorRgba::rgb(0.90, 0.74, 0.34)
+                    },
+                    stroke_width: 0.0,
+                    shadow_color: ColorRgba::TRANSPARENT,
+                    h_align: TextAlign::Left,
+                    v_align: VerticalAlign::Top,
+                    ..TextStyle::default()
+                };
+                self.render_text_box(
+                    pixmap,
+                    RectF::new(bounds.x, y, bounds.width, chord_h),
+                    &transposed,
+                    &c_style,
+                    1.0,
+                    scale_x,
+                    scale_y,
+                );
+                y += chord_h;
+            }
+            if !line.lyrics.trim().is_empty() && y + lyric_h <= max_y {
+                let l_style = TextStyle {
+                    font_family: "monospace".to_string(),
+                    font_size: lyric_size,
+                    bold: is_active,
+                    color: if is_active {
+                        ColorRgba::WHITE
+                    } else {
+                        ColorRgba::rgb(0.78, 0.84, 0.92)
+                    },
+                    stroke_width: 0.0,
+                    shadow_color: ColorRgba::TRANSPARENT,
+                    h_align: TextAlign::Left,
+                    v_align: VerticalAlign::Top,
+                    ..TextStyle::default()
+                };
+                self.render_text_box(
+                    pixmap,
+                    RectF::new(bounds.x, y, bounds.width, lyric_h),
+                    &line.lyrics,
+                    &l_style,
+                    1.0,
+                    scale_x,
+                    scale_y,
+                );
+                y += lyric_h + 10.0;
+            } else {
+                y += 10.0;
+            }
+        }
+    }
+
+    /// Renders a dedicated **Musician Sheet Music Stage Display** showing full-clef / full-page
+    /// scores (1 full page or 2-page side-by-side spread) automatically turned in sync with the
+    /// active presentation slide.
+    #[allow(clippy::too_many_arguments)]
+    pub fn rasterize_musician_sheet_music(
+        &mut self,
+        sheet: Option<&SheetMusicDocument>,
+        active_slide: Option<&Slide>,
+        active_slide_index: usize,
+        total_slides: usize,
+        stage_message: Option<&str>,
+        timer_readout: Option<&str>,
+        layout: &StageLayoutConfig,
+        target_width: u32,
+        target_height: u32,
+    ) -> RasterizedLayer {
+        let w = target_width.max(16);
+        let h = target_height.max(16);
+        let active_page_num = sheet
+            .map(|doc| doc.page_for_slide(active_slide, active_slide_index, total_slides))
+            .unwrap_or(1);
+        let total_pages = sheet.map(|d| d.pages.len().max(1)).unwrap_or(1);
+        let show_two = layout.sheet_two_page_spread && total_pages >= 2;
+
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"musician-sheet-v1");
+        hasher.update(&w.to_le_bytes());
+        hasher.update(&h.to_le_bytes());
+        hasher.update(&active_page_num.to_le_bytes());
+        hasher.update(&[u8::from(show_two), u8::from(layout.sheet_dark_invert)]);
+        if let Some(doc) = sheet {
+            hasher.update(doc.title.as_bytes());
+            if let Some(p) = doc.pages.get((active_page_num as usize).saturating_sub(1)) {
+                hasher.update(p.label.as_bytes());
+                if let Some(ref img) = p.image_path {
+                    hasher.update(img.as_bytes());
+                }
+            }
+            if show_two
+                && let Some(p2) = doc.pages.get(active_page_num as usize)
+            {
+                hasher.update(p2.label.as_bytes());
+                if let Some(ref img) = p2.image_path {
+                    hasher.update(img.as_bytes());
+                }
+            }
+        }
+        if let Some(s) = active_slide {
+            hasher.update(s.group.as_bytes());
+        }
+        if let Some(m) = stage_message {
+            hasher.update(m.as_bytes());
+        }
+        if let Some(t) = timer_readout {
+            hasher.update(t.as_bytes());
+        }
+        let key = *hasher.finalize().as_bytes();
+        if let Some(hit) = self.cache.get(&key) {
+            return hit.clone();
+        }
+
+        let mut pixmap =
+            Pixmap::new(w, h).unwrap_or_else(|| Pixmap::new(16, 16).expect("fallback pixmap"));
+        let scale_x = w as f32 / VIRTUAL_CANVAS_WIDTH;
+        let scale_y = h as f32 / VIRTUAL_CANVAS_HEIGHT;
+
+        // Stage backdrop
+        Self::draw_rounded_rect(
+            &mut pixmap,
+            0.0,
+            0.0,
+            w as f32,
+            h as f32,
+            0.0,
+            ColorRgba::rgba(0.04, 0.06, 0.10, 1.0),
+            None,
+        );
+
+        // Top slim sync header
+        Self::draw_rounded_rect(
+            &mut pixmap,
+            18.0 * scale_x,
+            12.0 * scale_y,
+            1884.0 * scale_x,
+            66.0 * scale_y,
+            10.0 * scale_x.min(scale_y),
+            ColorRgba::rgba(0.09, 0.13, 0.22, 0.96),
+            None,
+        );
+        let doc_title = sheet
+            .map(|d| d.title.as_str())
+            .unwrap_or("No Sheet Music Attached — Import PDF / Score Images");
+        let slide_tag = active_slide
+            .map(|s| format!("SYNC: {}", s.group))
+            .unwrap_or_else(|| "READY".to_string());
+        let page_tag = if show_two && (active_page_num as usize) < total_pages {
+            format!("PAGES {}-{} OF {}", active_page_num, active_page_num + 1, total_pages)
+        } else {
+            format!("PAGE {} OF {}", active_page_num, total_pages)
+        };
+        let header_line = format!("{doc_title}   |   {slide_tag}   |   {page_tag}");
+        let head_style = TextStyle {
+            font_size: 28.0,
+            bold: true,
+            color: ColorRgba::WHITE,
+            stroke_width: 0.0,
+            shadow_color: ColorRgba::TRANSPARENT,
+            h_align: TextAlign::Left,
+            v_align: VerticalAlign::Middle,
+            ..TextStyle::default()
+        };
+        self.render_text_box(
+            &mut pixmap,
+            RectF::new(36.0, 14.0, 1460.0, 62.0),
+            &header_line,
+            &head_style,
+            1.0,
+            scale_x,
+            scale_y,
+        );
+        if layout.show_timer
+            && let Some(timer) = timer_readout
+        {
+            let t_style = TextStyle {
+                font_size: 36.0,
+                bold: true,
+                color: ColorRgba::rgb(0.28, 0.94, 0.58),
+                stroke_width: 0.0,
+                shadow_color: ColorRgba::TRANSPARENT,
+                h_align: TextAlign::Right,
+                v_align: VerticalAlign::Middle,
+                ..TextStyle::default()
+            };
+            self.render_text_box(
+                &mut pixmap,
+                RectF::new(1520.0, 14.0, 360.0, 62.0),
+                timer,
+                &t_style,
+                1.0,
+                scale_x,
+                scale_y,
+            );
+        }
+
+        let page_top = 88.0f32;
+        let page_bottom = if layout.show_stage_message && stage_message.is_some_and(|m| !m.trim().is_empty()) {
+            966.0
+        } else {
+            1064.0
+        };
+        let page_h = page_bottom - page_top;
+
+        let cur_page = sheet
+            .and_then(|d| d.pages.get((active_page_num as usize).saturating_sub(1)));
+        let next_page = if show_two {
+            sheet.and_then(|d| d.pages.get(active_page_num as usize))
+        } else {
+            None
+        };
+
+        if show_two {
+            let left_rect = RectF::new(22.0, page_top, 926.0, page_h);
+            let right_rect = RectF::new(972.0, page_top, 926.0, page_h);
+            self.render_sheet_page_slot(
+                &mut pixmap,
+                cur_page,
+                active_page_num,
+                true,
+                layout.sheet_dark_invert,
+                left_rect,
+                scale_x,
+                scale_y,
+            );
+            self.render_sheet_page_slot(
+                &mut pixmap,
+                next_page,
+                active_page_num + 1,
+                false,
+                layout.sheet_dark_invert,
+                right_rect,
+                scale_x,
+                scale_y,
+            );
+        } else {
+            // Single full-clef page centered at optimal portrait/landscape proportion
+            let single_rect = RectF::new(260.0, page_top, 1400.0, page_h);
+            self.render_sheet_page_slot(
+                &mut pixmap,
+                cur_page,
+                active_page_num,
+                true,
+                layout.sheet_dark_invert,
+                single_rect,
+                scale_x,
+                scale_y,
+            );
+        }
+
+        if layout.show_stage_message
+            && let Some(msg) = stage_message
+            && !msg.trim().is_empty()
+        {
+            let msg_style = TextStyle {
+                font_size: 36.0,
+                color: ColorRgba::WHITE,
+                backdrop_color: ColorRgba::rgba(0.84, 0.16, 0.16, 0.95),
+                backdrop_radius: 10.0,
+                backdrop_padding: 12.0,
+                stroke_width: 0.0,
+                shadow_color: ColorRgba::TRANSPARENT,
+                ..TextStyle::default()
+            };
+            self.render_text_box(
+                &mut pixmap,
+                RectF::new(18.0, 976.0, 1884.0, 88.0),
+                msg,
+                &msg_style,
+                1.0,
+                scale_x,
+                scale_y,
+            );
+        }
+
+        let layer = RasterizedLayer {
+            width: pixmap.width(),
+            height: pixmap.height(),
+            content_hash: key,
+            rgba_premul: pixmap.take(),
+        };
+        self.insert_cache(key, layer.clone());
+        layer
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_sheet_page_slot(
+        &mut self,
+        pixmap: &mut Pixmap,
+        page: Option<&SheetMusicPage>,
+        page_num: u32,
+        is_current: bool,
+        dark_invert: bool,
+        rect: RectF,
+        scale_x: f32,
+        scale_y: f32,
+    ) {
+        let px = (rect.x * scale_x).round().max(0.0) as u32;
+        let py = (rect.y * scale_y).round().max(0.0) as u32;
+        let pw = (rect.width * scale_x).round().max(16.0) as u32;
+        let ph = (rect.height * scale_y).round().max(16.0) as u32;
+
+        let paper_bg = if dark_invert {
+            ColorRgba::rgba(0.08, 0.10, 0.14, 1.0)
+        } else {
+            ColorRgba::rgba(0.97, 0.97, 0.95, 1.0)
+        };
+        let border_col = if is_current {
+            ColorRgba::rgba(0.24, 0.65, 1.0, 0.96)
+        } else {
+            ColorRgba::rgba(0.35, 0.42, 0.55, 0.65)
+        };
+
+        Self::draw_rounded_rect(
+            pixmap,
+            rect.x * scale_x,
+            rect.y * scale_y,
+            rect.width * scale_x,
+            rect.height * scale_y,
+            10.0 * scale_x.min(scale_y),
+            paper_bg,
+            Some((border_col, if is_current { 3.0 } else { 1.5 })),
+        );
+
+        // If a real local PNG/BMP sheet music page image exists, blit it cleanly with Contain fit!
+        if let Some(p) = page
+            && let Some(ref img_path) = p.image_path
+            && let Some(mut rgba) =
+                decode_local_image_premul_rgba(std::path::Path::new(img_path), pw, ph, MediaFitMode::Contain)
+        {
+            if dark_invert {
+                for chunk in rgba.as_chunks_mut::<4>().0 {
+                    let a = chunk[3];
+                    if a > 0 {
+                        chunk[0] = a.saturating_sub(chunk[0]);
+                        chunk[1] = a.saturating_sub(chunk[1]);
+                        chunk[2] = a.saturating_sub(chunk[2]);
+                    }
+                }
+            }
+            let dst_w = pixmap.width() as usize;
+            let dst_h = pixmap.height() as usize;
+            let dst = pixmap.data_mut();
+            for row in 0..ph as usize {
+                let ty = py as usize + row;
+                if ty >= dst_h {
+                    break;
+                }
+                for col in 0..pw as usize {
+                    let tx = px as usize + col;
+                    if tx >= dst_w {
+                        break;
+                    }
+                    let si = (row * (pw as usize) + col) * 4;
+                    let di = (ty * dst_w + tx) * 4;
+                    if rgba[si + 3] > 0 {
+                        dst[di..di + 4].copy_from_slice(&rgba[si..si + 4]);
+                    }
+                }
+            }
+            return;
+        }
+
+        // Vector grand-staff fallback (shows full treble + bass clef systems & section markers!)
+        let ink = if dark_invert {
+            ColorRgba::rgba(0.88, 0.92, 0.98, 0.92)
+        } else {
+            ColorRgba::rgba(0.10, 0.13, 0.19, 0.94)
+        };
+        let staff_ink = if dark_invert {
+            ColorRgba::rgba(0.45, 0.55, 0.70, 0.65)
+        } else {
+            ColorRgba::rgba(0.25, 0.30, 0.40, 0.55)
+        };
+
+        let label = page
+            .map(|p| {
+                if is_current {
+                    format!("▶ {} (FULL GRAND STAFF)", p.label)
+                } else {
+                    format!("NEXT: {}", p.label)
+                }
+            })
+            .unwrap_or_else(|| format!("Page {page_num} — End of Score"));
+        let lbl_style = TextStyle {
+            font_size: 26.0,
+            bold: true,
+            color: ink,
+            stroke_width: 0.0,
+            shadow_color: ColorRgba::TRANSPARENT,
+            h_align: TextAlign::Left,
+            v_align: VerticalAlign::Top,
+            ..TextStyle::default()
+        };
+        self.render_text_box(
+            pixmap,
+            RectF::new(rect.x + 28.0, rect.y + 22.0, rect.width - 56.0, 44.0),
+            &label,
+            &lbl_style,
+            1.0,
+            scale_x,
+            scale_y,
+        );
+
+        // Draw 3 full grand-staff systems (Treble 5 lines + Bass 5 lines + measure barlines)
+        for sys in 0..3 {
+            let sys_y = rect.y + 110.0 + (sys as f32) * 280.0;
+            if sys_y + 190.0 > rect.y + rect.height {
+                break;
+            }
+            // Treble staff (5 lines)
+            for l in 0..5 {
+                let ly = sys_y + (l as f32) * 14.0;
+                Self::draw_rounded_rect(
+                    pixmap,
+                    (rect.x + 42.0) * scale_x,
+                    ly * scale_y,
+                    (rect.width - 84.0) * scale_x,
+                    (2.0 * scale_y).max(1.0),
+                    0.0,
+                    staff_ink,
+                    None,
+                );
+            }
+            // Bass staff (5 lines)
+            let bass_y = sys_y + 104.0;
+            for l in 0..5 {
+                let ly = bass_y + (l as f32) * 14.0;
+                Self::draw_rounded_rect(
+                    pixmap,
+                    (rect.x + 42.0) * scale_x,
+                    ly * scale_y,
+                    (rect.width - 84.0) * scale_x,
+                    (2.0 * scale_y).max(1.0),
+                    0.0,
+                    staff_ink,
+                    None,
+                );
+            }
+            // Left grand-staff brace & 4 measure barlines
+            for bar in 0..=4 {
+                let bx = rect.x + 42.0 + ((rect.width - 84.0) * (bar as f32) / 4.0);
+                Self::draw_rounded_rect(
+                    pixmap,
+                    bx * scale_x,
+                    sys_y * scale_y,
+                    (if bar == 0 { 4.5 } else { 2.0 } * scale_x).max(1.5),
+                    162.0 * scale_y,
+                    0.0,
+                    ink,
+                    None,
+                );
+            }
+            if let Some(p) = page
+                && let Some(hint) = p.staff_lines_hint.get(sys * 2)
+            {
+                let h_style = TextStyle {
+                    font_size: 22.0,
+                    bold: true,
+                    color: ink,
+                    stroke_width: 0.0,
+                    shadow_color: ColorRgba::TRANSPARENT,
+                    h_align: TextAlign::Left,
+                    v_align: VerticalAlign::Top,
+                    ..TextStyle::default()
+                };
+                self.render_text_box(
+                    pixmap,
+                    RectF::new(rect.x + 56.0, sys_y - 34.0, rect.width - 112.0, 32.0),
+                    hint,
+                    &h_style,
+                    1.0,
+                    scale_x,
+                    scale_y,
+                );
+            }
         }
     }
 
@@ -1356,5 +2246,123 @@ mod tests {
             "10:00",
         );
         assert!(layer.rgba_premul.iter().any(|&b| b > 0));
+    }
+
+    #[test]
+    fn rasterizes_musician_chord_chart_and_sheet_music_stage_displays() {
+        let mut r = BroadcastRasterizer::new(16);
+        let deck = core_scene::demo_deck();
+        let chart = ChordChartDocument {
+            title: "Amazing Grace".into(),
+            key_signature: Some("G".into()),
+            tempo_bpm: Some(74.0),
+            time_signature: Some("4/4".into()),
+            sections: vec![
+                ChordChartSection {
+                    group: "Verse 1".into(),
+                    lines: vec![
+                        ChordChartLine {
+                            chords: Some("G      C       G".into()),
+                            lyrics: "Amazing grace how sweet the sound".into(),
+                        },
+                        ChordChartLine {
+                            chords: Some("Em     D       G".into()),
+                            lyrics: "That saved a wretch like me".into(),
+                        },
+                    ],
+                },
+                ChordChartSection {
+                    group: "Chorus".into(),
+                    lines: vec![ChordChartLine {
+                        chords: Some("C      G/B     D".into()),
+                        lyrics: "My chains are gone".into(),
+                    }],
+                },
+            ],
+        };
+        let mut cc_layout = StageLayoutConfig::musician_chord_chart();
+        cc_layout.transpose_semitones = 2;
+        let cc1 = r.rasterize_musician_chord_chart(
+            Some(&chart),
+            &deck,
+            deck.get(1),
+            Some("Amazing Grace"),
+            Some("Watch dynamics"),
+            Some("04:12"),
+            &cc_layout,
+            320,
+            180,
+        );
+        assert_eq!(cc1.width, 320);
+        assert!(cc1.rgba_premul.iter().any(|&b| b > 0));
+        // Cache hit & synthesized fallback when chart is None
+        let cc2 = r.rasterize_musician_chord_chart(
+            None,
+            &deck,
+            deck.first(),
+            Some("Demo"),
+            None,
+            None,
+            &cc_layout,
+            320,
+            180,
+        );
+        assert!(cc2.rgba_premul.iter().any(|&b| b > 0));
+
+        // Sheet music 2-page spread with real PNG page + vector page 2, plus dark-inverted single page
+        let mut pm = Pixmap::new(32, 32).expect("pm");
+        pm.fill(Color::from_rgba8(240, 240, 240, 255));
+        let tmp_png = std::env::temp_dir().join(format!("op-sheet-p1-{}.png", std::process::id()));
+        pm.save_png(&tmp_png).expect("save png");
+
+        let sheet = SheetMusicDocument {
+            title: "Amazing Grace Score".into(),
+            source_path: None,
+            pages: vec![
+                SheetMusicPage {
+                    page_number: 1,
+                    label: "Page 1".into(),
+                    image_path: Some(tmp_png.to_string_lossy().to_string()),
+                    staff_lines_hint: vec!["Verse 1".into()],
+                },
+                SheetMusicPage {
+                    page_number: 2,
+                    label: "Page 2".into(),
+                    image_path: None,
+                    staff_lines_hint: vec!["Chorus".into(), "Bridge".into()],
+                },
+            ],
+            group_to_page: BTreeMap::from([("verse 1".into(), 1), ("chorus".into(), 2)]),
+            slide_to_page: BTreeMap::new(),
+        };
+        let mut sm_layout = StageLayoutConfig::musician_sheet_music();
+        let sm_spread = r.rasterize_musician_sheet_music(
+            Some(&sheet),
+            deck.get(1),
+            1,
+            deck.len(),
+            Some("Page turn ready"),
+            Some("04:12"),
+            &sm_layout,
+            320,
+            180,
+        );
+        assert!(sm_spread.rgba_premul.iter().any(|&b| b > 0));
+
+        sm_layout.sheet_two_page_spread = false;
+        sm_layout.sheet_dark_invert = true;
+        let sm_single = r.rasterize_musician_sheet_music(
+            Some(&sheet),
+            deck.get(1),
+            1,
+            deck.len(),
+            None,
+            None,
+            &sm_layout,
+            320,
+            180,
+        );
+        assert!(sm_single.rgba_premul.iter().any(|&b| b > 0));
+        let _ = std::fs::remove_file(&tmp_png);
     }
 }

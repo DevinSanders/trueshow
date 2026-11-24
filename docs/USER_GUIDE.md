@@ -406,11 +406,19 @@ Open via **Screens → Stage Layout Designer** (or right-click any Stage output 
 
 Customize what your worship team and speakers see on the back-wall confidence monitor:
 
-1. **One-Click Stage Presets:**
-   - **`Band w/ Chords`** — Current slide lyrics, chord chart strip above, Next Slide preview below, live countdown timer, and urgent Stage Message banner.
+1. **One-Click Stage Presets (Vocalists vs. Musicians):**
+   - **`Band w/ Chords`** — Vocalist/Band confidence view with Current Slide, compact chords above, Next Slide preview, Countdown Timer, and Stage Message.
    - **`Pastor Big Clock`** — Giant easy-to-read countdown clock at the top, speaker notes/current slide in the middle, next slide below, chords hidden.
    - **`Minimal Lyrics`** — Maximum-size current lyrics only for distraction-free vocalists.
-2. **Zone Toggles & Coordinates:** Select your **`Target Stage Display`**, give your layout a **`Layout Name`**, toggle any zone (`Current Slide`, `Next Slide`, `Chords Band`, `Countdown Timer`, `Urgent Message`), fine-tune coordinates (`Current Y`, `Current H`, `Timer X`, `Timer W`) while watching the live 16:9 visual preview update in real time, and click **`Apply Stage Layout Live`**.
+   - **`Musician Chord Chart`** — Dedicated musician display showing the **entire active section** (never truncated to vocalist slide lines!) with aligned monospaced chords + lyrics on the left AND **1–4 upcoming lookahead sections / extra context lines** on the right, plus live **per-display Key Transposition (`-6` to `+6` semitones)**!
+   - **`Musician Sheet Music`** — Dedicated musician display showing **full grand-staff / full-clef sheet music pages** (1 full page or **2-Page Side-by-Side Spread** with optional **Dark Stage Paper Invert**) that automatically turn pages in sync with your presentation slides!
+2. **Running a Separate Synced Musician Stage Display:**
+   - Click **`+ Separate Musician Screen`** right in the Stage Designer header to create an independent second Stage output (separate from your Vocalist Stage Display) that stays 100% locked in sync with every live slide change.
+   - Band members on iPads/tablets can also open **`http://<LAN-IP>:8765/musician`** (listed in **Screens → Broadcast I/O & LAN Remote**) for live WebSocket-synced Chord Charts (with independent local Transpose!) and Full-Clef Sheet Music page turns.
+3. **Importing Chord Charts & Sheet Music (Local PDF / ChordPro / Images & Planning Center):**
+   - In **Tools → Import & Planning Center**, use **Section 1B** to import local **Chord Chart PDFs / ChordPro (`.cho`/`.crd`)** or **Sheet Music PDFs / Page Image Folders** directly onto the active song (persisted in SQLite).
+   - Planning Center PDF attachments automatically classify into `LYRICPDF`, `CHORDCHARTPDF`, and `SHEETMUSICPDF` — and any PDF attachment lets you click **`Lyrics`**, **`Chord Chart`**, or **`Sheet Music`** directly.
+4. **Zone Toggles & Coordinates:** Select your **`Target Stage Display`**, pick the **`Display Mode`** (`Confidence`, `ChordChart`, or `SheetMusic`), configure lookahead / transpose / 2-page spread or confidence zones, and click **`Apply Stage Layout Live`**.
 
 ---
 

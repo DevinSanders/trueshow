@@ -5,10 +5,15 @@
 //! and optional chord-chart lines, and builds editable [`Slide`]s + [`Arrangement`]s.
 
 use core_library::slide_from_text;
-use core_scene::{Arrangement, Slide};
+use core_scene::{
+    Arrangement, ChordChartDocument, ChordChartLine, ChordChartSection, SheetMusicDocument,
+    SheetMusicPage, Slide,
+};
 use flate2::read::{DeflateDecoder, ZlibDecoder};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::io::Read;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -26,8 +31,14 @@ pub struct ParsedLyricSheet {
     pub copyright: String,
     pub ccli_number: Option<String>,
     pub key_signature: Option<String>,
+    #[serde(default)]
+    pub tempo_bpm: Option<f32>,
+    #[serde(default)]
+    pub time_signature: Option<String>,
     pub slides: Vec<Slide>,
     pub arrangements: Vec<Arrangement>,
+    #[serde(default)]
+    pub chord_chart: Option<ChordChartDocument>,
     pub raw_text_preview: String,
 }
 
@@ -461,8 +472,21 @@ fn is_chord_only_line(line: &str) -> bool {
     if tokens.is_empty() {
         return false;
     }
-    let chord_like = tokens.iter().filter(|tok| is_chord_token(tok)).count();
-    chord_like == tokens.len()
+    let mut chord_count = 0usize;
+    for tok in &tokens {
+        if is_chord_token(tok) {
+            chord_count += 1;
+            continue;
+        }
+        // Allow standalone measure barlines (`|`, `||`, `|:`, `:|`, `/`, `-`) and repeat markers (`2x`, `x2`).
+        let bar_or_repeat = tok
+            .chars()
+            .all(|c| matches!(c, '|' | ':' | '/' | '-' | '(' | ')' | 'x' | 'X' | '0'..='9'));
+        if !bar_or_repeat {
+            return false;
+        }
+    }
+    chord_count > 0
 }
 
 fn is_chord_token(tok: &str) -> bool {
@@ -510,8 +534,9 @@ fn extract_ccli_number(line: &str) -> Option<String> {
     }
 }
 
-/// Parses extracted lyric-sheet text (SongSelect / Planning Center format) into structured
-/// metadata, clean lyric slides, optional captured chords, and a default non-destructive [`Arrangement`].
+/// Parses extracted lyric-sheet or chord-chart text (SongSelect / Planning Center format) into
+/// structured metadata, clean vocalist lyric slides, full musician [`ChordChartDocument`] with
+/// aligned chord-over-lyric lines & instrumental sections, and a default non-destructive [`Arrangement`].
 pub fn parse_lyric_sheet_text(
     raw_text: &str,
     fallback_title: Option<&str>,
@@ -521,25 +546,62 @@ pub fn parse_lyric_sheet_text(
     let mut copyright = String::new();
     let mut ccli_number: Option<String> = None;
     let mut key_signature: Option<String> = None;
+    let mut tempo_bpm: Option<f32> = None;
+    let mut time_signature: Option<String> = None;
 
     let mut current_group: Option<String> = None;
     let mut current_lines: Vec<String> = Vec::new();
     let mut current_chords: Vec<String> = Vec::new();
+    let mut current_chart_lines: Vec<ChordChartLine> = Vec::new();
+    let mut pending_chord_line: Option<String> = None;
+    let mut has_any_chords = false;
+
     let mut sections: Vec<(String, Vec<String>, Option<String>)> = Vec::new();
+    let mut chart_sections: Vec<ChordChartSection> = Vec::new();
+
+    let flush_section = |group: &str,
+                         lines: &mut Vec<String>,
+                         chords: &mut Vec<String>,
+                         chart_lines: &mut Vec<ChordChartLine>,
+                         pending_chord: &mut Option<String>,
+                         sections: &mut Vec<(String, Vec<String>, Option<String>)>,
+                         chart_sections: &mut Vec<ChordChartSection>| {
+        if let Some(dangling_chord) = pending_chord.take() {
+            chart_lines.push(ChordChartLine {
+                chords: Some(dangling_chord),
+                lyrics: String::new(),
+            });
+        }
+        if !lines.is_empty() {
+            let chords_opt = if chords.is_empty() {
+                None
+            } else {
+                Some(chords.join(" / "))
+            };
+            sections.push((group.to_string(), std::mem::take(lines), chords_opt));
+        }
+        if !chart_lines.is_empty() {
+            chart_sections.push(ChordChartSection {
+                group: group.to_string(),
+                lines: std::mem::take(chart_lines),
+            });
+        }
+        chords.clear();
+    };
 
     for raw in raw_text.lines() {
         let line = raw.trim();
         if line.is_empty() {
-            if let Some(ref g) = current_group
-                && !current_lines.is_empty()
-            {
-                let chords_opt = if current_chords.is_empty() {
-                    None
-                } else {
-                    Some(current_chords.join(" / "))
-                };
-                sections.push((g.clone(), std::mem::take(&mut current_lines), chords_opt));
-                current_chords.clear();
+            if let Some(ref g) = current_group {
+                flush_section(
+                    g,
+                    &mut current_lines,
+                    &mut current_chords,
+                    &mut current_chart_lines,
+                    &mut pending_chord_line,
+                    &mut sections,
+                    &mut chart_sections,
+                );
             }
             continue;
         }
@@ -553,7 +615,10 @@ pub fn parse_lyric_sheet_text(
         if is_ccli_footer_line(line) {
             continue;
         }
-        if line.starts_with('©') || line.to_ascii_lowercase().starts_with("(c)") || line.to_ascii_lowercase().starts_with("copyright") {
+        if line.starts_with('©')
+            || line.to_ascii_lowercase().starts_with("(c)")
+            || line.to_ascii_lowercase().starts_with("copyright")
+        {
             if copyright.is_empty() {
                 copyright = line.to_string();
             }
@@ -586,18 +651,48 @@ pub fn parse_lyric_sheet_text(
             }
             continue;
         }
+        if lower.starts_with("tempo") || lower.starts_with("bpm") {
+            let digits: String = line
+                .chars()
+                .skip_while(|c| !c.is_ascii_digit())
+                .take_while(|c| c.is_ascii_digit() || *c == '.')
+                .collect();
+            if tempo_bpm.is_none()
+                && let Ok(v) = digits.parse::<f32>()
+                && (30.0..=260.0).contains(&v)
+            {
+                tempo_bpm = Some(v);
+            }
+            if lower.contains("time")
+                && let Some(ts) = line.split_whitespace().find(|t| t.contains('/') && t.len() <= 5)
+            {
+                time_signature = Some(ts.to_string());
+            }
+            continue;
+        }
+        if lower.starts_with("time -") || lower.starts_with("time:") {
+            let ts = line
+                .split_once('-')
+                .or_else(|| line.split_once(':'))
+                .map(|(_, r)| r.trim().to_string())
+                .filter(|s| !s.is_empty());
+            if time_signature.is_none() {
+                time_signature = ts;
+            }
+            continue;
+        }
 
         if let Some(sec_name) = detect_section_header(line) {
-            if let Some(ref g) = current_group
-                && !current_lines.is_empty()
-            {
-                let chords_opt = if current_chords.is_empty() {
-                    None
-                } else {
-                    Some(current_chords.join(" / "))
-                };
-                sections.push((g.clone(), std::mem::take(&mut current_lines), chords_opt));
-                current_chords.clear();
+            if let Some(ref g) = current_group {
+                flush_section(
+                    g,
+                    &mut current_lines,
+                    &mut current_chords,
+                    &mut current_chart_lines,
+                    &mut pending_chord_line,
+                    &mut sections,
+                    &mut chart_sections,
+                );
             }
             current_group = Some(sec_name);
             continue;
@@ -609,8 +704,18 @@ pub fn parse_lyric_sheet_text(
             continue;
         }
 
-        // Strip chord-only lines from lyric body while preserving them for stage confidence display.
+        // Capture chord-only lines while preserving relative spacing for musician Chord Charts.
         if is_chord_only_line(line) {
+            has_any_chords = true;
+            if current_group.is_none() {
+                current_group = Some("Intro".to_string());
+            }
+            if let Some(prev_chord) = pending_chord_line.replace(raw.trim_end().to_string()) {
+                current_chart_lines.push(ChordChartLine {
+                    chords: Some(prev_chord),
+                    lyrics: String::new(),
+                });
+            }
             current_chords.push(line.to_string());
             continue;
         }
@@ -618,18 +723,23 @@ pub fn parse_lyric_sheet_text(
         if current_group.is_none() {
             current_group = Some("Verse 1".to_string());
         }
+        current_chart_lines.push(ChordChartLine {
+            chords: pending_chord_line.take(),
+            lyrics: line.to_string(),
+        });
         current_lines.push(line.to_string());
     }
 
-    if let Some(g) = current_group
-        && !current_lines.is_empty()
-    {
-        let chords_opt = if current_chords.is_empty() {
-            None
-        } else {
-            Some(current_chords.join(" / "))
-        };
-        sections.push((g, current_lines, chords_opt));
+    if let Some(ref g) = current_group {
+        flush_section(
+            g,
+            &mut current_lines,
+            &mut current_chords,
+            &mut current_chart_lines,
+            &mut pending_chord_line,
+            &mut sections,
+            &mut chart_sections,
+        );
     }
 
     if title.is_empty() {
@@ -640,7 +750,7 @@ pub fn parse_lyric_sheet_text(
             .to_string();
     }
 
-    if sections.is_empty() {
+    if sections.is_empty() && chart_sections.is_empty() {
         return Err(PdfLyricsError::NoTextExtracted);
     }
 
@@ -655,7 +765,7 @@ pub fn parse_lyric_sheet_text(
         if !seen_groups.insert(key) {
             continue;
         }
-        // Chunk long sections into readable 4-line slides.
+        // Chunk long sections into readable 4-line vocalist slides.
         for (chunk_idx, chunk) in lines.chunks(4).enumerate() {
             let label = if lines.len() > 4 {
                 format!("{title} — {group} ({})", chunk_idx + 1)
@@ -670,6 +780,18 @@ pub fn parse_lyric_sheet_text(
         }
     }
 
+    let chord_chart = if has_any_chords || !chart_sections.is_empty() {
+        Some(ChordChartDocument {
+            title: title.clone(),
+            key_signature: key_signature.clone(),
+            tempo_bpm,
+            time_signature: time_signature.clone(),
+            sections: chart_sections,
+        })
+    } else {
+        None
+    };
+
     let arrangements = vec![Arrangement {
         id: "arr-pdf-default".to_string(),
         name: "Default".to_string(),
@@ -682,13 +804,333 @@ pub fn parse_lyric_sheet_text(
         copyright,
         ccli_number,
         key_signature,
+        tempo_bpm,
+        time_signature,
         slides,
         arrangements,
+        chord_chart,
         raw_text_preview: raw_text.chars().take(600).collect(),
     })
 }
 
-/// Full pipeline: reads raw SongSelect / Planning Center PDF bytes and produces editable slides + CCLI metadata.
+/// Converts a ChordPro file (`{title: ...}`, `{key: G}`, `{tempo: 76}`, `[G]Amazing [C]grace`)
+/// into a full structured musician [`ChordChartDocument`] with aligned chord-over-lyric lines.
+pub fn parse_chordpro_to_chart(input: &str, fallback_title: Option<&str>) -> ChordChartDocument {
+    let mut title = fallback_title
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("Imported Chord Chart")
+        .to_string();
+    let mut key_signature: Option<String> = None;
+    let mut tempo_bpm: Option<f32> = None;
+    let mut time_signature: Option<String> = None;
+
+    let mut sections: Vec<ChordChartSection> = Vec::new();
+    let mut current_group = "Verse 1".to_string();
+    let mut current_lines: Vec<ChordChartLine> = Vec::new();
+
+    for raw in input.lines() {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            if !current_lines.is_empty() {
+                sections.push(ChordChartSection {
+                    group: current_group.clone(),
+                    lines: std::mem::take(&mut current_lines),
+                });
+            }
+            continue;
+        }
+        if trimmed.starts_with('{') && trimmed.ends_with('}') {
+            let inner = &trimmed[1..trimmed.len() - 1];
+            let lower = inner.to_ascii_lowercase();
+            if lower == "soc" || lower == "start_of_chorus" {
+                if !current_lines.is_empty() {
+                    sections.push(ChordChartSection {
+                        group: current_group.clone(),
+                        lines: std::mem::take(&mut current_lines),
+                    });
+                }
+                current_group = "Chorus".to_string();
+                continue;
+            }
+            if lower == "sob" || lower == "start_of_bridge" {
+                if !current_lines.is_empty() {
+                    sections.push(ChordChartSection {
+                        group: current_group.clone(),
+                        lines: std::mem::take(&mut current_lines),
+                    });
+                }
+                current_group = "Bridge".to_string();
+                continue;
+            }
+            if let Some((k, v)) = inner.split_once(':') {
+                let k = k.trim().to_ascii_lowercase();
+                let v = v.trim();
+                match k.as_str() {
+                    "t" | "title" if !v.is_empty() => title = v.to_string(),
+                    "key" if !v.is_empty() => key_signature = Some(v.to_string()),
+                    "tempo" | "bpm" => tempo_bpm = v.parse::<f32>().ok(),
+                    "time" if !v.is_empty() => time_signature = Some(v.to_string()),
+                    "c" | "comment" if !v.is_empty() => {
+                        if let Some(sec) = detect_section_header(v) {
+                            if !current_lines.is_empty() {
+                                sections.push(ChordChartSection {
+                                    group: current_group.clone(),
+                                    lines: std::mem::take(&mut current_lines),
+                                });
+                            }
+                            current_group = sec;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            continue;
+        }
+        if let Some(sec) = detect_section_header(trimmed) {
+            if !current_lines.is_empty() {
+                sections.push(ChordChartSection {
+                    group: current_group.clone(),
+                    lines: std::mem::take(&mut current_lines),
+                });
+            }
+            current_group = sec;
+            continue;
+        }
+
+        // Convert inline `[G]Amazing [C]grace` into aligned chord row + lyric row.
+        let mut chord_row = String::new();
+        let mut lyric_row = String::new();
+        let mut has_chord = false;
+        let mut chars = trimmed.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch == '[' {
+                let mut chord = String::new();
+                for c in chars.by_ref() {
+                    if c == ']' {
+                        break;
+                    }
+                    chord.push(c);
+                }
+                if !chord.is_empty() {
+                    has_chord = true;
+                    while chord_row.len() < lyric_row.len() {
+                        chord_row.push(' ');
+                    }
+                    if !chord_row.is_empty() && !chord_row.ends_with(' ') {
+                        chord_row.push(' ');
+                    }
+                    chord_row.push_str(&chord);
+                }
+            } else {
+                lyric_row.push(ch);
+            }
+        }
+        current_lines.push(ChordChartLine {
+            chords: if has_chord { Some(chord_row) } else { None },
+            lyrics: lyric_row.trim_end().to_string(),
+        });
+    }
+    if !current_lines.is_empty() {
+        sections.push(ChordChartSection {
+            group: current_group,
+            lines: current_lines,
+        });
+    }
+
+    ChordChartDocument {
+        title,
+        key_signature,
+        tempo_bpm,
+        time_signature,
+        sections,
+    }
+}
+
+/// Extracts embedded JPEG image streams (`/DCTDecode` or `FF D8 FF`) from a Sheet Music PDF
+/// into collision-safe local files in `output_dir` so scanned/rasterized full-clef sheet music
+/// pages render directly on Musician Stage Displays.
+fn extract_pdf_embedded_jpegs(
+    pdf_bytes: &[u8],
+    title_slug: &str,
+    output_dir: &Path,
+) -> Vec<String> {
+    let mut extracted_paths = Vec::new();
+    let _ = std::fs::create_dir_all(output_dir);
+    let mut pos = 0usize;
+    let mut page_idx = 0usize;
+
+    while let Some(stream_rel) = find_bytes(&pdf_bytes[pos..], b"stream") {
+        let stream_kw = pos + stream_rel;
+        let dict_start = stream_kw.saturating_sub(512);
+        let dict_slice = &pdf_bytes[dict_start..stream_kw];
+        let is_dct = find_bytes(dict_slice, b"DCTDecode").is_some();
+
+        let mut data_start = stream_kw + b"stream".len();
+        if data_start < pdf_bytes.len() && pdf_bytes[data_start] == b'\r' {
+            data_start += 1;
+        }
+        if data_start < pdf_bytes.len() && pdf_bytes[data_start] == b'\n' {
+            data_start += 1;
+        } else {
+            pos = stream_kw + 6;
+            continue;
+        }
+
+        let Some(end_rel) = find_bytes(&pdf_bytes[data_start..], b"endstream") else {
+            break;
+        };
+        let mut data_end = data_start + end_rel;
+        while data_end > data_start
+            && (pdf_bytes[data_end - 1] == b'\n' || pdf_bytes[data_end - 1] == b'\r')
+        {
+            data_end -= 1;
+        }
+        let raw = &pdf_bytes[data_start..data_end];
+        if (is_dct || (raw.len() > 16 && raw[0] == 0xFF && raw[1] == 0xD8 && raw[2] == 0xFF))
+            && raw.len() >= 16
+        {
+            page_idx += 1;
+            let hash8 = &blake3::hash(raw).to_hex()[..8];
+            let file_name = format!("{title_slug}__sheet_p{page_idx:02}__{hash8}.jpg");
+            let dest = output_dir.join(file_name);
+            if std::fs::write(&dest, raw).is_ok() {
+                extracted_paths.push(dest.to_string_lossy().to_string());
+            }
+        }
+
+        pos = data_start + end_rel + b"endstream".len();
+    }
+
+    extracted_paths
+}
+
+fn count_pdf_pages_approx(pdf_bytes: &[u8]) -> usize {
+    let mut count = 0usize;
+    let mut pos = 0usize;
+    while let Some(rel) = find_bytes(&pdf_bytes[pos..], b"/Type") {
+        let after = pos + rel + 5;
+        let window_end = (after + 20).min(pdf_bytes.len());
+        let snippet = &pdf_bytes[after..window_end];
+        if let Some(p_rel) = find_bytes(snippet, b"/Page") {
+            let next_byte = snippet.get(p_rel + 5).copied().unwrap_or(b' ');
+            // Exclude `/Pages` (page tree node)
+            if next_byte != b's' {
+                count += 1;
+            }
+        }
+        pos = after;
+    }
+    count.max(1)
+}
+
+/// Imports a multi-page Sheet Music PDF (Planning Center, SongSelect, PraiseCharts, hymnal scan)
+/// into a [`SheetMusicDocument`] with full-page descriptors, extracted embedded page scans,
+/// and automatic `group_to_page` synchronization for Musician Stage Displays.
+pub fn import_sheet_music_pdf(
+    pdf_bytes: &[u8],
+    title: &str,
+    source_path: Option<&str>,
+    output_dir: &Path,
+) -> Result<SheetMusicDocument, PdfLyricsError> {
+    if pdf_bytes.len() < 8 || !pdf_bytes.starts_with(b"%PDF-") {
+        return Err(PdfLyricsError::InvalidPdf(
+            "missing %PDF- header".to_string(),
+        ));
+    }
+
+    let slug: String = title
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .take(36)
+        .collect();
+    let clean_slug = if slug.trim_matches('_').is_empty() {
+        "sheet_music".to_string()
+    } else {
+        slug
+    };
+
+    let embedded_images = extract_pdf_embedded_jpegs(pdf_bytes, &clean_slug, output_dir);
+    let extracted_text = extract_pdf_text(pdf_bytes).ok();
+    let page_count = count_pdf_pages_approx(pdf_bytes).max(embedded_images.len()).max(1);
+
+    let mut group_to_page: BTreeMap<String, u32> = BTreeMap::new();
+    let mut page_hints: Vec<Vec<String>> = vec![Vec::new(); page_count];
+
+    if let Some(ref text) = extracted_text {
+        let text_lines: Vec<String> = text
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !is_ccli_footer_line(l))
+            .map(String::from)
+            .collect();
+        let total = text_lines.len().max(1);
+        for (idx, ln) in text_lines.iter().enumerate() {
+            let p_idx = ((idx * page_count) / total).min(page_count - 1);
+            if page_hints[p_idx].len() < 12 {
+                page_hints[p_idx].push(ln.clone());
+            }
+            if let Some(sec) = detect_section_header(ln) {
+                let norm = SheetMusicDocument::normalize_group_key(&sec);
+                group_to_page.entry(norm).or_insert((p_idx + 1) as u32);
+            }
+        }
+    }
+
+    let mut pages = Vec::with_capacity(page_count);
+    for (idx, hints) in page_hints.into_iter().enumerate().take(page_count) {
+        let p_num = (idx + 1) as u32;
+        pages.push(SheetMusicPage {
+            page_number: p_num,
+            label: format!("Page {p_num}"),
+            image_path: embedded_images.get(idx).cloned(),
+            staff_lines_hint: hints,
+        });
+    }
+
+    Ok(SheetMusicDocument {
+        title: title.to_string(),
+        source_path: source_path.map(String::from),
+        pages,
+        group_to_page,
+        slide_to_page: BTreeMap::new(),
+    })
+}
+
+/// Builds a [`SheetMusicDocument`] directly from one or more local PNG/JPG/BMP page images
+/// (e.g., an exported folder of sheet music score pages).
+pub fn build_sheet_music_from_images(image_paths: &[PathBuf], title: &str) -> SheetMusicDocument {
+    let mut sorted = image_paths.to_vec();
+    sorted.sort();
+    let pages = sorted
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let p_num = (i + 1) as u32;
+            let stem = p
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("Page")
+                .to_string();
+            SheetMusicPage {
+                page_number: p_num,
+                label: format!("Page {p_num} ({stem})"),
+                image_path: Some(p.to_string_lossy().to_string()),
+                staff_lines_hint: Vec::new(),
+            }
+        })
+        .collect();
+    SheetMusicDocument {
+        title: title.to_string(),
+        source_path: sorted.first().map(|p| p.to_string_lossy().to_string()),
+        pages,
+        group_to_page: BTreeMap::new(),
+        slide_to_page: BTreeMap::new(),
+    }
+}
+
+/// Full pipeline: reads raw SongSelect / Planning Center PDF bytes and produces editable slides,
+/// full musician [`ChordChartDocument`], and CCLI metadata.
 pub fn import_lyric_sheet_pdf(
     pdf_bytes: &[u8],
     fallback_title: Option<&str>,
@@ -785,5 +1227,80 @@ ET"#;
         assert!(import_lyric_sheet_pdf(b"not a pdf", None).is_err());
         let empty_pdf = make_test_pdf(b"0 0 m 10 10 l S", false);
         assert!(import_lyric_sheet_pdf(&empty_pdf, None).is_err());
+    }
+
+    #[test]
+    fn parses_chord_chart_metadata_chordpro_and_multipage_sheet_music_pdf() {
+        let chart_text = "\
+Holy Forever
+Tempo - 72
+Time - 4/4
+Key - Bb
+Intro
+| Bb   Eb/Bb | Gm7   F |
+Verse 1
+Bb               Eb
+A thousand generations falling down in worship
+Gm7              F
+To sing the song of ages to the Lamb
+Chorus
+Eb               F
+Your name is the highest";
+        let parsed = parse_lyric_sheet_text(chart_text, None).expect("parse chord chart");
+        assert_eq!(parsed.tempo_bpm, Some(72.0));
+        assert_eq!(parsed.time_signature.as_deref(), Some("4/4"));
+        let chart = parsed.chord_chart.expect("chord chart populated");
+        assert_eq!(chart.sections.len(), 3);
+        assert_eq!(chart.sections[0].group, "Intro");
+        assert!(chart.sections[0].lines[0].lyrics.is_empty());
+        assert_eq!(
+            chart.sections[1].lines[0].chords.as_deref(),
+            Some("Bb               Eb")
+        );
+
+        // ChordPro -> aligned ChordChartDocument
+        let cp = parse_chordpro_to_chart(
+            "{title: Amazing Grace}\n{key: G}\n{tempo: 74}\n{time: 3/4}\n{soc}\n[G]Amazing [C]grace how [G]sweet\n{sob}\n[Em]The earth shall [D]soon dissolve",
+            None,
+        );
+        assert_eq!(cp.title, "Amazing Grace");
+        assert_eq!(cp.key_signature.as_deref(), Some("G"));
+        assert_eq!(cp.tempo_bpm, Some(74.0));
+        assert_eq!(cp.time_signature.as_deref(), Some("3/4"));
+        assert_eq!(cp.sections.len(), 2);
+        assert_eq!(cp.sections[0].group, "Chorus");
+        assert!(
+            cp.sections[0].lines[0]
+                .chords
+                .as_deref()
+                .expect("chords")
+                .contains('G')
+        );
+
+        // Multi-page Sheet Music PDF with embedded JPEG page + section hints
+        let mut sheet_pdf = Vec::new();
+        sheet_pdf.extend_from_slice(b"%PDF-1.4\n1 0 obj\n<< /Type /Pages /Count 2 >>\nendobj\n");
+        sheet_pdf.extend_from_slice(b"2 0 obj\n<< /Type /Page >>\nendobj\n3 0 obj\n<< /Type /Page >>\nendobj\n");
+        let fake_jpg = [0xFFu8, 0xD8, 0xFF, 0xE0, 0, 16, b'J', b'F', b'I', b'F', 0, 1, 1, 0, 0, 1, 0xFF, 0xD9];
+        sheet_pdf.extend_from_slice(b"4 0 obj\n<< /Filter /DCTDecode >>\nstream\n");
+        sheet_pdf.extend_from_slice(&fake_jpg);
+        sheet_pdf.extend_from_slice(b"\nendstream\nendobj\n");
+        sheet_pdf.extend_from_slice(b"5 0 obj\n<< /Length 64 >>\nstream\nBT (Verse 1) Tj T* (Chorus) Tj T* (Bridge) Tj ET\nendstream\nendobj\n%%EOF\n");
+
+        let tmp = std::env::temp_dir().join(format!("op-sheet-test-{}", uuid::Uuid::new_v4()));
+        let sheet = import_sheet_music_pdf(&sheet_pdf, "Holy Forever Piano", Some("holy.pdf"), &tmp)
+            .expect("import sheet pdf");
+        assert_eq!(sheet.pages.len(), 2);
+        assert!(sheet.pages[0].image_path.is_some());
+        assert_eq!(sheet.group_to_page.get("verse 1"), Some(&1));
+        assert_eq!(sheet.group_to_page.get("bridge"), Some(&2));
+
+        let img_sheet = build_sheet_music_from_images(
+            &[PathBuf::from("page_02.png"), PathBuf::from("page_01.png")],
+            "Hymnal Scan",
+        );
+        assert_eq!(img_sheet.pages.len(), 2);
+        assert!(img_sheet.pages[0].label.contains("page_01"));
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

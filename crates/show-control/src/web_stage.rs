@@ -4,13 +4,13 @@
 //! and urgent Stage Messages from any tablet/phone on sanctuary Wi-Fi without touching
 //! the native `wgpu` Audience or Stage outputs.
 
-use axum::extract::State;
+use axum::extract::{Path as AxumPath, State};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::http::StatusCode;
+use axum::http::{StatusCode, header};
 use axum::response::{Html, IntoResponse, Json};
 use axum::routing::{get, post};
 use axum::Router;
-use core_scene::SceneState;
+use core_scene::{ChordChartDocument, SceneState, SheetMusicDocument};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
@@ -25,14 +25,18 @@ pub struct RemoteSlideSummary {
     pub active: bool,
 }
 
-/// Live JSON payload pushed to connected LAN browser Stage Display & Remote Control clients.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Live JSON payload pushed to connected LAN browser Stage Display, Musician Display, & Remote clients.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StageViewPayload {
     pub revision: u64,
     pub blackout: bool,
     #[serde(default)]
     pub freeze_output: bool,
     pub current_label: String,
+    #[serde(default)]
+    pub current_group: String,
+    #[serde(default)]
+    pub song_title: Option<String>,
     pub current_text: String,
     pub chords_line: Option<String>,
     pub next_text: Option<String>,
@@ -40,6 +44,12 @@ pub struct StageViewPayload {
     pub timer_readout: Option<String>,
     #[serde(default)]
     pub deck: Vec<RemoteSlideSummary>,
+    #[serde(default)]
+    pub chord_chart: Option<ChordChartDocument>,
+    #[serde(default)]
+    pub sheet_music: Option<SheetMusicDocument>,
+    #[serde(default)]
+    pub sheet_active_page: u32,
 }
 
 /// Interactive command sent from the PIN-authenticated LAN Mobile Web Remote Controller (`/remote`).
@@ -67,13 +77,14 @@ pub type RemoteCommandHandler = Arc<dyn Fn(RemoteCommand) + Send + Sync>;
 
 /// Builds a [`StageViewPayload`] snapshot directly from canonical [`SceneState`].
 pub fn payload_from_scene(state: &SceneState) -> StageViewPayload {
-    let (current_label, current_text, chords_line) = match &state.active_slide {
+    let (current_label, current_group, current_text, chords_line) = match &state.active_slide {
         Some(slide) if state.slide_layer_active && !state.blackout => (
             slide.label.clone(),
+            slide.group.clone(),
             slide.plain_text(),
             slide.chords_line.clone(),
         ),
-        _ => (String::new(), String::new(), None),
+        _ => (String::new(), String::new(), String::new(), None),
     };
 
     let next_text = state
@@ -82,6 +93,15 @@ pub fn payload_from_scene(state: &SceneState) -> StageViewPayload {
         .map(|s| s.plain_text().replace('\n', " / "));
 
     let active_id = state.active_slide.as_ref().map(|s| s.id);
+    let active_idx = active_id
+        .and_then(|id| state.deck.iter().position(|s| s.id == id))
+        .unwrap_or(0);
+    let sheet_active_page = state
+        .active_sheet_music
+        .as_ref()
+        .map(|sm| sm.page_for_slide(state.active_slide.as_ref(), active_idx, state.deck.len()))
+        .unwrap_or(1);
+
     let deck = state
         .deck
         .iter()
@@ -98,12 +118,17 @@ pub fn payload_from_scene(state: &SceneState) -> StageViewPayload {
         blackout: state.blackout,
         freeze_output: state.freeze_output,
         current_label,
+        current_group,
+        song_title: state.active_presentation_title.clone(),
         current_text,
         chords_line,
         next_text,
         stage_message: state.stage_message.clone(),
         timer_readout: state.timer_readout.clone(),
         deck,
+        chord_chart: state.active_chord_chart.clone(),
+        sheet_music: state.active_sheet_music.clone(),
+        sheet_active_page,
     }
 }
 
@@ -151,12 +176,17 @@ impl StageHub {
                 blackout: true,
                 freeze_output: false,
                 current_label: String::new(),
+                current_group: String::new(),
+                song_title: None,
                 current_text: String::new(),
                 chords_line: None,
                 next_text: None,
                 stage_message: None,
                 timer_readout: None,
                 deck: Vec::new(),
+                chord_chart: None,
+                sheet_music: None,
+                sheet_active_page: 1,
             })
     }
 
@@ -211,6 +241,10 @@ impl WebStageServer {
         format!("http://{}/remote", self.addr)
     }
 
+    pub fn musician_url(&self) -> String {
+        format!("http://{}/musician", self.addr)
+    }
+
     pub fn remote_pin(&self) -> String {
         self.hub.remote_pin()
     }
@@ -230,8 +264,10 @@ pub fn build_stage_router_with_hub(hub: StageHub) -> Router {
     Router::new()
         .route("/", get(stage_html))
         .route("/stage", get(stage_html))
+        .route("/musician", get(musician_html))
         .route("/remote", get(remote_html))
         .route("/api/stage/state", get(stage_json))
+        .route("/api/stage/sheet-page/{page}", get(sheet_page_image))
         .route("/api/remote/command", post(remote_command))
         .route("/ws/stage", get(stage_ws))
         .with_state(hub)
@@ -241,8 +277,41 @@ async fn stage_html() -> Html<&'static str> {
     Html(STAGE_DISPLAY_HTML)
 }
 
+async fn musician_html() -> Html<&'static str> {
+    Html(MUSICIAN_STAGE_HTML)
+}
+
 async fn remote_html() -> Html<&'static str> {
     Html(REMOTE_CONTROL_HTML)
+}
+
+async fn sheet_page_image(
+    AxumPath(page_num): AxumPath<u32>,
+    State(hub): State<StageHub>,
+) -> impl IntoResponse {
+    let latest = hub.latest();
+    let Some(sheet) = latest.sheet_music else {
+        return (StatusCode::NOT_FOUND, "No sheet music active").into_response();
+    };
+    let Some(page) = sheet
+        .pages
+        .iter()
+        .find(|p| p.page_number == page_num)
+        .and_then(|p| p.image_path.as_deref())
+    else {
+        return (StatusCode::NOT_FOUND, "Page image not available").into_response();
+    };
+    let Ok(bytes) = std::fs::read(page) else {
+        return (StatusCode::NOT_FOUND, "Sheet image unreadable").into_response();
+    };
+    let content_type = if page.to_ascii_lowercase().ends_with(".png") {
+        "image/png"
+    } else if page.to_ascii_lowercase().ends_with(".bmp") {
+        "image/bmp"
+    } else {
+        "image/jpeg"
+    };
+    ([(header::CONTENT_TYPE, content_type)], bytes).into_response()
 }
 
 async fn stage_json(State(hub): State<StageHub>) -> Json<StageViewPayload> {
@@ -381,6 +450,113 @@ const REMOTE_CONTROL_HTML: &str = r#"<!doctype html>
 </body>
 </html>"#;
 
+const MUSICIAN_STAGE_HTML: &str = r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>OpenPresenter — Musician Chord Chart & Sheet Music Stage</title>
+<style>
+  body { margin:0; background:#060911; color:#f1f5f9; font-family:system-ui,sans-serif; display:flex; flex-direction:column; height:100vh; }
+  header { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px; padding:10px 18px; background:#0f172a; border-bottom:2px solid #0284c7; }
+  .meta { font-weight:700; font-size:18px; }
+  .controls { display:flex; gap:8px; align-items:center; font-size:13px; }
+  .controls button, .controls select { background:#1e293b; color:#fff; border:1px solid #334155; border-radius:6px; padding:5px 10px; font-weight:600; cursor:pointer; }
+  .controls button.active { background:#0284c7; border-color:#38bdf8; }
+  #timer { color:#34d399; font-weight:700; font-size:20px; font-variant-numeric:tabular-nums; }
+  #roadmap { padding:8px 18px; background:#0b1220; border-bottom:1px solid #1e293b; display:flex; gap:8px; flex-wrap:wrap; font-size:13px; }
+  .pill { padding:3px 10px; border-radius:999px; background:#1e293b; color:#94a3b8; }
+  .pill.now { background:#0284c7; color:#fff; font-weight:700; }
+  main { flex:1; overflow:auto; padding:14px 18px; display:grid; grid-template-columns:1.15fr 1fr; gap:14px; }
+  main.sheet-mode { grid-template-columns:1fr 1fr; }
+  main.sheet-single { grid-template-columns:1fr; }
+  .panel { background:#0d1424; border:1px solid #1e293b; border-radius:10px; padding:14px; }
+  .panel.active { border:2px solid #38bdf8; background:#0f1a2e; }
+  .sec-head { font-size:14px; font-weight:800; color:#38bdf8; text-transform:uppercase; margin-bottom:10px; }
+  .chords { color:#fbbf24; font-family:ui-monospace,monospace; font-size:20px; font-weight:700; white-space:pre; }
+  .lyrics { color:#fff; font-family:ui-monospace,monospace; font-size:20px; margin-bottom:10px; white-space:pre-wrap; }
+  .sheet-card { background:#f8fafc; color:#0f172a; border-radius:10px; padding:10px; display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:70vh; }
+  .sheet-card.invert { filter:invert(1) hue-rotate(180deg); }
+  .sheet-card img { max-width:100%; max-height:76vh; object-fit:contain; }
+  #alert { display:none; padding:10px 18px; background:#dc2626; color:#fff; font-size:20px; font-weight:700; text-align:center; }
+</style>
+</head>
+<body>
+  <header>
+    <div class="meta" id="title">OpenPresenter Musician Stage</div>
+    <div class="controls">
+      <button id="btn-chords" class="active" onclick="setMode('chords')">Chord Chart</button>
+      <button id="btn-sheet" onclick="setMode('sheet')">Sheet Music</button>
+      <label>Transpose: <select id="transpose" onchange="render()">
+        <option value="-6">-6</option><option value="-5">-5</option><option value="-4">-4</option>
+        <option value="-3">-3</option><option value="-2">-2</option><option value="-1">-1</option>
+        <option value="0" selected>0</option><option value="1">+1</option><option value="2">+2</option>
+        <option value="3">+3</option><option value="4">+4</option><option value="5">+5</option><option value="6">+6</option>
+      </select></label>
+      <button id="btn-spread" onclick="toggleSpread()">2-Page Spread: ON</button>
+      <button id="btn-invert" onclick="toggleInvert()">Dark Paper: OFF</button>
+      <span id="timer">--:--</span>
+    </div>
+  </header>
+  <div id="roadmap"></div>
+  <main id="content"></main>
+  <div id="alert"></div>
+  <script>
+    const SHARPS=['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+    const FLATS=['C','Db','D','Eb','E','F','Gb','G','Ab','A','Bb','B'];
+    let latest=null, mode='chords', twoPage=true, darkInvert=false;
+    function tNote(tok,semi){
+      if(!semi) return tok;
+      if(tok.includes('/')) return tok.split('/').map(p=>tNote(p,semi)).join('/');
+      const m=/^([A-G])(#|b)?(.*)$/.exec(tok); if(!m) return tok;
+      const base={C:0,D:2,E:4,F:5,G:7,A:9,B:11}[m[1]];
+      const idx=(base+(m[2]==='#'?1:m[2]==='b'?-1:0)+semi+120)%12;
+      const tbl=(m[2]==='b'||semi<0)?FLATS:SHARPS;
+      return tbl[idx]+m[3];
+    }
+    function tLine(line,semi){ return !semi?line:line.replace(/[A-G][#b]?[a-zA-Z0-9+/]*/g,t=>tNote(t,semi)); }
+    function setMode(m){ mode=m; document.getElementById('btn-chords').classList.toggle('active',m==='chords'); document.getElementById('btn-sheet').classList.toggle('active',m==='sheet'); render(); }
+    function toggleSpread(){ twoPage=!twoPage; document.getElementById('btn-spread').textContent='2-Page Spread: '+(twoPage?'ON':'OFF'); render(); }
+    function toggleInvert(){ darkInvert=!darkInvert; document.getElementById('btn-invert').textContent='Dark Paper: '+(darkInvert?'ON':'OFF'); render(); }
+    function render(){
+      if(!latest) return;
+      const semi=Number(document.getElementById('transpose').value||0);
+      const cc=latest.chord_chart, sm=latest.sheet_music;
+      document.getElementById('title').textContent=(latest.song_title||latest.current_label||'Musician Stage')+(cc&&cc.key_signature?' · Key '+tNote(cc.key_signature,semi):'')+(cc&&cc.tempo_bpm?' · '+Math.round(cc.tempo_bpm)+' BPM':'');
+      document.getElementById('timer').textContent=latest.timer_readout||'--:--';
+      const al=document.getElementById('alert');
+      if(latest.stage_message){al.style.display='block';al.textContent=latest.stage_message;}else{al.style.display='none';}
+      const main=document.getElementById('content');
+      const road=document.getElementById('roadmap');
+      if(mode==='sheet'){
+        main.className=twoPage?'sheet-mode':'sheet-single';
+        const total=sm?sm.pages.length:0, cur=latest.sheet_active_page||1;
+        road.innerHTML='<span class="pill now">SYNC: '+(latest.current_group||latest.current_label||'READY')+'</span><span class="pill">Page '+cur+' of '+Math.max(1,total)+'</span>';
+        const pages=twoPage&&cur<total?[cur,cur+1]:[cur];
+        main.innerHTML=pages.map(p=>{
+          const pg=sm&&sm.pages[p-1];
+          const body=pg&&pg.image_path?'<img src="/api/stage/sheet-page/'+p+'?rev='+latest.revision+'" alt="Page '+p+'" />':'<div style="padding:24px;text-align:center"><h3>'+(pg?pg.label:'No Sheet Music Attached')+'</h3><p>'+(pg&&pg.staff_lines_hint.length?pg.staff_lines_hint.join('<br/>'):'Import a Sheet Music PDF or Page Images in Tools → Import & PCO')+'</p></div>';
+          return '<div class="sheet-card'+(darkInvert?' invert':'')+'">'+body+'</div>';
+        }).join('');
+      } else {
+        main.className='';
+        const secs=cc&&cc.sections.length?cc.sections:[{group:latest.current_group||'Live',lines:[{chords:latest.chords_line,lyrics:latest.current_text}]}];
+        const grp=(latest.current_group||'').toLowerCase();
+        const curIdx=Math.max(0,secs.findIndex(s=>s.group.toLowerCase()===grp||s.group.toLowerCase().startsWith(grp)));
+        road.innerHTML=secs.map((s,i)=>'<span class="pill'+(i===curIdx?' now':'')+'">'+s.group+'</span>').join('');
+        const drawSec=(s,active)=>'<div class="panel'+(active?' active':'')+'"><div class="sec-head">'+(active?'▶ NOW: ':'NEXT: ')+s.group+'</div>'+s.lines.map(l=>(l.chords?'<div class="chords">'+tLine(l.chords,semi)+'</div>':'')+(l.lyrics?'<div class="lyrics">'+l.lyrics+'</div>':'')).join('')+'</div>';
+        const upcoming=secs.slice(curIdx+1,curIdx+4).map(s=>drawSec(s,false)).join('');
+        main.innerHTML=drawSec(secs[curIdx],true)+'<div>'+upcoming+'</div>';
+      }
+    }
+    fetch('/api/stage/state').then(r=>r.json()).then(d=>{latest=d;render();});
+    const proto=location.protocol==='https:'?'wss':'ws';
+    const ws=new WebSocket(proto+'://'+location.host+'/ws/stage');
+    ws.onmessage=(e)=>{latest=JSON.parse(e.data);render();};
+  </script>
+</body>
+</html>"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -503,5 +679,45 @@ mod tests {
             .expect("resp");
         assert_eq!(good_pin.status(), StatusCode::OK);
         assert_eq!(received.lock().expect("lock").len(), 1);
+
+        // Musician LAN Stage Display HTML + Sheet Music Page Image endpoint
+        let tmp_png = std::env::temp_dir().join(format!("op-web-sheet-{}.png", std::process::id()));
+        std::fs::write(&tmp_png, [0x89u8, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]).expect("png");
+        let mut sheet_state = SceneState::demo_m0(2);
+        sheet_state.apply(core_scene::SceneDiff::SetActiveMusicSheets {
+            chord_chart: None,
+            sheet_music: Some(SheetMusicDocument {
+                title: "Piano Score".into(),
+                source_path: None,
+                pages: vec![core_scene::SheetMusicPage {
+                    page_number: 1,
+                    label: "Page 1".into(),
+                    image_path: Some(tmp_png.to_string_lossy().to_string()),
+                    staff_lines_hint: Vec::new(),
+                }],
+                group_to_page: std::collections::BTreeMap::new(),
+                slide_to_page: std::collections::BTreeMap::new(),
+            }),
+        });
+        let m_app = build_stage_router(payload_from_scene(&sheet_state));
+        let m_html = m_app
+            .clone()
+            .oneshot(Request::builder().uri("/musician").body(axum::body::Body::empty()).expect("req"))
+            .await
+            .expect("musician html");
+        assert_eq!(m_html.status(), StatusCode::OK);
+
+        let p1 = m_app
+            .clone()
+            .oneshot(Request::builder().uri("/api/stage/sheet-page/1").body(axum::body::Body::empty()).expect("req"))
+            .await
+            .expect("page 1");
+        assert_eq!(p1.status(), StatusCode::OK);
+        let p9 = m_app
+            .oneshot(Request::builder().uri("/api/stage/sheet-page/9").body(axum::body::Body::empty()).expect("req"))
+            .await
+            .expect("page 9");
+        assert_eq!(p9.status(), StatusCode::NOT_FOUND);
+        let _ = std::fs::remove_file(&tmp_png);
     }
 }

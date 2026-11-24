@@ -595,6 +595,8 @@ async fn present_scripture(
             slides: slides.clone(),
             arrangements: Vec::new(),
             cue_tracks: Vec::new(),
+            chord_chart: None,
+            sheet_music: None,
             updated_at: chrono::Utc::now(),
         };
         let lib = bridge.library.lock().map_err(|e| e.to_string())?;
@@ -642,6 +644,8 @@ async fn parse_and_save_quick_lyrics(
         slides: slides.clone(),
         arrangements: arrangements.clone(),
         cue_tracks: Vec::new(),
+        chord_chart: None,
+        sheet_music: None,
         updated_at: chrono::Utc::now(),
     };
     {
@@ -1230,6 +1234,8 @@ fn create_presentation(
         slides,
         arrangements: Vec::new(),
         cue_tracks: Vec::new(),
+        chord_chart: None,
+        sheet_music: None,
         updated_at: chrono::Utc::now(),
     };
     let lib = bridge.library.lock().map_err(|e| e.to_string())?;
@@ -1251,7 +1257,17 @@ async fn load_presentation_to_deck(
     bridge: State<'_, Arc<EngineBridgeState>>,
     song_id: String,
 ) -> Result<SceneState, String> {
-    let (title, author, copyright, ccli_number, slides, arrangements, cue_tracks) = {
+    let (
+        title,
+        author,
+        copyright,
+        ccli_number,
+        slides,
+        arrangements,
+        cue_tracks,
+        chord_chart,
+        sheet_music,
+    ) = {
         let lib = bridge.library.lock().map_err(|e| e.to_string())?;
         let song = lib
             .get_song(&song_id)
@@ -1275,6 +1291,8 @@ async fn load_presentation_to_deck(
             s,
             song.arrangements,
             song.cue_tracks,
+            song.chord_chart,
+            song.sheet_music,
         )
     };
     if let Ok(mut g) = bridge.active_song_id.lock() {
@@ -1291,6 +1309,14 @@ async fn load_presentation_to_deck(
     )
     .await?;
     let _ = apply_scene_diff(&bridge, SceneDiff::SetCueTracks(cue_tracks)).await;
+    let _ = apply_scene_diff(
+        &bridge,
+        SceneDiff::SetActiveMusicSheets {
+            chord_chart,
+            sheet_music,
+        },
+    )
+    .await;
     apply_scene_diff(
         &bridge,
         SceneDiff::SetActivePresentationMeta {
@@ -1651,6 +1677,7 @@ struct BroadcastCapabilitiesDto {
     decklink_status: String,
     virtual_output_backend: String,
     web_stage_url: String,
+    web_musician_url: String,
     web_remote_url: String,
     remote_pin: String,
     active_source_name: String,
@@ -1709,6 +1736,7 @@ fn get_broadcast_capabilities(
         decklink_status,
         virtual_output_backend: format!("{:?}", broadcast_io::VirtualOutputBackend::native_for_host()),
         web_stage_url: format!("http://{lan_ip}:{port}/"),
+        web_musician_url: format!("http://{lan_ip}:{port}/musician"),
         web_remote_url: format!("http://{lan_ip}:{port}/remote"),
         remote_pin: "2026".to_string(),
         active_source_name: profile.source_name,
@@ -2338,6 +2366,8 @@ fn persist_imported_presentation(
         slides: imported.slides,
         arrangements: Vec::new(),
         cue_tracks: Vec::new(),
+        chord_chart: None,
+        sheet_music: None,
         updated_at: chrono::Utc::now(),
     };
     lib.upsert_song(&rec).map_err(|e| e.to_string())?;
@@ -2359,6 +2389,7 @@ fn import_worship_document(
     match format.as_str() {
         "chordpro" => {
             let song = integrations::parse_chordpro(&content)?;
+            let chord_chart = Some(integrations::parse_chordpro_to_chart(&content, Some(&song.title)));
             let slide_count = song.slides.len();
             let rec = SongRecord {
                 id: Uuid::new_v4().to_string(),
@@ -2368,11 +2399,13 @@ fn import_worship_document(
                 copyright: song.copyright,
                 ccli_number: song.ccli_number.clone(),
                 key_signature: song.key,
-                bpm: None,
+                bpm: chord_chart.as_ref().and_then(|c| c.tempo_bpm),
                 lyrics_plain: song.slides.iter().map(|s| s.plain_text()).collect::<Vec<_>>().join("\n"),
                 slides: song.slides,
                 arrangements: Vec::new(),
                 cue_tracks: Vec::new(),
+                chord_chart,
+                sheet_music: None,
                 updated_at: chrono::Utc::now(),
             };
             lib.upsert_song(&rec).map_err(|e| e.to_string())?;
@@ -2399,6 +2432,8 @@ fn import_worship_document(
                 slides: song.slides,
                 arrangements: Vec::new(),
                 cue_tracks: Vec::new(),
+                chord_chart: None,
+                sheet_music: None,
                 updated_at: chrono::Utc::now(),
             };
             lib.upsert_song(&rec).map_err(|e| e.to_string())?;
@@ -2490,7 +2525,7 @@ fn import_worship_file(
             copyright: parsed.copyright,
             ccli_number: parsed.ccli_number.clone(),
             key_signature: parsed.key_signature,
-            bpm: None,
+            bpm: parsed.tempo_bpm,
             lyrics_plain: parsed
                 .slides
                 .iter()
@@ -2500,6 +2535,8 @@ fn import_worship_file(
             slides: parsed.slides,
             arrangements: parsed.arrangements,
             cue_tracks: Vec::new(),
+            chord_chart: parsed.chord_chart,
+            sheet_music: None,
             updated_at: chrono::Utc::now(),
         };
         lib.upsert_song(&rec).map_err(|e| e.to_string())?;
@@ -2603,7 +2640,7 @@ async fn persist_parsed_pdf_song(
         copyright: parsed.copyright,
         ccli_number: parsed.ccli_number.clone(),
         key_signature: parsed.key_signature,
-        bpm: None,
+        bpm: parsed.tempo_bpm,
         lyrics_plain: parsed
             .slides
             .iter()
@@ -2613,6 +2650,8 @@ async fn persist_parsed_pdf_song(
         slides: parsed.slides.clone(),
         arrangements: parsed.arrangements.clone(),
         cue_tracks: Vec::new(),
+        chord_chart: parsed.chord_chart.clone(),
+        sheet_music: None,
         updated_at: chrono::Utc::now(),
     };
     {
@@ -2635,6 +2674,14 @@ async fn persist_parsed_pdf_song(
         )
         .await?;
         let _ = apply_scene_diff(bridge, SceneDiff::SetCueTracks(Vec::new())).await;
+        let _ = apply_scene_diff(
+            bridge,
+            SceneDiff::SetActiveMusicSheets {
+                chord_chart: parsed.chord_chart,
+                sheet_music: None,
+            },
+        )
+        .await;
         let st = apply_scene_diff(
             bridge,
             SceneDiff::SetActivePresentationMeta {
@@ -2849,6 +2896,7 @@ async fn pco_import_attachment(
     target_library_id: String,
     target_media_bin_id: String,
     load_to_deck: bool,
+    import_as: Option<String>,
 ) -> Result<PcoAttachmentImportDto, String> {
     let download_url = if let Some(url) = attachment.download_url.clone() {
         url
@@ -2864,14 +2912,80 @@ async fn pco_import_attachment(
     };
 
     let bytes = pco_curl_download_signed_url(&download_url)?;
+    let fallback = PathBuf::from(&attachment.filename)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(&attachment.display_name)
+        .to_string();
+
+    let effective_mode = import_as
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    if effective_mode == Some("sheet_music")
+        || (effective_mode.is_none()
+            && attachment.kind == integrations::PcoAttachmentKind::SheetMusicPdf)
+    {
+        let sheet = integrations::import_sheet_music_pdf(
+            &bytes,
+            &attachment.display_name,
+            Some(&attachment.filename),
+            &managed_imported_media_dir(),
+        )
+        .map_err(|e| e.to_string())?;
+        let page_count = sheet.pages.len();
+        let scene = attach_music_sheet_to_active(&bridge, None, Some(sheet)).await?;
+        return Ok(PcoAttachmentImportDto {
+            kind: "SheetMusicPdf".into(),
+            summary: format!(
+                "Attached Sheet Music \"{}\" ({page_count} full-clef page(s)) to active song & Musician Stage",
+                attachment.display_name
+            ),
+            scene: Some(scene),
+        });
+    }
+
+    if effective_mode == Some("chord_chart")
+        || (effective_mode.is_none()
+            && attachment.kind == integrations::PcoAttachmentKind::ChordChartPdf)
+    {
+        let parsed = integrations::import_lyric_sheet_pdf(&bytes, Some(&fallback))
+            .map_err(|e| e.to_string())?;
+        if let Some(chart) = parsed.chord_chart.clone()
+            && !load_to_deck
+        {
+            let sec_count = chart.sections.len();
+            let scene = attach_music_sheet_to_active(&bridge, Some(chart), None).await?;
+            return Ok(PcoAttachmentImportDto {
+                kind: "ChordChartPdf".into(),
+                summary: format!(
+                    "Attached Chord Chart \"{}\" ({sec_count} sections) to active song & Musician Stage",
+                    parsed.title
+                ),
+                scene: Some(scene),
+            });
+        }
+        let sec_count = parsed
+            .chord_chart
+            .as_ref()
+            .map(|c| c.sections.len())
+            .unwrap_or(0);
+        let res = persist_parsed_pdf_song(&bridge, parsed, &target_library_id, load_to_deck).await?;
+        return Ok(PcoAttachmentImportDto {
+            kind: "ChordChartPdf".into(),
+            summary: format!(
+                "Imported Chord Chart PDF \"{}\" ({} slides, {sec_count} chart sections) into '{}'",
+                res.title, res.slide_count, res.library_id
+            ),
+            scene: res.scene,
+        });
+    }
 
     match attachment.kind {
-        integrations::PcoAttachmentKind::LyricPdf => {
-            let fallback = PathBuf::from(&attachment.filename)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or(&attachment.display_name)
-                .to_string();
+        integrations::PcoAttachmentKind::LyricPdf
+        | integrations::PcoAttachmentKind::ChordChartPdf
+        | integrations::PcoAttachmentKind::SheetMusicPdf => {
             let parsed = integrations::import_lyric_sheet_pdf(&bytes, Some(&fallback))
                 .map_err(|e| e.to_string())?;
             let res = persist_parsed_pdf_song(&bridge, parsed, &target_library_id, load_to_deck).await?;
@@ -2921,6 +3035,224 @@ async fn pco_import_attachment(
             attachment.filename
         )),
     }
+}
+
+async fn attach_music_sheet_to_active(
+    bridge: &EngineBridgeState,
+    new_chart: Option<core_scene::ChordChartDocument>,
+    new_sheet: Option<core_scene::SheetMusicDocument>,
+) -> Result<SceneState, String> {
+    let snap = refresh_snapshot_and_buses(bridge, None).await?;
+    let merged_chart = new_chart.or(snap.state.active_chord_chart);
+    let merged_sheet = new_sheet.or(snap.state.active_sheet_music);
+
+    if let Ok(guard) = bridge.active_song_id.lock()
+        && let Some(song_id) = guard.as_deref()
+        && let Ok(lib) = bridge.library.lock()
+    {
+        let _ = lib.update_song_music_sheets(song_id, Some(&merged_chart), Some(&merged_sheet));
+    }
+
+    apply_scene_diff(
+        bridge,
+        SceneDiff::SetActiveMusicSheets {
+            chord_chart: merged_chart,
+            sheet_music: merged_sheet,
+        },
+    )
+    .await
+}
+
+#[derive(serde::Serialize)]
+struct MusicSheetImportDto {
+    kind: String,
+    title: String,
+    count: usize,
+    summary: String,
+    scene: SceneState,
+}
+
+#[tauri::command]
+async fn import_chord_chart_file(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    file_path: String,
+    attach_to_active_song: bool,
+    library_id: String,
+    load_to_deck: bool,
+) -> Result<MusicSheetImportDto, String> {
+    let trimmed = file_path.trim();
+    if trimmed.is_empty() {
+        return Err("Provide a local Chord Chart PDF or ChordPro (.cho/.crd) file path".to_string());
+    }
+    let path = PathBuf::from(trimmed);
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("Imported Chord Chart")
+        .to_string();
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+
+    let (parsed_opt, chart) = if ext == "pdf" {
+        let bytes = std::fs::read(&path)
+            .map_err(|e| format!("failed to read '{}': {e}", path.display()))?;
+        let parsed = integrations::import_lyric_sheet_pdf(&bytes, Some(&stem))
+            .map_err(|e| e.to_string())?;
+        let chart = parsed
+            .chord_chart
+            .clone()
+            .ok_or_else(|| "No chord chart sections found in PDF".to_string())?;
+        (Some(parsed), chart)
+    } else {
+        let content = std::fs::read_to_string(&path)
+            .map_err(|e| format!("failed to read '{}': {e}", path.display()))?;
+        let chart = integrations::parse_chordpro_to_chart(&content, Some(&stem));
+        (None, chart)
+    };
+
+    let sec_count = chart.sections.len();
+    let title = chart.title.clone();
+    if attach_to_active_song {
+        let scene = attach_music_sheet_to_active(&bridge, Some(chart), None).await?;
+        return Ok(MusicSheetImportDto {
+            kind: "ChordChart".into(),
+            title: title.clone(),
+            count: sec_count,
+            summary: format!("Attached Chord Chart \"{title}\" ({sec_count} sections) to active song & Musician Stage"),
+            scene,
+        });
+    }
+
+    if let Some(parsed) = parsed_opt {
+        let res = persist_parsed_pdf_song(&bridge, parsed, &library_id, load_to_deck).await?;
+        let scene = match res.scene {
+            Some(s) => s,
+            None => refresh_snapshot_and_buses(&bridge, None).await?.state,
+        };
+        return Ok(MusicSheetImportDto {
+            kind: "ChordChart".into(),
+            title: res.title.clone(),
+            count: sec_count,
+            summary: format!(
+                "Imported Chord Chart \"{}\" ({} slides, {sec_count} sections) into '{}'",
+                res.title, res.slide_count, res.library_id
+            ),
+            scene,
+        });
+    }
+
+    let scene = attach_music_sheet_to_active(&bridge, Some(chart), None).await?;
+    Ok(MusicSheetImportDto {
+        kind: "ChordChart".into(),
+        title: title.clone(),
+        count: sec_count,
+        summary: format!("Loaded Chord Chart \"{title}\" ({sec_count} sections) to Musician Stage"),
+        scene,
+    })
+}
+
+#[tauri::command]
+async fn import_sheet_music_file(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    file_path: String,
+) -> Result<MusicSheetImportDto, String> {
+    let trimmed = file_path.trim();
+    if trimmed.is_empty() {
+        return Err("Provide a Sheet Music PDF, image file, or folder of page images".to_string());
+    }
+    let raw_paths: Vec<PathBuf> = trimmed
+        .split(['\n', ';'])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .collect();
+    let first = raw_paths
+        .first()
+        .ok_or_else(|| "Provide a valid file path".to_string())?;
+    let stem = first
+        .file_stem()
+        .or_else(|| first.file_name())
+        .and_then(|s| s.to_str())
+        .unwrap_or("Imported Sheet Music")
+        .to_string();
+    let ext = first
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+
+    let sheet = if raw_paths.len() == 1 && ext == "pdf" {
+        let bytes = std::fs::read(first)
+            .map_err(|e| format!("failed to read '{}': {e}", first.display()))?;
+        integrations::import_sheet_music_pdf(
+            &bytes,
+            &stem,
+            Some(trimmed),
+            &managed_imported_media_dir(),
+        )
+        .map_err(|e| e.to_string())?
+    } else {
+        let mut collected: Vec<PathBuf> = Vec::new();
+        for p in &raw_paths {
+            if p.is_dir() {
+                if let Ok(rd) = std::fs::read_dir(p) {
+                    for entry in rd.flatten() {
+                        let ep = entry.path();
+                        if ep
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .is_some_and(|e| {
+                                matches!(
+                                    e.to_ascii_lowercase().as_str(),
+                                    "png" | "jpg" | "jpeg" | "bmp" | "webp"
+                                )
+                            })
+                        {
+                            collected.push(ep);
+                        }
+                    }
+                }
+            } else if p.is_file() {
+                collected.push(p.clone());
+            }
+        }
+        if collected.is_empty() {
+            return Err("No sheet music image pages (.png/.jpg/.bmp) found at that path".to_string());
+        }
+        integrations::build_sheet_music_from_images(&collected, &stem)
+    };
+
+    let page_count = sheet.pages.len();
+    let title = sheet.title.clone();
+    let scene = attach_music_sheet_to_active(&bridge, None, Some(sheet)).await?;
+    Ok(MusicSheetImportDto {
+        kind: "SheetMusic".into(),
+        title: title.clone(),
+        count: page_count,
+        summary: format!(
+            "Attached Sheet Music \"{title}\" ({page_count} full-clef page(s)) to active song & Musician Stage"
+        ),
+        scene,
+    })
+}
+
+#[tauri::command]
+async fn update_sheet_music_page_map(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    group_to_page: std::collections::BTreeMap<String, u32>,
+    slide_to_page: std::collections::BTreeMap<String, u32>,
+) -> Result<SceneState, String> {
+    let snap = refresh_snapshot_and_buses(&bridge, None).await?;
+    let mut sheet = snap
+        .state
+        .active_sheet_music
+        .ok_or_else(|| "No Sheet Music is attached to the active presentation".to_string())?;
+    sheet.group_to_page = group_to_page;
+    sheet.slide_to_page = slide_to_page;
+    attach_music_sheet_to_active(&bridge, None, Some(sheet)).await
 }
 
 #[tauri::command]
@@ -3052,8 +3384,11 @@ async fn import_local_presentation_file(
         copyright: String::new(),
         ccli_number: imported.ccli_number,
         key_signature: None,
+        tempo_bpm: None,
+        time_signature: None,
         slides: imported.slides,
         arrangements: Vec::new(),
+        chord_chart: None,
         raw_text_preview: String::new(),
     };
     persist_parsed_pdf_song(&bridge, parsed, &library_id, load_to_deck).await
@@ -3474,6 +3809,9 @@ pub fn run() {
             import_worship_file,
             import_local_presentation_file,
             import_lyric_sheet_pdf_file,
+            import_chord_chart_file,
+            import_sheet_music_file,
+            update_sheet_music_page_map,
             import_media_file_safe,
             get_ccli_display_config,
             save_ccli_display_config,

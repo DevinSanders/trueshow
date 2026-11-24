@@ -249,6 +249,8 @@ pub fn parse_pco_plans_json_api(json_body: &str) -> Result<Vec<PcoPlanSummary>, 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PcoAttachmentKind {
     LyricPdf,
+    ChordChartPdf,
+    SheetMusicPdf,
     Image,
     Video,
     Audio,
@@ -310,9 +312,27 @@ pub fn classify_attachment_kind(
         .and_then(|e| e.to_str())
         .map(|s| s.to_ascii_lowercase())
         .unwrap_or_default();
+    let lower_name = filename.to_ascii_lowercase();
     let ct = content_type.unwrap_or("").to_ascii_lowercase();
 
-    if ext == "pdf" || ct.contains("application/pdf") {
+    if ext == "pdf" || lower_name.contains(".pdf") || ct.contains("application/pdf") {
+        let is_sheet = [
+            "sheet", "score", "piano", "satb", "vocal", "clef", "orchestr", "hymnal", "lead sheet",
+            "lead_sheet", "leadsheet", "notation", "choir", "strings", "brass", "horn",
+        ]
+        .iter()
+        .any(|k| lower_name.contains(k));
+        if is_sheet {
+            return PcoAttachmentKind::SheetMusicPdf;
+        }
+        let is_chord = [
+            "chord", "chart", "nashville", "number", "capo", "guitar", "acoustic", "rhythm", "band",
+        ]
+        .iter()
+        .any(|k| lower_name.contains(k));
+        if is_chord {
+            return PcoAttachmentKind::ChordChartPdf;
+        }
         return PcoAttachmentKind::LyricPdf;
     }
     if matches!(
@@ -387,7 +407,16 @@ pub fn parse_pco_attachments_json_api(
             .and_then(|v| v.as_str())
             .filter(|s| s.starts_with("http"))
             .map(String::from);
-        let kind = classify_attachment_kind(&filename, content_type.as_deref());
+        let kind = if filename.to_ascii_lowercase().ends_with(".pdf")
+            || content_type
+                .as_deref()
+                .map(|c| c.to_ascii_lowercase().contains("application/pdf"))
+                .unwrap_or(false)
+        {
+            classify_attachment_kind(&format!("{filename} {display_name}"), Some("application/pdf"))
+        } else {
+            classify_attachment_kind(&filename, content_type.as_deref())
+        };
 
         out.push(PcoAttachment {
             open_endpoint: build_pco_attachment_open_url(&id),

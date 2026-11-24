@@ -32,7 +32,8 @@ pub use pco::{
     parse_pco_open_attachment_url, parse_pco_plans_json_api, stage_imported_media_bytes,
 };
 pub use pdf_lyrics::{
-    ParsedLyricSheet, PdfLyricsError, extract_pdf_text, import_lyric_sheet_pdf,
+    ParsedLyricSheet, PdfLyricsError, build_sheet_music_from_images, extract_pdf_text,
+    import_lyric_sheet_pdf, import_sheet_music_pdf, parse_chordpro_to_chart,
     parse_lyric_sheet_text,
 };
 pub use sync::{

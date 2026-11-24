@@ -207,8 +207,11 @@ export type OutputPlacement =
   | "Fullscreen"
   | { Region: MonitorRegion };
 
+export type StageDisplayMode = "Confidence" | "ChordChart" | "SheetMusic";
+
 export interface StageLayoutConfig {
   name: string;
+  mode?: StageDisplayMode;
   show_current_slide: boolean;
   show_next_slide: boolean;
   show_chords: boolean;
@@ -220,6 +223,44 @@ export interface StageLayoutConfig {
   chords_rect: RectF;
   timer_rect: RectF;
   message_rect: RectF;
+  chord_lookahead_sections?: number;
+  chord_extra_lines?: number;
+  transpose_semitones?: number;
+  sheet_two_page_spread?: boolean;
+  sheet_dark_invert?: boolean;
+}
+
+export interface ChordChartLine {
+  chords: string | null;
+  lyrics: string;
+}
+
+export interface ChordChartSection {
+  group: string;
+  lines: ChordChartLine[];
+}
+
+export interface ChordChartDocument {
+  title: string;
+  key_signature: string | null;
+  tempo_bpm: number | null;
+  time_signature: string | null;
+  sections: ChordChartSection[];
+}
+
+export interface SheetMusicPage {
+  page_number: number;
+  label: string;
+  image_path: string | null;
+  staff_lines_hint: string[];
+}
+
+export interface SheetMusicDocument {
+  title: string;
+  source_path: string | null;
+  pages: SheetMusicPage[];
+  group_to_page: Record<string, number>;
+  slide_to_page: Record<string, number>;
 }
 
 export interface OutputCalibration {
@@ -348,6 +389,8 @@ export interface SceneState {
   active_arrangements?: Arrangement[];
   active_arrangement_id?: string | null;
   active_cue_tracks?: AutoPlayTrack[];
+  active_chord_chart?: ChordChartDocument | null;
+  active_sheet_music?: SheetMusicDocument | null;
 }
 
 export interface DisplayInfo {

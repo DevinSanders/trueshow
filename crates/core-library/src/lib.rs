@@ -6,8 +6,9 @@
 
 use chrono::{DateTime, Utc};
 use core_scene::{
-    Arrangement, AutoPlayTrack, LOOK_AUDIENCE_FULL, LOOK_STAGE_CONFIDENCE, LookConfig, LookId,
-    MessageTemplate, OverlayItem, Slide, SlideId, TemplateConfig, TemplateId, default_looks,
+    Arrangement, AutoPlayTrack, ChordChartDocument, ChordChartLine, ChordChartSection,
+    LOOK_AUDIENCE_FULL, LOOK_STAGE_CONFIDENCE, LookConfig, LookId, MessageTemplate, OverlayItem,
+    SheetMusicDocument, Slide, SlideId, TemplateConfig, TemplateId, default_looks,
     default_message_templates, default_overlays, default_templates,
 };
 use rusqlite::{Connection, OptionalExtension, params};
@@ -70,6 +71,10 @@ pub struct SongRecord {
     pub arrangements: Vec<Arrangement>,
     #[serde(default)]
     pub cue_tracks: Vec<AutoPlayTrack>,
+    #[serde(default)]
+    pub chord_chart: Option<ChordChartDocument>,
+    #[serde(default)]
+    pub sheet_music: Option<SheetMusicDocument>,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -233,6 +238,8 @@ impl LibraryStore {
                 slides_json TEXT NOT NULL,
                 arrangements_json TEXT NOT NULL DEFAULT '[]',
                 cue_tracks_json TEXT NOT NULL DEFAULT '[]',
+                chord_chart_json TEXT NOT NULL DEFAULT 'null',
+                sheet_music_json TEXT NOT NULL DEFAULT 'null',
                 updated_at TEXT NOT NULL
             );
 
@@ -372,6 +379,14 @@ impl LibraryStore {
             [],
         );
         let _ = self.conn.execute(
+            "ALTER TABLE songs ADD COLUMN chord_chart_json TEXT NOT NULL DEFAULT 'null'",
+            [],
+        );
+        let _ = self.conn.execute(
+            "ALTER TABLE songs ADD COLUMN sheet_music_json TEXT NOT NULL DEFAULT 'null'",
+            [],
+        );
+        let _ = self.conn.execute(
             "ALTER TABLE media_assets ADD COLUMN bin_id TEXT NOT NULL DEFAULT 'backgrounds'",
             [],
         );
@@ -431,6 +446,8 @@ impl LibraryStore {
         let slides_json = serde_json::to_string(&song.slides)?;
         let arrangements_json = serde_json::to_string(&song.arrangements)?;
         let cue_tracks_json = serde_json::to_string(&song.cue_tracks)?;
+        let chord_chart_json = serde_json::to_string(&song.chord_chart)?;
+        let sheet_music_json = serde_json::to_string(&song.sheet_music)?;
         let lib_id = if song.library_id.trim().is_empty() {
             DEFAULT_LIBRARY_ID
         } else {
@@ -438,8 +455,8 @@ impl LibraryStore {
         };
         self.conn.execute(
             r#"
-            INSERT INTO songs (id, library_id, title, author, copyright, ccli_number, key_signature, bpm, lyrics_plain, slides_json, arrangements_json, cue_tracks_json, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+            INSERT INTO songs (id, library_id, title, author, copyright, ccli_number, key_signature, bpm, lyrics_plain, slides_json, arrangements_json, cue_tracks_json, chord_chart_json, sheet_music_json, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
             ON CONFLICT(id) DO UPDATE SET
                 library_id = excluded.library_id,
                 title = excluded.title,
@@ -452,6 +469,8 @@ impl LibraryStore {
                 slides_json = excluded.slides_json,
                 arrangements_json = excluded.arrangements_json,
                 cue_tracks_json = excluded.cue_tracks_json,
+                chord_chart_json = excluded.chord_chart_json,
+                sheet_music_json = excluded.sheet_music_json,
                 updated_at = excluded.updated_at
             "#,
             params![
@@ -467,6 +486,8 @@ impl LibraryStore {
                 slides_json,
                 arrangements_json,
                 cue_tracks_json,
+                chord_chart_json,
+                sheet_music_json,
                 song.updated_at.to_rfc3339(),
             ],
         )?;
@@ -552,6 +573,32 @@ impl LibraryStore {
         Ok(updated > 0)
     }
 
+    /// Persists attached Musician Chord Chart and/or Sheet Music directly onto a song record.
+    pub fn update_song_music_sheets(
+        &self,
+        song_id: &str,
+        chord_chart: Option<&Option<ChordChartDocument>>,
+        sheet_music: Option<&Option<SheetMusicDocument>>,
+    ) -> Result<bool, LibraryError> {
+        let now = Utc::now().to_rfc3339();
+        let mut updated = 0usize;
+        if let Some(cc) = chord_chart {
+            let json = serde_json::to_string(cc)?;
+            updated += self.conn.execute(
+                "UPDATE songs SET chord_chart_json = ?1, updated_at = ?2 WHERE id = ?3",
+                params![json, now, song_id],
+            )?;
+        }
+        if let Some(sm) = sheet_music {
+            let json = serde_json::to_string(sm)?;
+            updated += self.conn.execute(
+                "UPDATE songs SET sheet_music_json = ?1, updated_at = ?2 WHERE id = ?3",
+                params![json, now, song_id],
+            )?;
+        }
+        Ok(updated > 0)
+    }
+
     pub fn list_songs(&self) -> Result<Vec<SongRecord>, LibraryError> {
         self.list_songs_in_library(None)
     }
@@ -563,7 +610,7 @@ impl LibraryStore {
         let mut out = Vec::new();
         if let Some(lib_id) = library_id {
             let mut stmt = self.conn.prepare(
-                "SELECT id, library_id, title, author, copyright, ccli_number, key_signature, bpm, lyrics_plain, slides_json, arrangements_json, cue_tracks_json, updated_at FROM songs WHERE library_id = ?1 ORDER BY title COLLATE NOCASE ASC",
+                "SELECT id, library_id, title, author, copyright, ccli_number, key_signature, bpm, lyrics_plain, slides_json, arrangements_json, cue_tracks_json, chord_chart_json, sheet_music_json, updated_at FROM songs WHERE library_id = ?1 ORDER BY title COLLATE NOCASE ASC",
             )?;
             let rows = stmt.query_map(params![lib_id], row_to_song)?;
             for row in rows {
@@ -571,7 +618,7 @@ impl LibraryStore {
             }
         } else {
             let mut stmt = self.conn.prepare(
-                "SELECT id, library_id, title, author, copyright, ccli_number, key_signature, bpm, lyrics_plain, slides_json, arrangements_json, cue_tracks_json, updated_at FROM songs ORDER BY title COLLATE NOCASE ASC",
+                "SELECT id, library_id, title, author, copyright, ccli_number, key_signature, bpm, lyrics_plain, slides_json, arrangements_json, cue_tracks_json, chord_chart_json, sheet_music_json, updated_at FROM songs ORDER BY title COLLATE NOCASE ASC",
             )?;
             let rows = stmt.query_map([], row_to_song)?;
             for row in rows {
@@ -584,7 +631,7 @@ impl LibraryStore {
     pub fn get_song(&self, id: &str) -> Result<Option<SongRecord>, LibraryError> {
         self.conn
             .query_row(
-                "SELECT id, library_id, title, author, copyright, ccli_number, key_signature, bpm, lyrics_plain, slides_json, arrangements_json, cue_tracks_json, updated_at FROM songs WHERE id = ?1",
+                "SELECT id, library_id, title, author, copyright, ccli_number, key_signature, bpm, lyrics_plain, slides_json, arrangements_json, cue_tracks_json, chord_chart_json, sheet_music_json, updated_at FROM songs WHERE id = ?1",
                 params![id],
                 row_to_song,
             )
@@ -615,7 +662,7 @@ impl LibraryStore {
         if let Some(lib_id) = library_id {
             let mut stmt = self.conn.prepare(
                 r#"
-                SELECT s.id, s.library_id, s.title, s.author, s.copyright, s.ccli_number, s.key_signature, s.bpm, s.lyrics_plain, s.slides_json, s.arrangements_json, s.cue_tracks_json, s.updated_at
+                SELECT s.id, s.library_id, s.title, s.author, s.copyright, s.ccli_number, s.key_signature, s.bpm, s.lyrics_plain, s.slides_json, s.arrangements_json, s.cue_tracks_json, s.chord_chart_json, s.sheet_music_json, s.updated_at
                 FROM songs_fts f
                 JOIN songs s ON s.id = f.song_id
                 WHERE songs_fts MATCH ?1 AND s.library_id = ?2
@@ -630,7 +677,7 @@ impl LibraryStore {
         } else {
             let mut stmt = self.conn.prepare(
                 r#"
-                SELECT s.id, s.library_id, s.title, s.author, s.copyright, s.ccli_number, s.key_signature, s.bpm, s.lyrics_plain, s.slides_json, s.arrangements_json, s.cue_tracks_json, s.updated_at
+                SELECT s.id, s.library_id, s.title, s.author, s.copyright, s.ccli_number, s.key_signature, s.bpm, s.lyrics_plain, s.slides_json, s.arrangements_json, s.cue_tracks_json, s.chord_chart_json, s.sheet_music_json, s.updated_at
                 FROM songs_fts f
                 JOIN songs s ON s.id = f.song_id
                 WHERE songs_fts MATCH ?1
@@ -1767,6 +1814,8 @@ impl LibraryStore {
             slides: vec![deck[0].clone(), deck[3].clone(), deck[4].clone()],
             arrangements: Vec::new(),
             cue_tracks: Vec::new(),
+            chord_chart: None,
+            sheet_music: None,
             updated_at: now,
         };
         let ag_v2 = slide_from_text(
@@ -1787,6 +1836,74 @@ impl LibraryStore {
             "When we've been there ten thousand years\nBright shining as the sun",
             Some("22025".to_string()),
         );
+        let ag_chord_chart = ChordChartDocument {
+            title: "Amazing Grace".to_string(),
+            key_signature: Some("G".to_string()),
+            tempo_bpm: Some(72.0),
+            time_signature: Some("4/4".to_string()),
+            sections: vec![
+                ChordChartSection {
+                    group: "Verse 1".to_string(),
+                    lines: vec![
+                        ChordChartLine {
+                            chords: Some("G               C        G".to_string()),
+                            lyrics: "Amazing grace! How sweet the sound".to_string(),
+                        },
+                        ChordChartLine {
+                            chords: Some("G               Em       D".to_string()),
+                            lyrics: "That saved a wretch like me!".to_string(),
+                        },
+                        ChordChartLine {
+                            chords: Some("G       G7      C        G".to_string()),
+                            lyrics: "I once was lost, but now am found;".to_string(),
+                        },
+                        ChordChartLine {
+                            chords: Some("Em      D       G".to_string()),
+                            lyrics: "Was blind, but now I see.".to_string(),
+                        },
+                    ],
+                },
+                ChordChartSection {
+                    group: "Chorus".to_string(),
+                    lines: vec![
+                        ChordChartLine {
+                            chords: Some("G/B     C               G/B".to_string()),
+                            lyrics: "My chains are gone, I've been set free".to_string(),
+                        },
+                        ChordChartLine {
+                            chords: Some("C       G/B     D/F#    G".to_string()),
+                            lyrics: "My God, my Savior has ransomed me".to_string(),
+                        },
+                    ],
+                },
+                ChordChartSection {
+                    group: "Verse 2".to_string(),
+                    lines: vec![
+                        ChordChartLine {
+                            chords: Some("G               C        G".to_string()),
+                            lyrics: "'Twas grace that taught my heart to fear".to_string(),
+                        },
+                        ChordChartLine {
+                            chords: Some("G               Em       D".to_string()),
+                            lyrics: "And grace my fears relieved".to_string(),
+                        },
+                    ],
+                },
+                ChordChartSection {
+                    group: "Verse 3".to_string(),
+                    lines: vec![
+                        ChordChartLine {
+                            chords: Some("G               C        G".to_string()),
+                            lyrics: "When we've been there ten thousand years".to_string(),
+                        },
+                        ChordChartLine {
+                            chords: Some("Em      D       G".to_string()),
+                            lyrics: "Bright shining as the sun".to_string(),
+                        },
+                    ],
+                },
+            ],
+        };
         let song = SongRecord {
             id: Uuid::from_u128(9001).to_string(),
             library_id: "worship-songs".to_string(),
@@ -1822,6 +1939,8 @@ impl LibraryStore {
                 },
             ],
             cue_tracks: Vec::new(),
+            chord_chart: Some(ag_chord_chart),
+            sheet_music: None,
             updated_at: now,
         };
         let scripture = SongRecord {
@@ -1837,6 +1956,8 @@ impl LibraryStore {
             slides: vec![deck[2].clone()],
             arrangements: Vec::new(),
             cue_tracks: Vec::new(),
+            chord_chart: None,
+            sheet_music: None,
             updated_at: now,
         };
         self.upsert_song(&welcome)?;
@@ -1873,12 +1994,18 @@ fn row_to_song(row: &rusqlite::Row<'_>) -> rusqlite::Result<SongRecord> {
     let slides_json: String = row.get(9)?;
     let arrangements_json: String = row.get(10)?;
     let cue_tracks_json: String = row.get(11)?;
-    let updated_str: String = row.get(12)?;
+    let chord_chart_json: String = row.get(12)?;
+    let sheet_music_json: String = row.get(13)?;
+    let updated_str: String = row.get(14)?;
     let slides: Vec<Slide> = serde_json::from_str(&slides_json).unwrap_or_default();
     let arrangements: Vec<Arrangement> =
         serde_json::from_str(&arrangements_json).unwrap_or_default();
     let cue_tracks: Vec<AutoPlayTrack> =
         serde_json::from_str(&cue_tracks_json).unwrap_or_default();
+    let chord_chart: Option<ChordChartDocument> =
+        serde_json::from_str(&chord_chart_json).unwrap_or(None);
+    let sheet_music: Option<SheetMusicDocument> =
+        serde_json::from_str(&sheet_music_json).unwrap_or(None);
     Ok(SongRecord {
         id: row.get(0)?,
         library_id: row.get(1)?,
@@ -1892,6 +2019,8 @@ fn row_to_song(row: &rusqlite::Row<'_>) -> rusqlite::Result<SongRecord> {
         slides,
         arrangements,
         cue_tracks,
+        chord_chart,
+        sheet_music,
         updated_at: DateTime::parse_from_rfc3339(&updated_str)
             .map(|dt| dt.with_timezone(&Utc))
             .unwrap_or_else(|_| Utc::now()),
@@ -2609,5 +2738,31 @@ mod tests {
         let loaded_ccli = store.get_ccli_display_config().expect("load ccli");
         assert_eq!(loaded_ccli.church_license_number, "987654");
         assert_eq!(loaded_ccli.placement, core_scene::CcliDisplayPlacement::LastSlide);
+
+        // Persistent Musician Chord Chart & Sheet Music attachment round-trip
+        assert!(ag_after.chord_chart.is_some());
+        let sheet = SheetMusicDocument {
+            title: "Amazing Grace (Piano Grand Staff)".into(),
+            source_path: Some("grace_piano.pdf".into()),
+            pages: vec![core_scene::SheetMusicPage {
+                page_number: 1,
+                label: "Page 1".into(),
+                image_path: None,
+                staff_lines_hint: vec!["Verse 1".into(), "Chorus".into()],
+            }],
+            group_to_page: BTreeMap::from([("verse 1".into(), 1)]),
+            slide_to_page: BTreeMap::new(),
+        };
+        assert!(
+            store
+                .update_song_music_sheets(
+                    &ag_id,
+                    Some(&ag_after.chord_chart),
+                    Some(&Some(sheet.clone()))
+                )
+                .expect("save music sheets")
+        );
+        let ag_music = store.get_song(&ag_id).expect("get ag 3").expect("exists");
+        assert_eq!(ag_music.sheet_music, Some(sheet));
     }
 }

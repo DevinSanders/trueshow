@@ -31,10 +31,18 @@
     display_name: string;
     content_type: string | null;
     file_size: number | null;
-    kind: "LyricPdf" | "Image" | "Video" | "Audio" | "Other";
+    kind: "LyricPdf" | "ChordChartPdf" | "SheetMusicPdf" | "Image" | "Video" | "Audio" | "Other";
     context_label: string;
     open_endpoint: string;
     download_url: string | null;
+  }
+
+  interface MusicSheetImportResult {
+    kind: string;
+    title: string;
+    count: number;
+    summary: string;
+    scene: SceneState;
   }
 
   interface PdfImportResult {
@@ -70,6 +78,10 @@
 
   let mediaFilePath = $state("");
   let mediaContextLabel = $state("Sunday Service");
+
+  let chordChartPath = $state("");
+  let attachChordToActive = $state(true);
+  let sheetMusicPath = $state("");
 
   let pcoAppId = $state("");
   let pcoSecret = $state("");
@@ -196,7 +208,10 @@
     }
   }
 
-  async function importAttachment(att: PcoAttachment) {
+  async function importAttachment(
+    att: PcoAttachment,
+    importAs?: "lyrics" | "chord_chart" | "sheet_music",
+  ) {
     errorMsg = null;
     statusMsg = null;
     busy = true;
@@ -207,7 +222,54 @@
         attachment: att,
         targetLibraryId,
         targetMediaBinId,
-        loadToDeck: att.kind === "LyricPdf" && loadPdfToDeck,
+        loadToDeck:
+          (importAs === "lyrics" || (!importAs && att.kind === "LyricPdf")) && loadPdfToDeck,
+        importAs: importAs ?? null,
+      });
+      if (res.scene) onSceneChange?.(res.scene);
+      statusMsg = res.summary;
+    } catch (err) {
+      errorMsg = String(err);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function importLocalChordChart() {
+    errorMsg = null;
+    statusMsg = null;
+    if (!chordChartPath.trim()) {
+      errorMsg = "Enter a local Chord Chart PDF or ChordPro (.cho/.crd) path";
+      return;
+    }
+    busy = true;
+    try {
+      const res = await invoke<MusicSheetImportResult>("import_chord_chart_file", {
+        filePath: chordChartPath.trim(),
+        attachToActiveSong: attachChordToActive,
+        libraryId: targetLibraryId,
+        loadToDeck: loadPdfToDeck,
+      });
+      if (res.scene) onSceneChange?.(res.scene);
+      statusMsg = res.summary;
+    } catch (err) {
+      errorMsg = String(err);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function importLocalSheetMusic() {
+    errorMsg = null;
+    statusMsg = null;
+    if (!sheetMusicPath.trim()) {
+      errorMsg = "Enter a local Sheet Music PDF, page image, or folder of score images";
+      return;
+    }
+    busy = true;
+    try {
+      const res = await invoke<MusicSheetImportResult>("import_sheet_music_file", {
+        filePath: sheetMusicPath.trim(),
       });
       if (res.scene) onSceneChange?.(res.scene);
       statusMsg = res.summary;
@@ -328,6 +390,34 @@
   </div>
 
   <div class="sub-card">
+    <div class="sub-head">1B. Musician Chord Charts & Full-Clef Sheet Music (Synced with Separate Musician Stage Display)</div>
+    <div class="row">
+      <input
+        aria-label="Chord Chart File Path"
+        placeholder="Local Chord Chart PDF or ChordPro (.pdf, .cho, .crd)"
+        bind:value={chordChartPath}
+      />
+      <label class="check-field">
+        <input type="checkbox" bind:checked={attachChordToActive} />
+        <span>Attach to Active Song</span>
+      </label>
+      <button class="btn primary" disabled={busy} onclick={() => void importLocalChordChart()}>
+        Import Chord Chart
+      </button>
+    </div>
+    <div class="row">
+      <input
+        aria-label="Sheet Music File Path"
+        placeholder="Local Sheet Music PDF, PNG/JPG page, or folder of full-clef pages"
+        bind:value={sheetMusicPath}
+      />
+      <button class="btn primary" disabled={busy} onclick={() => void importLocalSheetMusic()}>
+        Import Sheet Music
+      </button>
+    </div>
+  </div>
+
+  <div class="sub-card">
     <div class="sub-head">2. Planning Center Online (Services v2) — Download Lyric PDFs & Media Attachments</div>
     <div class="row">
       <input
@@ -378,19 +468,34 @@
       </div>
       <ul class="item-list">
         {#each pcoAttachments as att (att.id)}
+          {@const isPdf = att.kind === "LyricPdf" || att.kind === "ChordChartPdf" || att.kind === "SheetMusicPdf"}
           <li>
             <span>
-              <span class="kind-pill" class:pdf={att.kind === "LyricPdf"}>{att.kind.toUpperCase()}</span>
+              <span class="kind-pill" class:pdf={isPdf}>{att.kind.toUpperCase()}</span>
               <strong>{att.display_name}</strong>
               <small>({att.filename})</small>
             </span>
-            <button
-              class="btn xs"
-              disabled={busy || att.kind === "Other"}
-              onclick={() => void importAttachment(att)}
-            >
-              {att.kind === "LyricPdf" ? "Import Lyrics" : "Import Media"}
-            </button>
+            <div class="row">
+              {#if isPdf}
+                <button class="btn xs" disabled={busy} onclick={() => void importAttachment(att, "lyrics")}>
+                  Lyrics
+                </button>
+                <button class="btn xs" disabled={busy} onclick={() => void importAttachment(att, "chord_chart")}>
+                  Chord Chart
+                </button>
+                <button class="btn xs primary" disabled={busy} onclick={() => void importAttachment(att, "sheet_music")}>
+                  Sheet Music
+                </button>
+              {:else}
+                <button
+                  class="btn xs"
+                  disabled={busy || att.kind === "Other"}
+                  onclick={() => void importAttachment(att)}
+                >
+                  Import Media
+                </button>
+              {/if}
+            </div>
           </li>
         {/each}
       </ul>

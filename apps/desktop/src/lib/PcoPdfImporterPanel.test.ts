@@ -91,6 +91,24 @@ describe("PcoPdfImporterPanel (Lyric Sheet PDF, Collision-Safe Media & PCO Servi
           },
         ];
       }
+      if (cmd === "import_chord_chart_file") {
+        return {
+          kind: "ChordChart",
+          title: "Goodness Of God",
+          count: 4,
+          summary: 'Attached Chord Chart "Goodness Of God" (4 sections) to active song & Musician Stage',
+          scene: null,
+        };
+      }
+      if (cmd === "import_sheet_music_file") {
+        return {
+          kind: "SheetMusic",
+          title: "Goodness Of God Piano Score",
+          count: 3,
+          summary: 'Attached Sheet Music "Goodness Of God Piano Score" (3 full-clef page(s)) to active song & Musician Stage',
+          scene: null,
+        };
+      }
       if (cmd === "pco_import_attachment") {
         pcoImportCount += 1;
         return {
@@ -135,6 +153,23 @@ describe("PcoPdfImporterPanel (Lyric Sheet PDF, Collision-Safe Media & PCO Servi
     );
     expect(lastMediaArgs.targetBinId).toBe("videos");
 
+    // 2B. Local Chord Chart & Full-Clef Sheet Music imports
+    await fireEvent.input(screen.getByLabelText("Chord Chart File Path"), {
+      target: { value: "C:/Charts/GoodnessOfGod_Chords.pdf" },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Import Chord Chart" }));
+    await waitFor(() =>
+      expect(screen.getByRole("status").textContent).toContain('Attached Chord Chart "Goodness Of God"'),
+    );
+
+    await fireEvent.input(screen.getByLabelText("Sheet Music File Path"), {
+      target: { value: "C:/Scores/GoodnessOfGod_Piano.pdf" },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Import Sheet Music" }));
+    await waitFor(() =>
+      expect(screen.getByRole("status").textContent).toContain("3 full-clef page(s)"),
+    );
+
     // 3. Planning Center Online plans -> attachments -> single & batch import
     await fireEvent.input(screen.getByLabelText("PCO App ID or Bearer Token"), {
       target: { value: "pco-app-123" },
@@ -151,11 +186,15 @@ describe("PcoPdfImporterPanel (Lyric Sheet PDF, Collision-Safe Media & PCO Servi
     await fireEvent.click(screen.getByRole("button", { name: "Load Attachments" }));
     await waitFor(() => expect(screen.getByText("Goodness Of God Lyrics PDF")).toBeTruthy());
 
-    await fireEvent.click(screen.getByRole("button", { name: "Import Lyrics" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Lyrics" }));
     await waitFor(() => expect(pcoImportCount).toBe(1));
+    await fireEvent.click(screen.getByRole("button", { name: "Chord Chart" }));
+    await waitFor(() => expect(pcoImportCount).toBe(2));
+    await fireEvent.click(screen.getByRole("button", { name: "Sheet Music" }));
+    await waitFor(() => expect(pcoImportCount).toBe(3));
 
     await fireEvent.click(screen.getByRole("button", { name: "Import All PDFs & Media" }));
-    await waitFor(() => expect(pcoImportCount).toBe(3));
+    await waitFor(() => expect(pcoImportCount).toBe(5));
   });
 
   it("validates blank fields and surfaces backend errors cleanly", async () => {

@@ -8,6 +8,7 @@
     decklink_status: string;
     virtual_output_backend: string;
     web_stage_url: string;
+    web_musician_url?: string;
     web_remote_url?: string;
     remote_pin?: string;
     active_source_name?: string;
@@ -106,8 +107,12 @@
         <p>{caps.virtual_output_backend}</p>
       </div>
       <div class="card">
-        <h3>LAN Browser Stage Display</h3>
+        <h3>LAN Browser Stage Display (Vocalists)</h3>
         <p><code>{caps.web_stage_url}</code></p>
+      </div>
+      <div class="card">
+        <h3>LAN Musician Stage (Chord Charts & Sheet Music)</h3>
+        <p><code>{caps.web_musician_url ?? `${caps.web_stage_url.replace(/\/$/, "")}/musician`}</code></p>
       </div>
       <div class="card">
         <h3>LAN Mobile Remote Controller (PIN: {caps.remote_pin ?? "2026"})</h3>

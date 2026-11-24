@@ -911,11 +911,41 @@ fn default_stage_message_rect() -> RectF {
     RectF::new(160.0, 930.0, 1600.0, 120.0)
 }
 
-/// Customizable Stage Display layout configuration with toggleable, movable/resizable zones.
+fn default_chord_lookahead_sections() -> u32 {
+    2
+}
+
+fn default_chord_extra_lines() -> u32 {
+    8
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Operating mode of a Stage output — allows vocalists/pastors and band musicians to run
+/// completely separate Stage Displays that stay synchronized with the active presentation slide.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum StageDisplayMode {
+    /// Traditional confidence monitor (Current Slide, Next Slide, compact Chords, Timer, Message).
+    #[default]
+    Confidence,
+    /// Dedicated Musician Chord Chart display with full active section + extra lookahead lines/sections
+    /// and optional per-display live key transposition.
+    ChordChart,
+    /// Dedicated Musician Sheet Music display showing full grand-staff / full-clef pages
+    /// (single full page or 2-page side-by-side spread) synced to slide/section page turns.
+    SheetMusic,
+}
+
+/// Customizable Stage Display layout configuration with toggleable, movable/resizable zones
+/// and optional dedicated Musician Chord Chart or Sheet Music display modes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StageLayoutConfig {
     #[serde(default = "default_stage_layout_name")]
     pub name: String,
+    #[serde(default)]
+    pub mode: StageDisplayMode,
     pub show_current_slide: bool,
     pub show_next_slide: bool,
     pub show_chords: bool,
@@ -932,12 +962,29 @@ pub struct StageLayoutConfig {
     pub timer_rect: RectF,
     #[serde(default = "default_stage_message_rect")]
     pub message_rect: RectF,
+    /// Number of upcoming sections to display below/beside the active section in `ChordChart` mode.
+    #[serde(default = "default_chord_lookahead_sections")]
+    pub chord_lookahead_sections: u32,
+    /// Extra lyric/chord lines shown beyond the vocalist slide in `ChordChart` mode.
+    #[serde(default = "default_chord_extra_lines")]
+    pub chord_extra_lines: u32,
+    /// Per-display live key transposition in semitones (`-6..=6`) for `ChordChart` mode.
+    #[serde(default)]
+    pub transpose_semitones: i8,
+    /// Display Current Page + Next Page side-by-side in `SheetMusic` mode so musicians see full clefs
+    /// and upcoming page turns well ahead of time.
+    #[serde(default = "default_true")]
+    pub sheet_two_page_spread: bool,
+    /// Invert white paper to dark-stage notation in `SheetMusic` mode.
+    #[serde(default)]
+    pub sheet_dark_invert: bool,
 }
 
 impl Default for StageLayoutConfig {
     fn default() -> Self {
         Self {
             name: default_stage_layout_name(),
+            mode: StageDisplayMode::Confidence,
             show_current_slide: true,
             show_next_slide: true,
             show_chords: true,
@@ -949,8 +996,227 @@ impl Default for StageLayoutConfig {
             chords_rect: default_stage_chords_rect(),
             timer_rect: default_stage_timer_rect(),
             message_rect: default_stage_message_rect(),
+            chord_lookahead_sections: default_chord_lookahead_sections(),
+            chord_extra_lines: default_chord_extra_lines(),
+            transpose_semitones: 0,
+            sheet_two_page_spread: true,
+            sheet_dark_invert: false,
         }
     }
+}
+
+impl StageLayoutConfig {
+    /// Preset for a dedicated Musician Chord Chart stage display showing full sections + lookahead.
+    pub fn musician_chord_chart() -> Self {
+        Self {
+            name: "Musician Chord Chart (Full + Lookahead)".to_string(),
+            mode: StageDisplayMode::ChordChart,
+            chord_lookahead_sections: 2,
+            chord_extra_lines: 10,
+            transpose_semitones: 0,
+            ..Self::default()
+        }
+    }
+
+    /// Preset for a dedicated Musician Sheet Music stage display showing full-clef 2-page spreads.
+    pub fn musician_sheet_music() -> Self {
+        Self {
+            name: "Musician Sheet Music (Full Clef 2-Page)".to_string(),
+            mode: StageDisplayMode::SheetMusic,
+            sheet_two_page_spread: true,
+            sheet_dark_invert: false,
+            ..Self::default()
+        }
+    }
+}
+
+/// A single chord-over-lyric line inside a structured [`ChordChartSection`].
+/// `lyrics` may be empty for instrumental intros, turnarounds, or interludes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChordChartLine {
+    pub chords: Option<String>,
+    pub lyrics: String,
+}
+
+/// Complete musical section (e.g., `Intro`, `Verse 1`, `Chorus`, `Bridge`) inside a chord chart.
+/// Unlike vocalist slides (which break stanzas into 2-4 large lines), chord chart sections keep
+/// every line and measure together so musicians can read ahead comfortably.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChordChartSection {
+    pub group: String,
+    pub lines: Vec<ChordChartLine>,
+}
+
+/// Full structured Chord Chart attached to a song / presentation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChordChartDocument {
+    pub title: String,
+    pub key_signature: Option<String>,
+    pub tempo_bpm: Option<f32>,
+    pub time_signature: Option<String>,
+    pub sections: Vec<ChordChartSection>,
+}
+
+/// A single full page of imported Sheet Music (PDF page image or rasterized score scan).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SheetMusicPage {
+    /// 1-based page number.
+    pub page_number: u32,
+    pub label: String,
+    /// Optional local PNG/JPEG/BMP image file showing the full-clef sheet music page.
+    pub image_path: Option<String>,
+    /// Extracted text/section/clef markers on this page (used for auto-mapping and vector fallback).
+    #[serde(default)]
+    pub staff_lines_hint: Vec<String>,
+}
+
+/// Multi-page Sheet Music score synchronized with a song's sections and slides.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SheetMusicDocument {
+    pub title: String,
+    pub source_path: Option<String>,
+    pub pages: Vec<SheetMusicPage>,
+    /// Normalized section group name (lowercase, e.g. `"bridge"`) → 1-based page number.
+    #[serde(default)]
+    pub group_to_page: BTreeMap<String, u32>,
+    /// Exact `SlideId` UUID string → 1-based page number override.
+    #[serde(default)]
+    pub slide_to_page: BTreeMap<String, u32>,
+}
+
+impl SheetMusicDocument {
+    pub fn normalize_group_key(group: &str) -> String {
+        group
+            .trim()
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .to_ascii_lowercase()
+    }
+
+    /// Resolves the 1-based page number to show for the active slide so Sheet Music Stage Displays
+    /// automatically turn pages in sync with the presentation deck.
+    pub fn page_for_slide(&self, slide: Option<&Slide>, slide_index: usize, total_slides: usize) -> u32 {
+        let max_page = self.pages.len().max(1) as u32;
+        if let Some(s) = slide {
+            let sid = s.id.0.to_string();
+            if let Some(&p) = self.slide_to_page.get(&sid) {
+                return p.clamp(1, max_page);
+            }
+            let norm = Self::normalize_group_key(&s.group);
+            if let Some(&p) = self.group_to_page.get(&norm) {
+                return p.clamp(1, max_page);
+            }
+            // Also check prefix match (e.g. "verse 2 (part b)" matches "verse 2")
+            for (k, &p) in &self.group_to_page {
+                if !k.is_empty() && (norm.starts_with(k) || k.starts_with(&norm)) {
+                    return p.clamp(1, max_page);
+                }
+            }
+        }
+        if total_slides <= 1 || max_page <= 1 {
+            return 1;
+        }
+        let ratio = (slide_index as f32) / ((total_slides - 1) as f32);
+        let mapped = (ratio * ((max_page - 1) as f32)).round() as u32 + 1;
+        mapped.clamp(1, max_page)
+    }
+}
+
+const CHROMATIC_SHARPS: [&str; 12] = [
+    "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+];
+const CHROMATIC_FLATS: [&str; 12] = [
+    "C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B",
+];
+
+fn pitch_index(note: &str) -> Option<(usize, bool)> {
+    let mut chars = note.chars();
+    let base = chars.next()?;
+    let base_idx = match base {
+        'C' => 0usize,
+        'D' => 2,
+        'E' => 4,
+        'F' => 5,
+        'G' => 7,
+        'A' => 9,
+        'B' => 11,
+        _ => return None,
+    };
+    match chars.next() {
+        Some('#') => Some(((base_idx + 1) % 12, false)),
+        Some('b') => Some(((base_idx + 11) % 12, true)),
+        _ => Some((base_idx, false)),
+    }
+}
+
+fn transpose_note_prefix(token: &str, semitones: i8) -> Option<(String, usize)> {
+    let bytes = token.as_bytes();
+    if bytes.is_empty() || !matches!(bytes[0], b'A'..=b'G') {
+        return None;
+    }
+    let prefix_len = if bytes.len() >= 2 && (bytes[1] == b'#' || bytes[1] == b'b') {
+        2
+    } else {
+        1
+    };
+    let (idx, prefer_flat) = pitch_index(&token[..prefix_len])?;
+    let shifted = (idx as i32 + i32::from(semitones)).rem_euclid(12) as usize;
+    let table = if prefer_flat || semitones < 0 {
+        &CHROMATIC_FLATS
+    } else {
+        &CHROMATIC_SHARPS
+    };
+    Some((table[shifted].to_string(), prefix_len))
+}
+
+/// Transposes a single chord symbol (e.g. `G`, `Em7`, `D/F#`, `Bbmaj7`) by `semitones`.
+pub fn transpose_chord_token(token: &str, semitones: i8) -> String {
+    if semitones == 0 {
+        return token.to_string();
+    }
+    if let Some((main, bass)) = token.split_once('/') {
+        let t_main = transpose_chord_token(main, semitones);
+        let t_bass = transpose_chord_token(bass, semitones);
+        return format!("{t_main}/{t_bass}");
+    }
+    if let Some((new_root, consumed)) = transpose_note_prefix(token, semitones) {
+        let rest = &token[consumed..];
+        let valid_rest = rest.is_empty()
+            || rest.chars().all(|c| {
+                matches!(
+                    c,
+                    'm' | 'M' | 'a' | 'j' | 'i' | 'n' | 'd' | 'u' | 's' | 'g' | '0'..='9' | '+' | '-' | '°' | '(' | ')'
+                )
+            });
+        if valid_rest {
+            return format!("{new_root}{rest}");
+        }
+    }
+    token.to_string()
+}
+
+/// Transposes every chord token in a chord line while preserving inter-chord spacing.
+pub fn transpose_chord_line(line: &str, semitones: i8) -> String {
+    if semitones == 0 {
+        return line.to_string();
+    }
+    let mut out = String::with_capacity(line.len() + 8);
+    let mut cur = String::new();
+    for ch in line.chars() {
+        if ch.is_whitespace() || ch == '|' || ch == '(' || ch == ')' || ch == '[' || ch == ']' {
+            if !cur.is_empty() {
+                out.push_str(&transpose_chord_token(&cur, semitones));
+                cur.clear();
+            }
+            out.push(ch);
+        } else {
+            cur.push(ch);
+        }
+    }
+    if !cur.is_empty() {
+        out.push_str(&transpose_chord_token(&cur, semitones));
+    }
+    out
 }
 
 /// Pixel rectangle relative to the assigned physical monitor's top-left origin
@@ -1136,6 +1402,10 @@ pub struct SceneState {
     pub active_arrangement_id: Option<String>,
     #[serde(default)]
     pub active_cue_tracks: Vec<AutoPlayTrack>,
+    #[serde(default)]
+    pub active_chord_chart: Option<ChordChartDocument>,
+    #[serde(default)]
+    pub active_sheet_music: Option<SheetMusicDocument>,
 }
 
 /// Deterministic mutation commands applied to `SceneState`.
@@ -1249,6 +1519,11 @@ pub enum SceneDiff {
     SetCcliDisplayConfig(CcliDisplayConfig),
     /// Replaces the saved auto-play cue tracks attached to the currently loaded presentation.
     SetCueTracks(Vec<AutoPlayTrack>),
+    /// Attaches or clears structured Musician Chord Chart and/or Sheet Music for the active song.
+    SetActiveMusicSheets {
+        chord_chart: Option<ChordChartDocument>,
+        sheet_music: Option<SheetMusicDocument>,
+    },
     SyncOverlays(Vec<OverlayItem>),
     SetPointer(Option<TelestratorPointer>),
     DeleteSlideElement {
@@ -1630,6 +1905,8 @@ impl SceneState {
             ],
             active_arrangement_id: None,
             active_cue_tracks: Vec::new(),
+            active_chord_chart: None,
+            active_sheet_music: None,
         }
     }
 
@@ -2336,6 +2613,15 @@ impl SceneState {
             }
             SceneDiff::SetCueTracks(tracks) => {
                 self.active_cue_tracks = tracks;
+                self.revision += 1;
+                true
+            }
+            SceneDiff::SetActiveMusicSheets {
+                chord_chart,
+                sheet_music,
+            } => {
+                self.active_chord_chart = chord_chart;
+                self.active_sheet_music = sheet_music;
                 self.revision += 1;
                 true
             }
@@ -3315,5 +3601,98 @@ mod tests {
             }],
         }])));
         assert_eq!(state.active_cue_tracks.len(), 1);
+    }
+
+    #[test]
+    fn musician_chord_chart_sheet_music_and_transpose() {
+        assert_eq!(transpose_chord_token("G", 0), "G");
+        assert_eq!(transpose_chord_token("G", 2), "A");
+        assert_eq!(transpose_chord_token("D/F#", 2), "E/G#");
+        assert_eq!(transpose_chord_token("Bb", -2), "Ab");
+        assert_eq!(transpose_chord_token("Em7", 3), "Gm7");
+        assert_eq!(transpose_chord_token("Hello", 2), "Hello");
+        assert_eq!(
+            transpose_chord_line("G   Cadd9   | D/F#  Em7", 2),
+            "A   Dadd9   | E/G#  F#m7"
+        );
+        assert_eq!(transpose_chord_line("G   C", 0), "G   C");
+
+        let cc_layout = StageLayoutConfig::musician_chord_chart();
+        assert_eq!(cc_layout.mode, StageDisplayMode::ChordChart);
+        assert_eq!(cc_layout.chord_lookahead_sections, 2);
+
+        let sm_layout = StageLayoutConfig::musician_sheet_music();
+        assert_eq!(sm_layout.mode, StageDisplayMode::SheetMusic);
+        assert!(sm_layout.sheet_two_page_spread);
+
+        let mut state = SceneState::demo_m0(2);
+        let slide0 = state.deck[0].clone();
+        let mut group_to_page = BTreeMap::new();
+        group_to_page.insert("verse 1".to_string(), 1);
+        group_to_page.insert("chorus".to_string(), 2);
+        let mut slide_to_page = BTreeMap::new();
+        slide_to_page.insert(slide0.id.0.to_string(), 3);
+
+        let sheet = SheetMusicDocument {
+            title: "Amazing Grace (Piano Score)".to_string(),
+            source_path: Some("grace_score.pdf".to_string()),
+            pages: vec![
+                SheetMusicPage {
+                    page_number: 1,
+                    label: "Page 1".into(),
+                    image_path: None,
+                    staff_lines_hint: vec!["Verse 1".into()],
+                },
+                SheetMusicPage {
+                    page_number: 2,
+                    label: "Page 2".into(),
+                    image_path: None,
+                    staff_lines_hint: vec!["Chorus".into()],
+                },
+                SheetMusicPage {
+                    page_number: 3,
+                    label: "Page 3".into(),
+                    image_path: None,
+                    staff_lines_hint: vec!["Ending".into()],
+                },
+            ],
+            group_to_page,
+            slide_to_page,
+        };
+
+        // Exact slide_to_page override wins
+        assert_eq!(sheet.page_for_slide(Some(&slide0), 0, 5), 3);
+        // Group name mapping
+        let mut chorus_slide = slide0.clone();
+        chorus_slide.id = SlideId::new();
+        chorus_slide.group = "Chorus (Big)".to_string();
+        assert_eq!(sheet.page_for_slide(Some(&chorus_slide), 1, 5), 2);
+        // Proportional fallback when unmapped
+        let mut bridge_slide = slide0.clone();
+        bridge_slide.id = SlideId::new();
+        bridge_slide.group = "Bridge".to_string();
+        assert_eq!(sheet.page_for_slide(Some(&bridge_slide), 4, 5), 3);
+        assert_eq!(sheet.page_for_slide(None, 0, 1), 1);
+
+        let chart = ChordChartDocument {
+            title: "Amazing Grace".into(),
+            key_signature: Some("G".into()),
+            tempo_bpm: Some(76.0),
+            time_signature: Some("4/4".into()),
+            sections: vec![ChordChartSection {
+                group: "Verse 1".into(),
+                lines: vec![ChordChartLine {
+                    chords: Some("G   C   G".into()),
+                    lyrics: "Amazing grace how sweet the sound".into(),
+                }],
+            }],
+        };
+
+        assert!(state.apply(SceneDiff::SetActiveMusicSheets {
+            chord_chart: Some(chart.clone()),
+            sheet_music: Some(sheet.clone()),
+        }));
+        assert_eq!(state.active_chord_chart, Some(chart));
+        assert_eq!(state.active_sheet_music, Some(sheet));
     }
 }

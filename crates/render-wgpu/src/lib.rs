@@ -646,15 +646,51 @@ impl CompositorApp {
                 .stage_layout
                 .clone()
                 .unwrap_or_else(StageLayoutConfig::default);
-            self.rasterizer.rasterize_stage_confidence(
-                snap.state.active_slide.as_ref(),
-                snap.state.next_slide_preview.as_ref(),
-                snap.state.stage_message.as_deref(),
-                snap.state.timer_readout.as_deref(),
-                &layout,
-                LAYER_TEX_WIDTH,
-                LAYER_TEX_HEIGHT,
-            )
+            let active_idx = snap
+                .state
+                .active_slide
+                .as_ref()
+                .and_then(|cur| snap.state.deck.iter().position(|s| s.id == cur.id))
+                .unwrap_or(0);
+            match layout.mode {
+                core_scene::StageDisplayMode::ChordChart => self
+                    .rasterizer
+                    .rasterize_musician_chord_chart(
+                        snap.state.active_chord_chart.as_ref(),
+                        &snap.state.deck,
+                        snap.state.active_slide.as_ref(),
+                        snap.state.active_presentation_title.as_deref(),
+                        snap.state.stage_message.as_deref(),
+                        snap.state.timer_readout.as_deref(),
+                        &layout,
+                        LAYER_TEX_WIDTH,
+                        LAYER_TEX_HEIGHT,
+                    ),
+                core_scene::StageDisplayMode::SheetMusic => self
+                    .rasterizer
+                    .rasterize_musician_sheet_music(
+                        snap.state.active_sheet_music.as_ref(),
+                        snap.state.active_slide.as_ref(),
+                        active_idx,
+                        snap.state.deck.len(),
+                        snap.state.stage_message.as_deref(),
+                        snap.state.timer_readout.as_deref(),
+                        &layout,
+                        LAYER_TEX_WIDTH,
+                        LAYER_TEX_HEIGHT,
+                    ),
+                core_scene::StageDisplayMode::Confidence => self
+                    .rasterizer
+                    .rasterize_stage_confidence(
+                        snap.state.active_slide.as_ref(),
+                        snap.state.next_slide_preview.as_ref(),
+                        snap.state.stage_message.as_deref(),
+                        snap.state.timer_readout.as_deref(),
+                        &layout,
+                        LAYER_TEX_WIDTH,
+                        LAYER_TEX_HEIGHT,
+                    ),
+            }
         } else if let Some(fg) = fg_active {
             // Decode real local foreground PNG/BMP image directly onto Layer 2/3 when available.
             if let Some(rgba) = decode_local_image_premul_rgba(

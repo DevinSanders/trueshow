@@ -43,15 +43,48 @@ describe("StageDesignerPanel (Visual Stage Confidence Designer)", () => {
     clearMocks();
   });
 
-  it("switches presets and applies Stage Layout live", async () => {
+  it("switches confidence & musician presets, creates a separate Musician Stage screen, and applies layout live", async () => {
     const scene = makeScene(true);
     const onSceneChange = vi.fn();
-    mockIPC((cmd) => (cmd === "set_output_stage_layout" ? scene : null));
+    mockIPC((cmd) => {
+      if (cmd === "upsert_output_screen") {
+        return {
+          state: {
+            ...scene,
+            outputs: [
+              ...scene.outputs,
+              {
+                id: "00000000-0000-0000-0000-000000000077",
+                name: "Musician Chord Chart (2)",
+                kind: "Stage",
+                monitor_index: null,
+                width: 1280,
+                height: 720,
+                fullscreen: false,
+                look_id: "00000000-0000-0000-0000-000000000002",
+              },
+            ],
+          },
+        };
+      }
+      if (cmd === "set_output_stage_layout") return scene;
+      return null;
+    });
 
     render(StageDesignerPanel, { props: { scene, onSceneChange } });
     await fireEvent.click(screen.getByRole("button", { name: "Pastor Big Clock" }));
     await fireEvent.click(screen.getByRole("button", { name: "Minimal Lyrics" }));
     await fireEvent.click(screen.getByRole("button", { name: "Band w/ Chords" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Musician Chord Chart" }));
+    expect(screen.getByLabelText("Lookahead Sections")).toBeTruthy();
+    await fireEvent.click(screen.getByRole("button", { name: "Musician Sheet Music" }));
+    expect(screen.getByText(/PAGE 1 \(TREBLE \+ BASS CLEF\)/)).toBeTruthy();
+
+    await fireEvent.click(screen.getByRole("button", { name: "+ Separate Musician Screen" }));
+    await waitFor(() => {
+      expect(screen.getByRole("status").textContent).toContain("Musician Chord Chart");
+    });
+
     await fireEvent.click(screen.getByRole("button", { name: "Apply Stage Layout Live" }));
     await waitFor(() => {
       expect(onSceneChange).toHaveBeenCalled();
