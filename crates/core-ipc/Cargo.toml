@@ -1,0 +1,19 @@
+[package]
+name = "core-ipc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Dual-plane local IPC (framed binary control socket + lock-free shared-memory preview ring) for OpenPresenter."
+
+[dependencies]
+core-scene.workspace = true
+interprocess.workspace = true
+memmap2.workspace = true
+postcard.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

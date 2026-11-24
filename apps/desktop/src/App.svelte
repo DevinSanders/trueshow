@@ -1,0 +1,603 @@
+<script lang="ts">
+  import { invoke } from "@tauri-apps/api/core";
+  import { onMount } from "svelte";
+  import PreviewCanvas from "./lib/PreviewCanvas.svelte";
+  import type {
+    EngineSnapshot,
+    EngineTelemetry,
+    LayerKind,
+    SceneState,
+  } from "./lib/types";
+
+  let snapshot = $state<EngineSnapshot | null>(null);
+  let telemetry = $state<EngineTelemetry | null>(null);
+  let statusMessage = $state("Connecting to openpresenter-engine sidecar...");
+  let errorText = $state<string | null>(null);
+  let dissolveMs = $state(450);
+  let useCut = $state(false);
+
+  const connected = $derived(snapshot !== null);
+  const scene = $derived(snapshot?.state ?? null);
+  const looksList = $derived(scene ? Object.values(scene.looks) : []);
+
+  async function attachEngine() {
+    errorText = null;
+    statusMessage = "Attaching to openpresenter-engine...";
+    try {
+      const snap = await invoke<EngineSnapshot>("connect_engine");
+      snapshot = snap;
+      telemetry = snap.telemetry;
+      statusMessage = `Attached to engine PID ${snap.engine_pid}`;
+    } catch (err) {
+      errorText = String(err);
+      statusMessage = "Engine unreachable";
+    }
+  }
+
+  async function triggerSlide(slideId: string) {
+    try {
+      const next = await invoke<SceneState>("trigger_slide", {
+        slideId,
+        durationMs: useCut ? 0 : dissolveMs,
+      });
+      if (snapshot) snapshot = { ...snapshot, state: next };
+    } catch (err) {
+      errorText = String(err);
+    }
+  }
+
+  async function clearLayer(layer: LayerKind) {
+    try {
+      const next = await invoke<SceneState>("clear_layer", { layer });
+      if (snapshot) snapshot = { ...snapshot, state: next };
+    } catch (err) {
+      errorText = String(err);
+    }
+  }
+
+  async function clearAll() {
+    try {
+      const next = await invoke<SceneState>("clear_all");
+      if (snapshot) snapshot = { ...snapshot, state: next };
+    } catch (err) {
+      errorText = String(err);
+    }
+  }
+
+  async function toggleBlackout() {
+    if (!scene) return;
+    try {
+      const next = await invoke<SceneState>("set_blackout", {
+        enabled: !scene.blackout,
+      });
+      if (snapshot) snapshot = { ...snapshot, state: next };
+    } catch (err) {
+      errorText = String(err);
+    }
+  }
+
+  async function toggleOverlay() {
+    if (!scene) return;
+    try {
+      const next = await invoke<SceneState>("toggle_overlay", {
+        active: !scene.overlay_layer_active,
+      });
+      if (snapshot) snapshot = { ...snapshot, state: next };
+    } catch (err) {
+      errorText = String(err);
+    }
+  }
+
+  async function setOutputLook(outputId: string, lookId: string) {
+    try {
+      const next = await invoke<SceneState>("set_output_look", {
+        outputId,
+        lookId,
+      });
+      if (snapshot) snapshot = { ...snapshot, state: next };
+    } catch (err) {
+      errorText = String(err);
+    }
+  }
+
+  function reloadUiKeepLive() {
+    // Demonstrates zero-blackout sidecar isolation: reloads WebView while physical screens stay at 60 fps.
+    window.location.reload();
+  }
+
+  async function shutdownEngine() {
+    try {
+      await invoke("shutdown_engine");
+      snapshot = null;
+      telemetry = null;
+      statusMessage = "Engine shut down cleanly";
+    } catch (err) {
+      errorText = String(err);
+    }
+  }
+
+  function cssRgb(c: { r: number; g: number; b: number }): string {
+    return `rgb(${Math.round(c.r * 255)}, ${Math.round(c.g * 255)}, ${Math.round(c.b * 255)})`;
+  }
+
+  onMount(() => {
+    void attachEngine();
+    const timer = setInterval(async () => {
+      if (!snapshot) return;
+      try {
+        telemetry = await invoke<EngineTelemetry>("get_telemetry");
+      } catch {
+        // Keep current UI state; user can click Reconnect if engine exited.
+      }
+    }, 500);
+    return () => clearInterval(timer);
+  });
+</script>
+
+<div class="shell">
+  <header class="topbar">
+    <div class="brand">
+      <span class="dot" class:live={connected}></span>
+      <strong>OpenPresenter</strong>
+      <span class="pill">M0 PoC</span>
+    </div>
+
+    <div class="telemetry">
+      {#if snapshot}
+        <span>GPU: <strong>{snapshot.gpu_adapter_name}</strong> ({snapshot.gpu_backend})</span>
+        <span>·</span>
+        <span>Engine: <strong>{telemetry ? telemetry.fps.toFixed(1) : "—"} fps</strong></span>
+        <span>·</span>
+        <span>p99: <strong>{telemetry ? telemetry.p99_frame_ms.toFixed(2) : "—"} ms</strong></span>
+        <span>·</span>
+        <span>Dropped: <strong>{telemetry?.dropped_frames ?? 0}</strong></span>
+      {:else}
+        <span>{statusMessage}</span>
+      {/if}
+    </div>
+
+    <div class="top-actions">
+      <button class="btn" onclick={attachEngine}>Reconnect</button>
+      <button class="btn" onclick={reloadUiKeepLive} title="Reloads the Tauri WebView while openpresenter-engine keeps sanctuary screens live at 60 fps">
+        Reload UI (Keep Live)
+      </button>
+      <button class="btn danger" onclick={shutdownEngine} disabled={!connected}>
+        Stop Engine
+      </button>
+    </div>
+  </header>
+
+  {#if errorText}
+    <div class="error-banner">{errorText}</div>
+  {/if}
+
+  <main class="workspace">
+    <section class="deck-pane">
+      <div class="pane-header">
+        <h2>Cue Deck (GPU Scene Graph)</h2>
+        <div class="transition-controls">
+          <label>
+            <input type="checkbox" bind:checked={useCut} />
+            Cut
+          </label>
+          <label class:dim={useCut}>
+            Dissolve: {dissolveMs} ms
+            <input type="range" min="100" max="1500" step="50" bind:value={dissolveMs} disabled={useCut} />
+          </label>
+        </div>
+      </div>
+
+      {#if scene}
+        <div class="slide-grid">
+          {#each scene.deck as slide (slide.id)}
+            {@const isLive = scene.active_slide?.id === slide.id && !scene.blackout}
+            <button
+              class="slide-card"
+              class:active={isLive}
+              onclick={() => triggerSlide(slide.id)}
+            >
+              <div
+                class="swatch"
+                style={`background: linear-gradient(135deg, ${cssRgb(slide.primary_color)}, ${cssRgb(slide.secondary_color)});`}
+              >
+                <span class="group-tag">{slide.group}</span>
+                {#if isLive}
+                  <span class="on-air">LIVE</span>
+                {/if}
+                <div class="swatch-headline">{slide.headline}</div>
+                <div class="swatch-accent" style={`background:${cssRgb(slide.accent_color)}`}></div>
+              </div>
+              <div class="card-footer">
+                <div class="card-label">{slide.label}</div>
+                <div class="card-body">{slide.body}</div>
+              </div>
+            </button>
+          {/each}
+        </div>
+
+        <div class="layer-bar">
+          <span class="bar-label">Layers & Master:</span>
+          <button class="btn" onclick={() => clearLayer("MediaBackground")}>Clear Media</button>
+          <button class="btn" onclick={() => clearLayer("Slide")}>Clear Slide</button>
+          <button class="btn" class:toggled={scene.overlay_layer_active} onclick={toggleOverlay}>
+            Overlay Bug: {scene.overlay_layer_active ? "ON" : "OFF"}
+          </button>
+          <button class="btn" onclick={clearAll}>Clear All</button>
+          <button
+            class="btn blackout"
+            class:engaged={scene.blackout}
+            onclick={toggleBlackout}
+          >
+            {scene.blackout ? "BLACKOUT ACTIVE" : "BLACKOUT"}
+          </button>
+        </div>
+      {:else}
+        <div class="empty-state">
+          <p>{statusMessage}</p>
+          <button class="btn primary" onclick={attachEngine}>Launch / Attach Engine</button>
+        </div>
+      {/if}
+    </section>
+
+    <aside class="monitor-pane">
+      <div class="pane-header">
+        <h2>Native GPU Output Monitors</h2>
+        <span class="sub">SHM -> Binary Channel</span>
+      </div>
+
+      {#if scene}
+        <div class="monitors">
+          {#each scene.outputs as output (output.id)}
+            <div class="output-block">
+              <PreviewCanvas
+                outputId={output.id}
+                label={output.name}
+                kind={output.kind}
+                {connected}
+              />
+              <div class="look-row">
+                <span>Look:</span>
+                <select
+                  value={output.look_id}
+                  onchange={(e) => setOutputLook(output.id, e.currentTarget.value)}
+                >
+                  {#each looksList as look (look.id)}
+                    <option value={look.id}>{look.name}</option>
+                  {/each}
+                </select>
+              </div>
+            </div>
+          {/each}
+        </div>
+      {/if}
+    </aside>
+  </main>
+</div>
+
+<style>
+  .shell {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+  }
+
+  .topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 16px;
+    background: var(--bg-1);
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--warn);
+  }
+
+  .dot.live {
+    background: var(--ok);
+    box-shadow: 0 0 8px var(--ok);
+  }
+
+  .pill {
+    padding: 2px 7px;
+    border-radius: 999px;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    color: var(--text-1);
+    font-size: 11px;
+  }
+
+  .telemetry {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-1);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .telemetry strong {
+    color: var(--text-0);
+  }
+
+  .top-actions {
+    display: flex;
+    gap: 8px;
+  }
+
+  .error-banner {
+    background: rgba(239, 68, 68, 0.16);
+    border-bottom: 1px solid rgba(239, 68, 68, 0.45);
+    color: #fecaca;
+    padding: 8px 16px;
+    font-size: 12px;
+  }
+
+  .workspace {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1fr 390px;
+    min-height: 0;
+  }
+
+  .deck-pane {
+    display: flex;
+    flex-direction: column;
+    padding: 14px 16px;
+    gap: 14px;
+    overflow: hidden;
+  }
+
+  .monitor-pane {
+    border-left: 1px solid var(--border);
+    background: #0d1119;
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    overflow-y: auto;
+  }
+
+  .pane-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .pane-header h2 {
+    margin: 0;
+    font-size: 14px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-1);
+  }
+
+  .sub {
+    font-size: 11px;
+    color: var(--text-1);
+  }
+
+  .transition-controls {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    font-size: 12px;
+    color: var(--text-1);
+  }
+
+  .transition-controls label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .transition-controls label.dim {
+    opacity: 0.45;
+  }
+
+  .slide-grid {
+    flex: 1;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 12px;
+    align-content: start;
+    overflow-y: auto;
+    padding-right: 4px;
+  }
+
+  .slide-card {
+    background: var(--bg-1);
+    border: 2px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    padding: 0;
+    text-align: left;
+    color: var(--text-0);
+    transition: border-color 120ms ease, transform 120ms ease;
+  }
+
+  .slide-card:hover {
+    border-color: #4b6186;
+    transform: translateY(-1px);
+  }
+
+  .slide-card.active {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-glow);
+  }
+
+  .swatch {
+    position: relative;
+    height: 112px;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+  }
+
+  .group-tag {
+    align-self: flex-start;
+    padding: 2px 7px;
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.52);
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+
+  .on-air {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    padding: 2px 7px;
+    border-radius: 4px;
+    background: var(--danger);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+  }
+
+  .swatch-headline {
+    font-size: 13px;
+    font-weight: 700;
+    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
+  }
+
+  .swatch-accent {
+    height: 3px;
+    width: 48px;
+    border-radius: 2px;
+  }
+
+  .card-footer {
+    padding: 8px 10px;
+  }
+
+  .card-label {
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  .card-body {
+    margin-top: 2px;
+    font-size: 11px;
+    color: var(--text-1);
+  }
+
+  .layer-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 10px 12px;
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+
+  .bar-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-1);
+    margin-right: 4px;
+  }
+
+  .btn {
+    padding: 6px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg-2);
+    color: var(--text-0);
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .btn:hover:not(:disabled) {
+    background: #232f44;
+  }
+
+  .btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  .btn.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+
+  .btn.toggled {
+    border-color: var(--ok);
+    color: #bbf7d0;
+  }
+
+  .btn.danger {
+    border-color: rgba(239, 68, 68, 0.5);
+    color: #fca5a5;
+  }
+
+  .btn.blackout {
+    margin-left: auto;
+    border-color: rgba(239, 68, 68, 0.6);
+    color: #fecaca;
+  }
+
+  .btn.blackout.engaged {
+    background: var(--danger);
+    border-color: var(--danger);
+    color: #fff;
+  }
+
+  .monitors {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .output-block {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .look-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-1);
+  }
+
+  .look-row select {
+    flex: 1;
+    background: var(--bg-1);
+    color: var(--text-0);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 5px 8px;
+    font-size: 12px;
+  }
+
+  .empty-state {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    color: var(--text-1);
+  }
+</style>

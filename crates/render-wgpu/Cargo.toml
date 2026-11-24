@@ -1,0 +1,19 @@
+[package]
+name = "render-wgpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Multi-surface wgpu 30 + winit 30 real-time GPU compositor with async staging readback for OpenPresenter."
+
+[dependencies]
+bytemuck.workspace = true
+core-ipc.workspace = true
+core-scene.workspace = true
+pollster.workspace = true
+tracing.workspace = true
+wgpu.workspace = true
+winit.workspace = true
+
+[lints]
+workspace = true

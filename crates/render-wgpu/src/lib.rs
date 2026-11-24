@@ -1,0 +1,859 @@
+//! Multi-surface `wgpu` 30 + `winit` 30 real-time GPU compositor for OpenPresenter M0.
+
+pub mod staging;
+
+use bytemuck::{Pod, Zeroable};
+use core_ipc::{
+    DisplayInfo, EngineSnapshot, EngineTelemetry, OutputTelemetry, PROTOCOL_VERSION,
+    PreviewBusDescriptor, ShmPreviewWriter,
+};
+use core_scene::{
+    ColorRgba, LayerKind, LookConfig, OutputConfig, OutputId, OutputKind, SceneDiff, SceneState,
+    Slide, TransitionSpec,
+};
+use staging::PreviewReadbackRing;
+use std::collections::{HashMap, VecDeque};
+use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
+use tracing::{error, info, warn};
+use winit::application::ApplicationHandler;
+use winit::dpi::LogicalSize;
+use winit::event::WindowEvent;
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::window::{Fullscreen, Window, WindowAttributes, WindowId};
+
+pub const PREVIEW_WIDTH: u32 = 640;
+pub const PREVIEW_HEIGHT: u32 = 360;
+
+pub use winit::event_loop::EventLoopProxy;
+
+/// Wakeup events delivered from the IPC control thread to the `winit` main thread.
+#[derive(Debug, Clone)]
+pub enum EngineWakeEvent {
+    SceneChanged,
+    Shutdown,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+struct CompositorUniforms {
+    time_sec: f32,
+    blend_t: f32,
+    aspect: f32,
+    flags: u32,
+    curr_primary: [f32; 4],
+    curr_secondary: [f32; 4],
+    curr_accent: [f32; 4],
+    prev_primary: [f32; 4],
+    prev_secondary: [f32; 4],
+    prev_accent: [f32; 4],
+    curr_style: u32,
+    prev_style: u32,
+    _pad0: u32,
+    _pad1: u32,
+}
+
+/// Thread-safe engine state shared between the GPU compositor thread and the IPC server.
+pub struct SharedEngineState {
+    inner: RwLock<EngineRuntimeState>,
+}
+
+struct EngineRuntimeState {
+    scene: SceneState,
+    prev_slide: Option<Slide>,
+    transition_start: Instant,
+    transition_duration: Duration,
+    gpu_adapter_name: String,
+    gpu_backend: String,
+    displays: Vec<DisplayInfo>,
+    preview_buses: Vec<PreviewBusDescriptor>,
+    telemetry: EngineTelemetry,
+}
+
+impl SharedEngineState {
+    pub fn new(scene: SceneState) -> Self {
+        let initial_slide = scene.active_slide.clone();
+        Self {
+            inner: RwLock::new(EngineRuntimeState {
+                scene,
+                prev_slide: initial_slide,
+                transition_start: Instant::now(),
+                transition_duration: Duration::from_millis(1),
+                gpu_adapter_name: "Initializing...".to_string(),
+                gpu_backend: "Pending".to_string(),
+                displays: Vec::new(),
+                preview_buses: Vec::new(),
+                telemetry: EngineTelemetry::default(),
+            }),
+        }
+    }
+
+    pub fn apply_diff(&self, diff: SceneDiff) -> Option<SceneState> {
+        let mut guard = self.inner.write().ok()?;
+        let old_slide = guard.scene.active_slide.clone();
+        let changed = guard.scene.apply(diff);
+        if !changed {
+            return None;
+        }
+        if guard.scene.active_slide != old_slide {
+            guard.prev_slide = old_slide;
+            guard.transition_start = Instant::now();
+            guard.transition_duration = match guard
+                .scene
+                .active_slide
+                .as_ref()
+                .map(|s| s.transition)
+                .unwrap_or_default()
+            {
+                TransitionSpec::Cut => Duration::from_millis(1),
+                TransitionSpec::Dissolve { duration_ms } => {
+                    Duration::from_millis(u64::from(duration_ms.max(1)))
+                }
+            };
+        }
+        Some(guard.scene.clone())
+    }
+
+    pub fn snapshot(&self) -> EngineSnapshot {
+        let guard = self.inner.read().expect("engine state lock poisoned");
+        EngineSnapshot {
+            protocol_version: PROTOCOL_VERSION,
+            engine_pid: std::process::id(),
+            gpu_adapter_name: guard.gpu_adapter_name.clone(),
+            gpu_backend: guard.gpu_backend.clone(),
+            state: guard.scene.clone(),
+            displays: guard.displays.clone(),
+            preview_buses: guard.preview_buses.clone(),
+            telemetry: guard.telemetry.clone(),
+        }
+    }
+
+    pub fn displays(&self) -> Vec<DisplayInfo> {
+        self.inner
+            .read()
+            .map(|g| g.displays.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn telemetry(&self) -> EngineTelemetry {
+        self.inner
+            .read()
+            .map(|g| g.telemetry.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn set_hardware_metadata(
+        &self,
+        adapter: String,
+        backend: String,
+        displays: Vec<DisplayInfo>,
+        preview_buses: Vec<PreviewBusDescriptor>,
+    ) {
+        if let Ok(mut guard) = self.inner.write() {
+            guard.gpu_adapter_name = adapter;
+            guard.gpu_backend = backend;
+            guard.displays = displays;
+            guard.preview_buses = preview_buses;
+        }
+    }
+
+    fn update_telemetry(&self, telemetry: EngineTelemetry) {
+        if let Ok(mut guard) = self.inner.write() {
+            guard.telemetry = telemetry;
+        }
+    }
+
+    fn uniforms_for_output(
+        &self,
+        output_id: OutputId,
+        output_kind: OutputKind,
+        aspect: f32,
+        elapsed_sec: f32,
+    ) -> CompositorUniforms {
+        let guard = self.inner.read().expect("engine state lock poisoned");
+        let look = guard.scene.look_for_output(output_id).cloned().unwrap_or(
+            LookConfig {
+                id: core_scene::LOOK_AUDIENCE_FULL,
+                name: "Fallback".to_string(),
+                enabled_layers: LayerKind::ALL.to_vec(),
+                lower_third_mode: false,
+                transparent_background: false,
+            },
+        );
+
+        let blend_t = (guard.transition_start.elapsed().as_secs_f32()
+            / guard.transition_duration.as_secs_f32())
+        .clamp(0.0, 1.0);
+
+        let curr = guard.scene.active_slide.as_ref();
+        let prev = guard.prev_slide.as_ref().or(curr);
+
+        let mut flags = 0u32;
+        if guard.scene.blackout {
+            flags |= 1 << 0;
+        }
+        if guard.scene.media_layer_active && look.is_layer_enabled(LayerKind::MediaBackground) {
+            flags |= 1 << 1;
+        }
+        if guard.scene.slide_layer_active && look.is_layer_enabled(LayerKind::Slide) {
+            flags |= 1 << 2;
+        }
+        if guard.scene.overlay_layer_active && look.is_layer_enabled(LayerKind::PropsAndOverlays) {
+            flags |= 1 << 3;
+        }
+        if look.lower_third_mode {
+            flags |= 1 << 4;
+        }
+        if output_kind == OutputKind::Stage {
+            flags |= 1 << 5;
+        }
+        if look.transparent_background {
+            flags |= 1 << 6;
+        }
+
+        let (c1, c2, ca, cs) = slide_colors(curr);
+        let (p1, p2, pa, ps) = slide_colors(prev);
+
+        CompositorUniforms {
+            time_sec: elapsed_sec,
+            blend_t,
+            aspect,
+            flags,
+            curr_primary: c1.to_array(),
+            curr_secondary: c2.to_array(),
+            curr_accent: ca.to_array(),
+            prev_primary: p1.to_array(),
+            prev_secondary: p2.to_array(),
+            prev_accent: pa.to_array(),
+            curr_style: cs,
+            prev_style: ps,
+            _pad0: 0,
+            _pad1: 0,
+        }
+    }
+}
+
+fn slide_colors(slide: Option<&Slide>) -> (ColorRgba, ColorRgba, ColorRgba, u32) {
+    match slide {
+        Some(s) => (
+            s.primary_color,
+            s.secondary_color,
+            s.accent_color,
+            s.motion_style as u32,
+        ),
+        None => (ColorRgba::BLACK, ColorRgba::BLACK, ColorRgba::BLACK, 0),
+    }
+}
+
+struct OutputSurfaceState {
+    config_meta: OutputConfig,
+    window: Arc<Window>,
+    surface: wgpu::Surface<'static>,
+    surface_config: wgpu::SurfaceConfiguration,
+    pipeline: wgpu::RenderPipeline,
+    uniform_buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+    preview_ring: Option<PreviewReadbackRing>,
+    preview_pipeline: Option<wgpu::RenderPipeline>,
+    frames_presented: u64,
+}
+
+struct GpuContext {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+}
+
+struct FrameStats {
+    window_ms: VecDeque<f32>,
+    last_frame: Instant,
+    total_frames: u64,
+    dropped_frames: u64,
+    last_telemetry_publish: Instant,
+}
+
+impl FrameStats {
+    fn new() -> Self {
+        Self {
+            window_ms: VecDeque::with_capacity(120),
+            last_frame: Instant::now(),
+            total_frames: 0,
+            dropped_frames: 0,
+            last_telemetry_publish: Instant::now(),
+        }
+    }
+
+    fn record_frame(&mut self) -> Option<EngineTelemetry> {
+        let now = Instant::now();
+        let dt_ms = now.duration_since(self.last_frame).as_secs_f32() * 1000.0;
+        self.last_frame = now;
+        self.total_frames += 1;
+
+        if self.total_frames > 5 && dt_ms > 22.0 {
+            self.dropped_frames += 1;
+        }
+        if self.window_ms.len() >= 120 {
+            self.window_ms.pop_front();
+        }
+        self.window_ms.push_back(dt_ms);
+
+        if now.duration_since(self.last_telemetry_publish) >= Duration::from_millis(250) {
+            self.last_telemetry_publish = now;
+            let mut sorted: Vec<f32> = self.window_ms.iter().copied().collect();
+            sorted.sort_by(f32::total_cmp);
+            let avg = if sorted.is_empty() {
+                0.0
+            } else {
+                sorted.iter().sum::<f32>() / sorted.len() as f32
+            };
+            let p99 = if sorted.is_empty() {
+                0.0
+            } else {
+                let idx = ((sorted.len() as f32 * 0.99).ceil() as usize).saturating_sub(1);
+                sorted[idx.min(sorted.len() - 1)]
+            };
+            let fps = if avg > 0.01 { 1000.0 / avg } else { 0.0 };
+            Some(EngineTelemetry {
+                fps,
+                avg_frame_ms: avg,
+                p99_frame_ms: p99,
+                total_frames: self.total_frames,
+                dropped_frames: self.dropped_frames,
+                outputs: Vec::new(),
+            })
+        } else {
+            None
+        }
+    }
+}
+
+struct CompositorApp {
+    shared: Arc<SharedEngineState>,
+    preview_dir: PathBuf,
+    start_time: Instant,
+    gpu: Option<GpuContext>,
+    outputs: HashMap<WindowId, OutputSurfaceState>,
+    ordered_windows: Vec<WindowId>,
+    stats: FrameStats,
+    preview_tick_counter: u64,
+}
+
+impl CompositorApp {
+    fn new(shared: Arc<SharedEngineState>, preview_dir: PathBuf) -> Self {
+        Self {
+            shared,
+            preview_dir,
+            start_time: Instant::now(),
+            gpu: None,
+            outputs: HashMap::new(),
+            ordered_windows: Vec::new(),
+            stats: FrameStats::new(),
+            preview_tick_counter: 0,
+        }
+    }
+
+    fn create_pipeline(
+        device: &wgpu::Device,
+        layout: &wgpu::PipelineLayout,
+        shader: &wgpu::ShaderModule,
+        format: wgpu::TextureFormat,
+        label: &str,
+    ) -> wgpu::RenderPipeline {
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some(label),
+            layout: Some(layout),
+            vertex: wgpu::VertexState {
+                module: shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        })
+    }
+
+    fn render_output(&mut self, window_id: WindowId) {
+        let Some(gpu) = self.gpu.as_ref() else {
+            return;
+        };
+        let Some(out) = self.outputs.get_mut(&window_id) else {
+            return;
+        };
+
+        let elapsed_sec = self.start_time.elapsed().as_secs_f32();
+        let aspect = (out.surface_config.width as f32) / (out.surface_config.height.max(1) as f32);
+        let uniforms = self.shared.uniforms_for_output(
+            out.config_meta.id,
+            out.config_meta.kind,
+            aspect,
+            elapsed_sec,
+        );
+        gpu.queue
+            .write_buffer(&out.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+
+        let frame = match out.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(frame)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
+            wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
+                out.surface.configure(&gpu.device, &out.surface_config);
+                return;
+            }
+            wgpu::CurrentSurfaceTexture::Timeout
+            | wgpu::CurrentSurfaceTexture::Occluded
+            | wgpu::CurrentSurfaceTexture::Validation => {
+                return;
+            }
+        };
+
+        let surface_view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut encoder = gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("compositor_frame_encoder"),
+            });
+
+        // 1. Primary physical swapchain render pass
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("output_surface_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &surface_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&out.pipeline);
+            pass.set_bind_group(0, &out.bind_group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+
+        // 2. Non-blocking 30 fps offscreen preview readback pass (every 2nd frame)
+        let mut submitted_slot = None;
+        if let (Some(ring), Some(preview_pipe)) =
+            (out.preview_ring.as_mut(), out.preview_pipeline.as_ref())
+        {
+            ring.drain_ready(&gpu.device);
+            if self.preview_tick_counter.is_multiple_of(2) {
+                {
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("preview_downsample_pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: ring.view(),
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                                store: wgpu::StoreOp::Store,
+                            },
+                            depth_slice: None,
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    });
+                    pass.set_pipeline(preview_pipe);
+                    pass.set_bind_group(0, &out.bind_group, &[]);
+                    pass.draw(0..3, 0..1);
+                }
+                submitted_slot = ring.encode_copy(&mut encoder);
+            }
+        }
+
+        gpu.queue.submit(std::iter::once(encoder.finish()));
+        if let (Some(slot), Some(ring)) = (submitted_slot, out.preview_ring.as_mut()) {
+            ring.begin_map(slot);
+        }
+
+        gpu.queue.present(frame);
+        out.frames_presented += 1;
+    }
+}
+
+impl ApplicationHandler<EngineWakeEvent> for CompositorApp {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.gpu.is_some() {
+            return;
+        }
+
+        let displays: Vec<DisplayInfo> = event_loop
+            .available_monitors()
+            .enumerate()
+            .map(|(idx, mon)| {
+                let size = mon.size();
+                let pos = mon.position();
+                DisplayInfo {
+                    index: idx,
+                    name: mon
+                        .name()
+                        .unwrap_or_else(|| format!("Display {}", idx + 1)),
+                    width: size.width,
+                    height: size.height,
+                    scale_factor: mon.scale_factor(),
+                    refresh_millihertz: mon.refresh_rate_millihertz(),
+                    position_x: pos.x,
+                    position_y: pos.y,
+                }
+            })
+            .collect();
+
+        info!("enumerated {} physical display(s)", displays.len());
+
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let output_configs = self.shared.snapshot().state.outputs;
+        if output_configs.is_empty() {
+            warn!("no outputs configured in SceneState");
+            return;
+        }
+
+        let mut created_windows: Vec<(OutputConfig, Arc<Window>, wgpu::Surface<'static>)> =
+            Vec::with_capacity(output_configs.len());
+
+        for (idx, cfg) in output_configs.into_iter().enumerate() {
+            let mut attrs = WindowAttributes::default()
+                .with_title(format!("OpenPresenter Output — {}", cfg.name))
+                .with_inner_size(LogicalSize::new(cfg.width as f64, cfg.height as f64));
+
+            if cfg.fullscreen {
+                let target_mon = cfg
+                    .monitor_index
+                    .and_then(|m| event_loop.available_monitors().nth(m));
+                attrs = attrs.with_fullscreen(Some(Fullscreen::Borderless(target_mon)));
+            }
+
+            let window = match event_loop.create_window(attrs) {
+                Ok(w) => Arc::new(w),
+                Err(err) => {
+                    error!("failed to create output window #{idx}: {err}");
+                    continue;
+                }
+            };
+
+            let surface = match instance.create_surface(Arc::clone(&window)) {
+                Ok(s) => s,
+                Err(err) => {
+                    error!("failed to create wgpu surface #{idx}: {err}");
+                    continue;
+                }
+            };
+
+            created_windows.push((cfg, window, surface));
+        }
+
+        let Some((_, _, first_surface)) = created_windows.first() else {
+            error!("no output surfaces could be created");
+            event_loop.exit();
+            return;
+        };
+
+        let adapter = match pollster::block_on(instance.request_adapter(
+            &wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: Some(first_surface),
+                force_fallback_adapter: false,
+                ..Default::default()
+            },
+        )) {
+            Ok(a) => a,
+            Err(err) => {
+                error!("failed to acquire wgpu adapter: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
+
+        let adapter_info = adapter.get_info();
+        info!(
+            "initialized GPU adapter '{}' via {:?}",
+            adapter_info.name, adapter_info.backend
+        );
+
+        let (device, queue) = match pollster::block_on(adapter.request_device(
+            &wgpu::DeviceDescriptor {
+                label: Some("openpresenter_compositor_device"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::default(),
+                ..Default::default()
+            },
+        )) {
+            Ok(pair) => pair,
+            Err(err) => {
+                error!("failed to create wgpu device: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
+
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("openpresenter_compositor_wgsl"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("compositor.wgsl").into()),
+        });
+
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("compositor_uniform_bgl"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("compositor_pipeline_layout"),
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
+        });
+
+        let mut preview_buses = Vec::new();
+
+        for (cfg, window, surface) in created_windows {
+            let caps = surface.get_capabilities(&adapter);
+            let surface_format = caps
+                .formats
+                .iter()
+                .copied()
+                .find(|f| f.is_srgb())
+                .unwrap_or(caps.formats[0]);
+
+            let phys = window.inner_size();
+            let surface_config = wgpu::SurfaceConfiguration {
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                format: surface_format,
+                width: phys.width.max(1),
+                height: phys.height.max(1),
+                present_mode: wgpu::PresentMode::AutoVsync,
+                alpha_mode: caps.alpha_modes[0],
+                view_formats: vec![],
+                desired_maximum_frame_latency: 2,
+                color_space: wgpu::SurfaceColorSpace::Auto,
+            };
+            surface.configure(&device, &surface_config);
+
+            let pipeline = Self::create_pipeline(
+                &device,
+                &pipeline_layout,
+                &shader,
+                surface_format,
+                &format!("pipeline_{}", cfg.name),
+            );
+
+            let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("compositor_uniform_buf"),
+                size: std::mem::size_of::<CompositorUniforms>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("compositor_bg"),
+                layout: &bind_group_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                }],
+            });
+
+            let shm_path = self
+                .preview_dir
+                .join(format!("preview-{}.op_shm", cfg.id.0));
+            let (preview_ring, preview_pipeline) =
+                match ShmPreviewWriter::create(&shm_path, PREVIEW_WIDTH, PREVIEW_HEIGHT) {
+                    Ok(writer) => {
+                        preview_buses.push(PreviewBusDescriptor {
+                            output_id: cfg.id,
+                            shm_path: shm_path.to_string_lossy().into_owned(),
+                            width: PREVIEW_WIDTH,
+                            height: PREVIEW_HEIGHT,
+                        });
+                        let ring =
+                            PreviewReadbackRing::new(&device, PREVIEW_WIDTH, PREVIEW_HEIGHT, writer);
+                        let ppipe = Self::create_pipeline(
+                            &device,
+                            &pipeline_layout,
+                            &shader,
+                            wgpu::TextureFormat::Rgba8Unorm,
+                            "preview_rgba8_pipeline",
+                        );
+                        (Some(ring), Some(ppipe))
+                    }
+                    Err(err) => {
+                        warn!("failed to create SHM preview ring for {}: {err}", cfg.name);
+                        (None, None)
+                    }
+                };
+
+            let wid = window.id();
+            self.ordered_windows.push(wid);
+            self.outputs.insert(
+                wid,
+                OutputSurfaceState {
+                    config_meta: cfg,
+                    window,
+                    surface,
+                    surface_config,
+                    pipeline,
+                    uniform_buffer,
+                    bind_group,
+                    preview_ring,
+                    preview_pipeline,
+                    frames_presented: 0,
+                },
+            );
+        }
+
+        self.shared.set_hardware_metadata(
+            adapter_info.name,
+            format!("{:?}", adapter_info.backend),
+            displays,
+            preview_buses,
+        );
+
+        self.gpu = Some(GpuContext { device, queue });
+    }
+
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: EngineWakeEvent) {
+        match event {
+            EngineWakeEvent::SceneChanged => {
+                for out in self.outputs.values() {
+                    out.window.request_redraw();
+                }
+            }
+            EngineWakeEvent::Shutdown => {
+                info!("received explicit Shutdown event; closing compositor outputs");
+                event_loop.exit();
+            }
+        }
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window_id: WindowId,
+        event: WindowEvent,
+    ) {
+        match event {
+            WindowEvent::CloseRequested => {
+                info!("output window closed by user; shutting down engine");
+                event_loop.exit();
+            }
+            WindowEvent::Resized(new_size) => {
+                if let (Some(gpu), Some(out)) =
+                    (self.gpu.as_ref(), self.outputs.get_mut(&window_id))
+                    && new_size.width > 0
+                    && new_size.height > 0
+                {
+                    out.surface_config.width = new_size.width;
+                    out.surface_config.height = new_size.height;
+                    out.surface.configure(&gpu.device, &out.surface_config);
+                }
+            }
+            WindowEvent::RedrawRequested => {
+                self.render_output(window_id);
+                if self.ordered_windows.first().copied() == Some(window_id) {
+                    self.preview_tick_counter += 1;
+                    if let Some(mut telemetry) = self.stats.record_frame() {
+                        telemetry.outputs = self
+                            .ordered_windows
+                            .iter()
+                            .filter_map(|id| self.outputs.get(id))
+                            .map(|o| OutputTelemetry {
+                                output_id: o.config_meta.id,
+                                width: o.surface_config.width,
+                                height: o.surface_config.height,
+                                frames_presented: o.frames_presented,
+                            })
+                            .collect();
+                        self.shared.update_telemetry(telemetry);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        for wid in &self.ordered_windows {
+            if let Some(out) = self.outputs.get(wid) {
+                out.window.request_redraw();
+            }
+        }
+    }
+}
+
+/// Creates the `winit` event loop and returns an `EventLoopProxy` for the IPC server thread.
+pub fn create_event_loop() -> Result<(EventLoop<EngineWakeEvent>, EventLoopProxy<EngineWakeEvent>), String> {
+    let event_loop = EventLoop::<EngineWakeEvent>::with_user_event()
+        .build()
+        .map_err(|e| e.to_string())?;
+    event_loop.set_control_flow(ControlFlow::Poll);
+    let proxy = event_loop.create_proxy();
+    Ok((event_loop, proxy))
+}
+
+/// Runs the native multi-surface GPU compositor on the OS main thread until shutdown.
+pub fn run_compositor(
+    event_loop: EventLoop<EngineWakeEvent>,
+    shared: Arc<SharedEngineState>,
+    preview_dir: PathBuf,
+) -> Result<(), String> {
+    let mut app = CompositorApp::new(shared, preview_dir);
+    event_loop.run_app(&mut app).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compositor_uniforms_are_16_byte_aligned_for_wgsl() {
+        assert_eq!(std::mem::size_of::<CompositorUniforms>() % 16, 0);
+    }
+
+    #[test]
+    fn shared_state_produces_valid_uniforms_across_looks() {
+        let state = SharedEngineState::new(SceneState::demo_m0(2));
+        let u_aud = state.uniforms_for_output(
+            core_scene::OUTPUT_AUDIENCE_MAIN,
+            OutputKind::Audience,
+            16.0 / 9.0,
+            1.5,
+        );
+        let u_stage = state.uniforms_for_output(
+            core_scene::OUTPUT_STAGE_MAIN,
+            OutputKind::Stage,
+            16.0 / 9.0,
+            1.5,
+        );
+        assert_eq!(u_aud.flags & (1 << 5), 0);
+        assert_ne!(u_stage.flags & (1 << 5), 0);
+    }
+}
