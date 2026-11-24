@@ -5,6 +5,12 @@
     type ContextMenuItem,
   } from "./contextMenuStore.svelte";
 
+  let openSubmenuId = $state<string | null>(null);
+
+  const flipSubmenuLeft = $derived(
+    typeof window !== "undefined" && contextMenuState.x + 440 > window.innerWidth,
+  );
+
   function isEditableTarget(target: EventTarget | null): boolean {
     const el = target as HTMLElement | null;
     if (!el) return false;
@@ -12,37 +18,54 @@
     return tag === "INPUT" || tag === "TEXTAREA" || Boolean(el.isContentEditable);
   }
 
+  function closeAll() {
+    openSubmenuId = null;
+    closeContextMenu();
+  }
+
   function handleWindowContextMenu(event: MouseEvent) {
     // Component-level context menu handlers call preventDefault() + stopPropagation().
     // Everywhere else outside text inputs, suppress the generic browser/WebView menu.
     if (event.defaultPrevented) return;
     if (isEditableTarget(event.target)) {
-      closeContextMenu();
+      closeAll();
       return;
     }
     event.preventDefault();
-    closeContextMenu();
+    closeAll();
   }
 
   function handleWindowClick(event: MouseEvent) {
     if (!contextMenuState.open) return;
     const target = event.target as HTMLElement | null;
     if (!target?.closest("[data-testid='context-menu']")) {
-      closeContextMenu();
+      closeAll();
     }
   }
 
   function handleWindowKeyDown(event: KeyboardEvent) {
     if (event.key === "Escape" && contextMenuState.open) {
-      closeContextMenu();
+      closeAll();
     }
   }
 
   function runItem(item: ContextMenuItem) {
     if (item.disabled) return;
+    if (item.children && item.children.length > 0) {
+      openSubmenuId = openSubmenuId === item.id ? null : item.id;
+      return;
+    }
     const handler = contextMenuState.onSelect;
-    closeContextMenu();
+    closeAll();
     handler?.(item.id);
+  }
+
+  function hoverItem(item: ContextMenuItem) {
+    if (item.children && item.children.length > 0 && !item.disabled) {
+      openSubmenuId = item.id;
+    } else {
+      openSubmenuId = null;
+    }
   }
 </script>
 
@@ -50,7 +73,7 @@
   oncontextmenu={handleWindowContextMenu}
   onclick={handleWindowClick}
   onkeydown={handleWindowKeyDown}
-  onblur={closeContextMenu}
+  onblur={closeAll}
 />
 
 {#if contextMenuState.open}
@@ -70,28 +93,64 @@
       {#if item.separator}
         <div class="ctx-sep" role="separator"></div>
       {/if}
-      <button
-        type="button"
-        class="ctx-item"
-        class:danger={item.danger}
-        role="menuitem"
-        disabled={item.disabled}
-        onclick={() => runItem(item)}
-      >
-        <span class="ctx-label">{item.label}</span>
-        {#if item.shortcut}
-          <span class="ctx-shortcut">{item.shortcut}</span>
+      <div class="ctx-item-wrap" role="none" onmouseenter={() => hoverItem(item)}>
+        <button
+          type="button"
+          class="ctx-item"
+          class:danger={item.danger}
+          class:sub-open={openSubmenuId === item.id}
+          role="menuitem"
+          aria-haspopup={item.children?.length ? "menu" : undefined}
+          aria-expanded={item.children?.length ? openSubmenuId === item.id : undefined}
+          disabled={item.disabled}
+          onclick={() => runItem(item)}
+        >
+          <span class="ctx-label">{item.label}</span>
+          {#if item.children?.length}
+            <span class="ctx-arrow" aria-hidden="true">▸</span>
+          {:else if item.shortcut}
+            <span class="ctx-shortcut">{item.shortcut}</span>
+          {/if}
+        </button>
+
+        {#if item.children?.length && openSubmenuId === item.id}
+          <div
+            class="ctx-submenu"
+            class:flip-left={flipSubmenuLeft}
+            role="menu"
+            aria-label={`${item.label} submenu`}
+            data-testid={`submenu-${item.id}`}
+          >
+            {#each item.children as child (child.id)}
+              {#if child.separator}
+                <div class="ctx-sep" role="separator"></div>
+              {/if}
+              <button
+                type="button"
+                class="ctx-item"
+                class:danger={child.danger}
+                role="menuitem"
+                disabled={child.disabled}
+                onclick={() => runItem(child)}
+              >
+                <span class="ctx-label">{child.label}</span>
+                {#if child.shortcut}
+                  <span class="ctx-shortcut">{child.shortcut}</span>
+                {/if}
+              </button>
+            {/each}
+          </div>
         {/if}
-      </button>
+      </div>
     {/each}
   </div>
 {/if}
 
 <style>
-  .ctx-menu {
-    position: fixed;
-    min-width: 220px;
-    max-width: 290px;
+  .ctx-menu,
+  .ctx-submenu {
+    min-width: 210px;
+    max-width: 280px;
     padding: 4px;
     background: var(--bg-1);
     border: 1px solid var(--border);
@@ -100,8 +159,28 @@
     display: flex;
     flex-direction: column;
     gap: 1px;
-    z-index: 200;
     user-select: none;
+  }
+
+  .ctx-menu {
+    position: fixed;
+    z-index: 200;
+  }
+
+  .ctx-item-wrap {
+    position: relative;
+  }
+
+  .ctx-submenu {
+    position: absolute;
+    top: -4px;
+    left: calc(100% + 2px);
+    z-index: 210;
+  }
+
+  .ctx-submenu.flip-left {
+    left: auto;
+    right: calc(100% + 2px);
   }
 
   .ctx-title {
@@ -140,7 +219,8 @@
     white-space: nowrap;
   }
 
-  .ctx-item:hover:not(:disabled) {
+  .ctx-item:hover:not(:disabled),
+  .ctx-item.sub-open {
     background: var(--accent);
     color: #fff;
   }
@@ -164,13 +244,16 @@
     text-overflow: ellipsis;
   }
 
-  .ctx-shortcut {
+  .ctx-shortcut,
+  .ctx-arrow {
     font-size: 11px;
     color: var(--text-1);
     flex-shrink: 0;
   }
 
-  .ctx-item:hover:not(:disabled) .ctx-shortcut {
-    color: rgba(255, 255, 255, 0.85);
+  .ctx-item:hover:not(:disabled) .ctx-shortcut,
+  .ctx-item:hover:not(:disabled) .ctx-arrow,
+  .ctx-item.sub-open .ctx-arrow {
+    color: rgba(255, 255, 255, 0.9);
   }
 </style>

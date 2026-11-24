@@ -5,6 +5,7 @@ export interface ContextMenuItem {
   disabled?: boolean;
   danger?: boolean;
   separator?: boolean;
+  children?: ContextMenuItem[];
 }
 
 export interface ContextMenuState {

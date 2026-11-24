@@ -286,21 +286,34 @@
 
   function openSongContextMenu(event: MouseEvent, song: SongRecord) {
     const items: ContextMenuItem[] = [{ id: "open", label: "Load into Cue Deck" }];
-    if (activePlaylist) {
-      items.push({ id: "add-pl", label: `Add to "${activePlaylist.name}"` });
-    }
-    libraries
-      .filter((l) => l.id !== song.library_id)
-      .forEach((lib, i) => {
-        items.push({ id: `move:${lib.id}`, label: `Move to Library: ${lib.name}`, separator: i === 0 });
+    if (playlists.length > 0) {
+      items.push({
+        id: "add-pl-menu",
+        label: "Add to Playlist",
+        children: playlists.map((pl) => ({
+          id: `add-pl:${pl.id}`,
+          label: pl.name,
+        })),
       });
+    }
+    const otherLibs = libraries.filter((l) => l.id !== song.library_id);
+    if (otherLibs.length > 0) {
+      items.push({
+        id: "move-lib-menu",
+        label: "Move To",
+        children: otherLibs.map((lib) => ({
+          id: `move:${lib.id}`,
+          label: lib.name,
+        })),
+      });
+    }
     items.push({ id: "delete", label: "Delete Presentation", danger: true, separator: true });
     openContextMenu(
       event,
       items,
       (id) => {
         if (id === "open") void openPresentation(song.id);
-        else if (id === "add-pl") void addSongToActivePlaylist(song.id);
+        else if (id.startsWith("add-pl:")) void addSongToPlaylistById(id.slice(7), song.id);
         else if (id.startsWith("move:")) void moveSongToLibrary(song.id, id.slice(5));
         else if (id === "delete") void removePresentation(song.id);
       },

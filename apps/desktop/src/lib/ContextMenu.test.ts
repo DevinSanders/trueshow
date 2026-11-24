@@ -73,5 +73,45 @@ describe("ContextMenu & global browser menu suppression", () => {
       onSelect,
     );
     expect(screen.queryByTestId("context-menu")).toBeNull();
+    // 5. Embedded cascading submenus ("Move To" / "Add to Playlist")
+    const onSubSelect = vi.fn();
+    openContextMenu(
+      new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 60, clientY: 60 }),
+      [
+        { id: "open", label: "Load into Cue Deck" },
+        {
+          id: "add-pl-menu",
+          label: "Add to Playlist",
+          children: [
+            { id: "add-pl:sun", label: "Sunday Morning" },
+            { id: "add-pl:wed", label: "Wednesday Night" },
+          ],
+        },
+        {
+          id: "move-menu",
+          label: "Move To",
+          children: [{ id: "move:worship", label: "Worship Songs" }],
+        },
+      ],
+      onSubSelect,
+      "Amazing Grace",
+    );
+    expect(await screen.findByTestId("context-menu")).toBeTruthy();
+
+    // Hover opens submenu, hovering non-submenu sibling closes it
+    const addPlWrap = screen.getByRole("menuitem", { name: "Add to Playlist" }).closest(".ctx-item-wrap")!;
+    await fireEvent.mouseEnter(addPlWrap);
+    expect(screen.getByTestId("submenu-add-pl-menu")).toBeTruthy();
+
+    const openWrap = screen.getByRole("menuitem", { name: "Load into Cue Deck" }).closest(".ctx-item-wrap")!;
+    await fireEvent.mouseEnter(openWrap);
+    expect(screen.queryByTestId("submenu-add-pl-menu")).toBeNull();
+
+    // Clicking submenu parent toggles it open, clicking nested item invokes onSelect & closes all
+    await fireEvent.click(screen.getByRole("menuitem", { name: "Move To" }));
+    expect(screen.getByTestId("submenu-move-menu")).toBeTruthy();
+    await fireEvent.click(screen.getByRole("menuitem", { name: "Worship Songs" }));
+    expect(onSubSelect).toHaveBeenCalledWith("move:worship");
+    expect(screen.queryByTestId("context-menu")).toBeNull();
   });
 });

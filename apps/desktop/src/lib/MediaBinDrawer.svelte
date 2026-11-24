@@ -178,11 +178,18 @@
     if (asset.kind === "audio") {
       items.push({ id: "auto", label: "Play Audio Track" });
     }
-    bins
-      .filter((b) => b.id !== asset.bin_id)
-      .forEach((bin, i) => {
-        items.push({ id: `move:${bin.id}`, label: `Move to Bin: ${bin.name}`, separator: i === 0 });
+    const otherBins = bins.filter((b) => b.id !== asset.bin_id);
+    if (otherBins.length > 0) {
+      items.push({
+        id: "move-bin-menu",
+        label: "Move To",
+        separator: true,
+        children: otherBins.map((bin) => ({
+          id: `move:${bin.id}`,
+          label: bin.name,
+        })),
       });
+    }
     items.push({ id: "delete", label: "Delete Media Asset", danger: true, separator: true });
     openContextMenu(
       event,
