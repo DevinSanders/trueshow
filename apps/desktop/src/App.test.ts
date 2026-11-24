@@ -337,21 +337,29 @@ describe("OpenPresenter Operator Control Surface UI (Happy & Failure Paths)", ()
 
     render(App);
 
-    // 1. Engine attaches and displays GPU + offline library & media drawers
-    await waitFor(() => expect(screen.getByText(/Test GPU D3D12/)).toBeTruthy());
+    // Helper to open a dropdown menu in the top MenuBar and click a menu item
+    async function clickMenu(menuLabel: string, itemLabel: string | RegExp) {
+      await fireEvent.click(screen.getByRole("menuitem", { name: menuLabel }));
+      await fireEvent.click(screen.getByRole("menuitem", { name: itemLabel }));
+    }
+
+    // 1. Engine attaches and displays GPU + FPS in bottom StatusBar, plus offline library & media drawers
+    await waitFor(() => expect(screen.getByTestId("status-bar").textContent).toContain("Test GPU D3D12"));
+    expect(screen.getByTestId("status-bar").textContent).toContain("60.0");
+    expect(screen.getByTestId("menu-bar")).toBeTruthy();
     await waitFor(() => expect(screen.getByText("Amazing Grace")).toBeTruthy());
     expect(screen.getByTestId("library-playlist-drawer")).toBeTruthy();
     expect(screen.getByTestId("media-bin-drawer")).toBeTruthy();
 
-    // Toggle collapsible Libraries Drawer and Media Bin Drawer closed and open
-    await fireEvent.click(screen.getByText("Libraries Drawer"));
+    // Toggle collapsible Libraries Drawer and Media Bin Drawer closed and open via View menu
+    await clickMenu("View", /Libraries & Playlists Drawer/);
     expect(screen.queryByTestId("library-playlist-drawer")).toBeNull();
-    await fireEvent.click(screen.getByText("Libraries Drawer"));
+    await clickMenu("View", /Libraries & Playlists Drawer/);
     expect(screen.getByTestId("library-playlist-drawer")).toBeTruthy();
 
-    await fireEvent.click(screen.getByText("Media Bin"));
+    await clickMenu("View", /Media Bin Drawer/);
     expect(screen.queryByTestId("media-bin-drawer")).toBeNull();
-    await fireEvent.click(screen.getByText("Media Bin"));
+    await clickMenu("View", /Media Bin Drawer/);
     expect(screen.getByTestId("media-bin-drawer")).toBeTruthy();
 
     // Load presentation from Libraries drawer and trigger a background from Media Bin drawer
@@ -375,9 +383,9 @@ describe("OpenPresenter Operator Control Surface UI (Happy & Failure Paths)", ()
     await fireEvent.click(screen.getByLabelText("Clear Slide / Foreground"));
     await fireEvent.click(screen.getByText("Clear All"));
     await fireEvent.click(screen.getByLabelText("Toggle Video Input"));
-    await fireEvent.click(screen.getByText("Layers"));
+    await clickMenu("View", /Layer Manager Dock/);
     expect(screen.queryByTestId("layer-manager")).toBeNull();
-    await fireEvent.click(screen.getByText("Layers"));
+    await clickMenu("View", /Layer Manager Dock/);
     expect(screen.getByTestId("layer-manager")).toBeTruthy();
     const bgLayerRow = screen.getByText("Media / Background").closest("li")!;
     await fireEvent.drop(bgLayerRow, {
@@ -413,8 +421,8 @@ describe("OpenPresenter Operator Control Surface UI (Happy & Failure Paths)", ()
     await fireEvent.click(screen.getByText("Send Stage Msg"));
     await waitFor(() => expect(currentState.stage_message).toBe("Nursery #14"));
 
-    // 5. Switch to Zero-Drift Slide Editor and mutate text, font size, stroke, alignment, position
-    await fireEvent.click(screen.getByText("Slide Editor"));
+    // 5. Switch to Zero-Drift Slide Editor via Edit menu and mutate text, font size, stroke, alignment, position
+    await clickMenu("Edit", /Slide Editor/);
     await waitFor(() => expect(screen.getByTestId("slide-editor")).toBeTruthy());
     await fireEvent.input(screen.getByLabelText("Lyric Text"), {
       target: { value: "New Edited Lyric" },
@@ -428,29 +436,28 @@ describe("OpenPresenter Operator Control Surface UI (Happy & Failure Paths)", ()
     await fireEvent.click(screen.getByText("+ Shape"));
     await fireEvent.click(screen.getByText("Delete Element"));
 
-    // 5a. Switch to Screens & Stage Designer tabs
-    await fireEvent.click(screen.getByText("Screens"));
+    // 5a. Switch to Screens, Stage Designer, Looks & Templates, Scripture, Quick Lyrics, Overlays via menus
+    await clickMenu("Screens", /Configure Screens/);
     await waitFor(() => expect(screen.getByTestId("screens-panel")).toBeTruthy());
 
-    await fireEvent.click(screen.getByText("Stage Designer"));
+    await clickMenu("Screens", /Stage Layout Designer/);
     await waitFor(() => expect(screen.getByTestId("stage-designer-panel")).toBeTruthy());
 
-    // 5a2. Switch to Looks & Templates, Scripture, and Quick Lyrics tabs + hotkeys/Freeze/Undo/Redo
-    await fireEvent.click(screen.getByText("Looks & Templates"));
+    await clickMenu("Screens", /Looks & Templates/);
     await waitFor(() => expect(screen.getByTestId("looks-templates-panel")).toBeTruthy());
 
-    await fireEvent.click(screen.getByText("Scripture"));
+    await clickMenu("File", /Scripture Lookup/);
     await waitFor(() => expect(screen.getByTestId("scripture-panel")).toBeTruthy());
 
-    await fireEvent.click(screen.getByText("Quick Lyrics"));
+    await clickMenu("File", /Quick Lyrics/);
     await waitFor(() => expect(screen.getByTestId("quick-lyrics-panel")).toBeTruthy());
 
-    await fireEvent.click(screen.getByText("Overlays & Msgs"));
+    await clickMenu("Edit", /Overlays & Messages/);
     await waitFor(() => expect(screen.getByTestId("overlays-messages-panel")).toBeTruthy());
 
     await fireEvent.click(screen.getByText("Freeze"));
-    await fireEvent.click(screen.getByText("Undo"));
-    await fireEvent.click(screen.getByText("Redo"));
+    await clickMenu("Edit", /Undo/);
+    await clickMenu("Edit", /Redo/);
     await fireEvent.click(screen.getByText("Manage Looks"));
     await waitFor(() => expect(screen.getByTestId("looks-templates-panel")).toBeTruthy());
     await fireEvent.click(screen.getByText("Configure"));
@@ -471,17 +478,17 @@ describe("OpenPresenter Operator Control Surface UI (Happy & Failure Paths)", ()
     await fireEvent.keyDown(window, { key: "z", ctrlKey: true });
     await fireEvent.keyDown(window, { key: "y", ctrlKey: true });
 
-    // 5b. Switch to Diagnostics tab and verify global window error crash reporting hook
-    await fireEvent.click(screen.getByText(/Diagnostics/));
+    // 5b. Open Diagnostics via bottom StatusBar link and verify global window error crash reporting hook
+    await fireEvent.click(screen.getByText("Diagnostics"));
     await waitFor(() => expect(screen.getByTestId("diagnostics-panel")).toBeTruthy());
     window.dispatchEvent(new ErrorEvent("error", { message: "Simulated UI error" }));
 
-    // 6. Clean engine shutdown and full app Shutdown All
-    await fireEvent.click(screen.getByText("Stop Engine"));
+    // 6. Clean engine shutdown and full app Shutdown All via File menu
+    await clickMenu("File", /Stop Engine/);
     await waitFor(() =>
       expect(screen.getAllByText("Engine shut down cleanly").length).toBeGreaterThan(0),
     );
-    await fireEvent.click(screen.getByText("Shutdown All"));
+    await clickMenu("File", /Shutdown All/);
     await waitFor(() =>
       expect(screen.getAllByText("Shutting down all windows and engines...").length).toBeGreaterThan(0),
     );
@@ -538,7 +545,8 @@ describe("OpenPresenter Operator Control Surface UI (Happy & Failure Paths)", ()
     );
 
     // 4. Slide Editor failure path surfaces inline error alert
-    await fireEvent.click(screen.getByText("Slide Editor"));
+    await fireEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
+    await fireEvent.click(screen.getByRole("menuitem", { name: /Slide Editor/ }));
     await fireEvent.input(screen.getByLabelText("Lyric Text"), {
       target: { value: "Trigger failure" },
     });

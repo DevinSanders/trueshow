@@ -8,6 +8,7 @@
   import LibraryPlaylistDrawer from "./lib/LibraryPlaylistDrawer.svelte";
   import LooksTemplatesPanel from "./lib/LooksTemplatesPanel.svelte";
   import MediaBinDrawer from "./lib/MediaBinDrawer.svelte";
+  import MenuBar, { type WorkspaceTab } from "./lib/MenuBar.svelte";
   import OverlaysMessagesPanel from "./lib/OverlaysMessagesPanel.svelte";
   import QuickLyricsPanel from "./lib/QuickLyricsPanel.svelte";
   import ScreensPanel from "./lib/ScreensPanel.svelte";
@@ -15,6 +16,7 @@
   import ShowControlPanel from "./lib/ShowControlPanel.svelte";
   import SlideEditor from "./lib/SlideEditor.svelte";
   import StageDesignerPanel from "./lib/StageDesignerPanel.svelte";
+  import StatusBar from "./lib/StatusBar.svelte";
   import { allowDrop, readDroppedMedia } from "./lib/dragStore";
   import type {
     DiagnosticsStatus,
@@ -31,9 +33,7 @@
   let telemetry = $state<EngineTelemetry | null>(null);
   let statusMessage = $state("Connecting to openpresenter-engine sidecar...");
   let errorText = $state<string | null>(null);
-  let activeTab = $state<
-    "show" | "scripture" | "lyrics" | "overlays" | "screens" | "stage" | "looks" | "editor" | "broadcast" | "ecosystem" | "diagnostics"
-  >("show");
+  let activeTab = $state<WorkspaceTab>("show");
   let autoLoopActive = $state(false);
   let autoLoopSecs = $state(8);
   let crashCount = $state(0);
@@ -63,6 +63,10 @@
 
   function setError(msg: string) {
     errorText = msg;
+  }
+
+  function selectTab(tab: WorkspaceTab) {
+    activeTab = tab;
   }
 
   async function attachEngine() {
@@ -469,111 +473,26 @@
 </script>
 
 <div class="shell">
-  <header class="topbar">
-    <div class="brand">
-      <span class="dot" class:live={connected}></span>
-      <strong>OpenPresenter</strong>
-      <span class="pill">M3 Complete</span>
-      <nav class="tabs" aria-label="Workspace views">
-        <button class="tab" class:active={activeTab === "show"} onclick={() => (activeTab = "show")}>
-          Show
-        </button>
-        <button class="tab" class:active={activeTab === "scripture"} onclick={() => (activeTab = "scripture")}>
-          Scripture
-        </button>
-        <button class="tab" class:active={activeTab === "lyrics"} onclick={() => (activeTab = "lyrics")}>
-          Quick Lyrics
-        </button>
-        <button class="tab" class:active={activeTab === "overlays"} onclick={() => (activeTab = "overlays")}>
-          Overlays & Msgs
-        </button>
-        <button class="tab" class:active={activeTab === "screens"} onclick={() => (activeTab = "screens")}>
-          Screens
-        </button>
-        <button class="tab" class:active={activeTab === "stage"} onclick={() => (activeTab = "stage")}>
-          Stage Designer
-        </button>
-        <button class="tab" class:active={activeTab === "looks"} onclick={() => (activeTab = "looks")}>
-          Looks & Templates
-        </button>
-        <button class="tab" class:active={activeTab === "editor"} onclick={() => (activeTab = "editor")}>
-          Slide Editor
-        </button>
-        <button class="tab" class:active={activeTab === "broadcast"} onclick={() => (activeTab = "broadcast")}>
-          Broadcast I/O
-        </button>
-        <button class="tab" class:active={activeTab === "ecosystem"} onclick={() => (activeTab = "ecosystem")}>
-          Control & Sync
-        </button>
-        <button class="tab" class:active={activeTab === "diagnostics"} onclick={() => (activeTab = "diagnostics")}>
-          Diagnostics{#if crashCount > 0} ({crashCount}){/if}
-        </button>
-      </nav>
-    </div>
-
-    <div class="telemetry">
-      {#if snapshot}
-        <span>GPU: <strong>{snapshot.gpu_adapter_name}</strong> ({snapshot.gpu_backend})</span>
-        <span>·</span>
-        <span>Engine: <strong>{telemetry ? telemetry.fps.toFixed(1) : "—"} fps</strong></span>
-        <span>·</span>
-        <span>p99: <strong>{telemetry ? telemetry.p99_frame_ms.toFixed(2) : "—"} ms</strong></span>
-      {:else}
-        <span>{statusMessage}</span>
-      {/if}
-    </div>
-
-    <div class="top-actions">
-      <button
-        class="btn"
-        class:toggled={showLibraryDrawer}
-        onclick={() => (showLibraryDrawer = !showLibraryDrawer)}
-      >
-        Libraries Drawer
-      </button>
-      <button
-        class="btn"
-        class:toggled={showLayerDock}
-        onclick={() => (showLayerDock = !showLayerDock)}
-      >
-        Layers
-      </button>
-      <button
-        class="btn"
-        class:toggled={showMediaDrawer}
-        onclick={() => (showMediaDrawer = !showMediaDrawer)}
-      >
-        Media Bin
-      </button>
-      <button class="btn" onclick={() => void undoScene()} title="Undo (Ctrl+Z)" disabled={!connected}>
-        Undo
-      </button>
-      <button class="btn" onclick={() => void redoScene()} title="Redo (Ctrl+Y)" disabled={!connected}>
-        Redo
-      </button>
-      <button
-        class="btn"
-        class:toggled={Boolean(scene?.freeze_output)}
-        onclick={() => void toggleFreeze()}
-        title="Freeze Live Outputs (Hotkey: F)"
-        disabled={!connected}
-      >
-        {scene?.freeze_output ? "Unfreeze" : "Freeze"}
-      </button>
-      <button class="btn" onclick={attachEngine}>Reconnect</button>
-      <button class="btn" onclick={reloadUiKeepLive}>Reload UI (Keep Live)</button>
-      <button class="btn danger" onclick={shutdownEngine} disabled={!connected}>
-        Stop Engine
-      </button>
-      <button
-        class="btn danger-solid"
-        onclick={shutdownAll}
-        title="Stop all rendering engines and close every window"
-      >
-        Shutdown All
-      </button>
-    </div>
-  </header>
+  <MenuBar
+    {activeTab}
+    {connected}
+    frozen={Boolean(scene?.freeze_output)}
+    {crashCount}
+    {showLibraryDrawer}
+    {showLayerDock}
+    {showMediaDrawer}
+    onSelectTab={selectTab}
+    onToggleLibraryDrawer={() => (showLibraryDrawer = !showLibraryDrawer)}
+    onToggleLayerDock={() => (showLayerDock = !showLayerDock)}
+    onToggleMediaDrawer={() => (showMediaDrawer = !showMediaDrawer)}
+    onUndo={() => void undoScene()}
+    onRedo={() => void redoScene()}
+    onToggleFreeze={() => void toggleFreeze()}
+    onReconnect={attachEngine}
+    onReloadUi={reloadUiKeepLive}
+    onShutdownEngine={shutdownEngine}
+    onShutdownAll={shutdownAll}
+  />
 
   {#if errorText}
     <div class="error-banner" role="alert">{errorText}</div>
@@ -814,6 +733,16 @@
   {#if showMediaDrawer}
     <MediaBinDrawer onMediaTriggered={applySceneState} onError={setError} />
   {/if}
+
+  <StatusBar
+    {connected}
+    {statusMessage}
+    {snapshot}
+    {telemetry}
+    {crashCount}
+    onReconnect={attachEngine}
+    onOpenDiagnostics={() => selectTab("diagnostics")}
+  />
 </div>
 
 <style>
@@ -823,79 +752,6 @@
     height: 100vh;
   }
 
-  .topbar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 8px 14px;
-    background: var(--bg-1);
-    border-bottom: 1px solid var(--border);
-    font-size: 13px;
-  }
-
-  .brand {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-
-  .tabs {
-    display: flex;
-    gap: 4px;
-    margin-left: 8px;
-  }
-
-  .tab {
-    padding: 4px 10px;
-    border-radius: 6px;
-    border: 1px solid transparent;
-    background: transparent;
-    color: var(--text-1);
-    font-size: 12px;
-    font-weight: 600;
-  }
-
-  .tab.active {
-    background: var(--bg-2);
-    border-color: var(--border);
-    color: var(--text-0);
-  }
-
-  .dot {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    background: var(--warn);
-  }
-
-  .dot.live {
-    background: var(--ok);
-    box-shadow: 0 0 8px var(--ok);
-  }
-
-  .pill {
-    padding: 2px 7px;
-    border-radius: 999px;
-    background: var(--bg-2);
-    border: 1px solid var(--border);
-    color: var(--text-1);
-    font-size: 11px;
-  }
-
-  .telemetry {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    color: var(--text-1);
-    font-variant-numeric: tabular-nums;
-  }
-
-  .telemetry strong {
-    color: var(--text-0);
-  }
-
-  .top-actions,
   .monitor-head-actions {
     display: flex;
     gap: 8px;
@@ -1134,31 +990,9 @@
     white-space: nowrap;
   }
 
-  .btn:disabled {
-    opacity: 0.45;
-    cursor: not-allowed;
-  }
-
   .btn.primary {
     background: var(--accent);
     border-color: var(--accent);
-  }
-
-  .btn.toggled {
-    border-color: var(--ok);
-    color: #bbf7d0;
-  }
-
-  .btn.danger {
-    border-color: rgba(239, 68, 68, 0.5);
-    color: #fca5a5;
-  }
-
-  .btn.danger-solid {
-    background: #b91c1c;
-    border-color: #ef4444;
-    color: #fff;
-    font-weight: 600;
   }
 
   .monitors {
