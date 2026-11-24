@@ -24,7 +24,7 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 use tauri::State;
-use tauri::ipc::{Channel, Response};
+use tauri::ipc::Response;
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 use uuid::Uuid;
@@ -33,6 +33,7 @@ struct EngineBridgeState {
     socket_name: String,
     conn: Mutex<Option<Stream>>,
     preview_buses: Mutex<HashMap<OutputId, PreviewBusDescriptor>>,
+    preview_readers: StdMutex<HashMap<OutputId, (String, ShmPreviewReader)>>,
     library: StdMutex<LibraryStore>,
     timers: StdMutex<show_control::TimerEngine>,
     diagnostics: DiagnosticsPaths,
@@ -54,6 +55,7 @@ impl EngineBridgeState {
             socket_name: default_socket_name(),
             conn: Mutex::new(None),
             preview_buses: Mutex::new(HashMap::new()),
+            preview_readers: StdMutex::new(HashMap::new()),
             library: StdMutex::new(store),
             timers: StdMutex::new(show_control::TimerEngine::new()),
             diagnostics,
@@ -237,6 +239,9 @@ async fn connect_engine(
             map.clear();
             for bus in &snap.preview_buses {
                 map.insert(bus.output_id, bus.clone());
+            }
+            if let Ok(mut readers) = bridge.preview_readers.lock() {
+                readers.clear();
             }
             Ok(*snap)
         }
@@ -603,12 +608,45 @@ async fn shutdown_engine(bridge: State<'_, Arc<EngineBridgeState>>) -> Result<()
     Ok(())
 }
 
+/// Fast 2x nearest-neighbor RGBA8 downsample so ~310px sidebar monitors transfer 4x fewer bytes
+/// (230 KB instead of 921 KB) without saturating WebView2 IPC or the JS main thread.
+fn pack_preview_packet(src_w: u32, src_h: u32, rgba: &[u8]) -> Vec<u8> {
+    if src_w >= 640 && src_h >= 360 {
+        let dst_w = src_w / 2;
+        let dst_h = src_h / 2;
+        let mut packet = Vec::with_capacity(8 + (dst_w * dst_h * 4) as usize);
+        packet.extend_from_slice(&dst_w.to_le_bytes());
+        packet.extend_from_slice(&dst_h.to_le_bytes());
+        let src_stride = (src_w * 4) as usize;
+        for y in 0..dst_h as usize {
+            let row_off = (y * 2) * src_stride;
+            for x in 0..dst_w as usize {
+                let px = row_off + (x * 2) * 4;
+                if px + 4 <= rgba.len() {
+                    packet.extend_from_slice(&rgba[px..px + 4]);
+                }
+            }
+        }
+        packet
+    } else {
+        let mut packet = Vec::with_capacity(8 + rgba.len());
+        packet.extend_from_slice(&src_w.to_le_bytes());
+        packet.extend_from_slice(&src_h.to_le_bytes());
+        packet.extend_from_slice(rgba);
+        packet
+    }
+}
+
+/// Pull-based, naturally backpressured binary preview reader.
+///
+/// Unlike push-based Tauri `Channel::send` (which triggers unbounded `webview.eval()` +
+/// `ChannelDataIpcQueue` backlog under WebView2), pulling frames sequentially from the UI
+/// guarantees zero queue buildup, zero leaked background tasks, and instant UI responsiveness.
 #[tauri::command]
-async fn start_preview_stream(
+async fn poll_preview_frame(
     bridge: State<'_, Arc<EngineBridgeState>>,
     output_id: String,
-    on_frame: Channel<Response>,
-) -> Result<(), String> {
+) -> Result<Response, String> {
     let oid = OutputId(Uuid::parse_str(&output_id).map_err(|e| e.to_string())?);
     let bus = {
         let map = bridge.preview_buses.lock().await;
@@ -616,33 +654,30 @@ async fn start_preview_stream(
     }
     .ok_or_else(|| format!("no preview bus registered for output {output_id}"))?;
 
-    tokio::spawn(async move {
-        let mut reader = match ShmPreviewReader::open(&bus.shm_path) {
-            Ok(r) => r,
-            Err(err) => {
-                warn!("failed to open SHM preview ring '{}': {err}", bus.shm_path);
-                return;
-            }
-        };
+    let mut readers = bridge.preview_readers.lock().map_err(|e| e.to_string())?;
+    let needs_open = match readers.get(&oid) {
+        Some((path, _)) => path != &bus.shm_path,
+        None => true,
+    };
+    if needs_open {
+        let reader = ShmPreviewReader::open(&bus.shm_path)
+            .map_err(|e| format!("failed to open SHM preview ring '{}': {e}", bus.shm_path))?;
+        readers.insert(oid, (bus.shm_path.clone(), reader));
+    }
 
-        let mut rgba = Vec::new();
-        let mut tick = tokio::time::interval(Duration::from_millis(33));
+    let Some((_, reader)) = readers.get_mut(&oid) else {
+        return Ok(Response::new(Vec::new()));
+    };
 
-        loop {
-            tick.tick().await;
-            if let Some(meta) = reader.try_read_latest(&mut rgba) {
-                let mut packet = Vec::with_capacity(8 + rgba.len());
-                packet.extend_from_slice(&meta.width.to_le_bytes());
-                packet.extend_from_slice(&meta.height.to_le_bytes());
-                packet.extend_from_slice(&rgba);
-                if on_frame.send(Response::new(packet)).is_err() {
-                    break;
-                }
-            }
-        }
-    });
-
-    Ok(())
+    let mut rgba = Vec::new();
+    match reader.try_read_latest(&mut rgba) {
+        Some(meta) => Ok(Response::new(pack_preview_packet(
+            meta.width,
+            meta.height,
+            &rgba,
+        ))),
+        None => Ok(Response::new(Vec::new())),
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -805,7 +840,7 @@ pub fn run() {
             export_ccli_csv_report,
             list_plugin_tiers,
             shutdown_engine,
-            start_preview_stream,
+            poll_preview_frame,
             get_diagnostics_status,
             set_debug_logging,
             read_diagnostic_logs,

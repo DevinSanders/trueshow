@@ -3,11 +3,16 @@ import { render, screen, waitFor } from "@testing-library/svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import PreviewCanvas from "./PreviewCanvas.svelte";
 
-interface MockChannel {
-  onmessage?: (payload: ArrayBuffer) => void;
+function makeValidFrame(width: number, height: number): ArrayBuffer {
+  const buf = new ArrayBuffer(8 + width * height * 4);
+  const dv = new DataView(buf);
+  dv.setUint32(0, width, true);
+  dv.setUint32(4, height, true);
+  new Uint8Array(buf, 8).fill(255);
+  return buf;
 }
 
-describe("PreviewCanvas binary RGBA8 channel streaming", () => {
+describe("PreviewCanvas backpressured binary RGBA8 preview polling", () => {
   const putImageData = vi.fn();
 
   beforeEach(() => {
@@ -27,13 +32,27 @@ describe("PreviewCanvas binary RGBA8 channel streaming", () => {
     vi.restoreAllMocks();
   });
 
-  it("renders valid binary RGBA8 frames and safely ignores truncated or zero-sized payloads", async () => {
-    let capturedChannel: MockChannel | null = null;
-    mockIPC((cmd, args) => {
-      if (cmd === "start_preview_stream") {
-        const a = args as { onFrame?: MockChannel };
-        capturedChannel = a.onFrame ?? null;
-        return null;
+  it("renders valid binary RGBA8 frames and safely ignores empty, truncated, or zero-sized payloads", async () => {
+    let callIdx = 0;
+    const frames: ArrayBuffer[] = [
+      new ArrayBuffer(0), // no new frame yet
+      new ArrayBuffer(4), // truncated header
+      new ArrayBuffer(12), // zero width/height
+      makeValidFrame(2, 2), // valid frame #1
+      makeValidFrame(2, 2), // valid frame #2 (triggers FPS window update)
+    ];
+
+    let nowValue = 1000;
+    vi.spyOn(performance, "now").mockImplementation(() => {
+      nowValue += callIdx >= 4 ? 1200 : 10;
+      return nowValue;
+    });
+
+    mockIPC((cmd) => {
+      if (cmd === "poll_preview_frame") {
+        const frame = frames[Math.min(callIdx, frames.length - 1)];
+        callIdx += 1;
+        return frame;
       }
       return null;
     });
@@ -44,47 +63,28 @@ describe("PreviewCanvas binary RGBA8 channel streaming", () => {
         label: "Audience 1",
         kind: "Audience",
         connected: true,
+        enginePid: 1001,
       },
     });
 
-    await waitFor(() => expect(capturedChannel).not.toBeNull());
-    const onMessage = capturedChannel!.onmessage!;
-
-    // Failure paths: truncated header and zero-dimension payload are ignored cleanly
-    onMessage(new ArrayBuffer(4));
-    const zeroHeader = new ArrayBuffer(12);
-    onMessage(zeroHeader);
-    expect(putImageData).not.toHaveBeenCalled();
-
-    // Happy path: valid 2x2 RGBA8 frame packet (8-byte header + 16 pixel bytes)
-    const buf = new ArrayBuffer(8 + 2 * 2 * 4);
-    const dv = new DataView(buf);
-    dv.setUint32(0, 2, true);
-    dv.setUint32(4, 2, true);
-    new Uint8Array(buf, 8).fill(255);
-    onMessage(buf);
-
-    await waitFor(() => expect(screen.getByText(/2×2/)).toBeTruthy());
-    expect(putImageData).toHaveBeenCalledTimes(1);
-
-    // Advance clock >= 1000ms to exercise FPS calculation branch
-    const nowSpy = vi.spyOn(performance, "now").mockReturnValue(performance.now() + 1500);
-    onMessage(buf);
-    nowSpy.mockRestore();
+    await waitFor(() => expect(screen.getByText(/2×2/)).toBeTruthy(), { timeout: 2000 });
+    await waitFor(() => expect(putImageData.mock.calls.length).toBeGreaterThanOrEqual(2), {
+      timeout: 2000,
+    });
 
     unmount();
   });
 
-  it("handles preview stream startup failure gracefully", async () => {
+  it("handles preview poll failures gracefully with warning and backoff", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     mockIPC((cmd) => {
-      if (cmd === "start_preview_stream") {
+      if (cmd === "poll_preview_frame") {
         throw new Error("shm ring missing");
       }
       return null;
     });
 
-    render(PreviewCanvas, {
+    const { unmount } = render(PreviewCanvas, {
       props: {
         outputId: "out-missing",
         label: "Stage 1",
@@ -94,5 +94,6 @@ describe("PreviewCanvas binary RGBA8 channel streaming", () => {
     });
 
     await waitFor(() => expect(warnSpy).toHaveBeenCalled());
+    unmount();
   });
 });

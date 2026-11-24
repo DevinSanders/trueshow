@@ -213,8 +213,10 @@
     window.addEventListener("unhandledrejection", onUnhandledRejection);
 
     let consecutiveErrors = 0;
+    let telemetryInFlight = false;
     const timer = setInterval(async () => {
-      if (!snapshot) return;
+      if (!snapshot || telemetryInFlight) return;
+      telemetryInFlight = true;
       try {
         telemetry = await invoke<EngineTelemetry>("get_telemetry");
         consecutiveErrors = 0;
@@ -224,8 +226,10 @@
           errorText = `Engine connection lost (${String(err)}). Click Reconnect to re-attach.`;
           statusMessage = "Engine disconnected";
         }
+      } finally {
+        telemetryInFlight = false;
       }
-    }, 500);
+    }, 1000);
     return () => {
       clearInterval(timer);
       window.removeEventListener("error", onWindowError);

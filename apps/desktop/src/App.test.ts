@@ -174,8 +174,8 @@ describe("OpenPresenter Operator Control Surface UI (Happy & Failure Paths)", ()
           return snap.telemetry;
         case "search_library_songs":
           return sampleSongs;
-        case "start_preview_stream":
-          return null;
+        case "poll_preview_frame":
+          return new ArrayBuffer(0);
         case "trigger_slide": {
           const found = currentState.deck.find((s) => s.id === payload.slideId) ?? null;
           currentState = { ...currentState, active_slide: found, blackout: false };
@@ -323,8 +323,8 @@ describe("OpenPresenter Operator Control Surface UI (Happy & Failure Paths)", ()
       if (cmd === "update_slide_element") {
         throw new Error("invalid element bounds");
       }
-      if (cmd === "start_preview_stream") {
-        return null;
+      if (cmd === "poll_preview_frame") {
+        return new ArrayBuffer(0);
       }
       return null;
     });

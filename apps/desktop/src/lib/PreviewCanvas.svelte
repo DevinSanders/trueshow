@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Channel, invoke } from "@tauri-apps/api/core";
+  import { invoke } from "@tauri-apps/api/core";
   import { onDestroy } from "svelte";
 
   interface Props {
@@ -15,65 +15,79 @@
   let canvasEl: HTMLCanvasElement | undefined = $state();
   let streamFps = $state(0);
   let frameRes = $state("waiting...");
-  let stopStream = false;
+  let destroyed = false;
 
-  let frameCounter = 0;
-  let lastFpsStamp = performance.now();
+  const TARGET_POLL_MS = 66; // ~15 fps backpressured sidebar preview (zero WebView2 IPC backlog)
+  const ERROR_BACKOFF_MS = 500;
 
   $effect(() => {
     void enginePid;
     if (!connected || !canvasEl) return;
 
-    stopStream = false;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const canvas = canvasEl;
     const ctx2d = canvas.getContext("2d", { alpha: true });
     let imageData: ImageData | null = null;
+    let frameCounter = 0;
+    let lastFpsStamp = performance.now();
 
-    const channel = new Channel<ArrayBuffer>();
-    channel.onmessage = (payload) => {
-      if (stopStream || !ctx2d || !(payload instanceof ArrayBuffer) || payload.byteLength < 8) {
-        return;
+    async function pollOnce() {
+      if (cancelled || destroyed) return;
+      const started = performance.now();
+      let nextDelay = TARGET_POLL_MS;
+
+      if (!document.hidden && ctx2d) {
+        try {
+          const payload = await invoke<ArrayBuffer>("poll_preview_frame", { outputId });
+          if (!cancelled && !destroyed && payload instanceof ArrayBuffer && payload.byteLength >= 8) {
+            const header = new DataView(payload, 0, 8);
+            const width = header.getUint32(0, true);
+            const height = header.getUint32(4, true);
+            const expectedBytes = width * height * 4;
+            if (width > 0 && height > 0 && payload.byteLength >= 8 + expectedBytes) {
+              if (canvas.width !== width || canvas.height !== height || !imageData) {
+                canvas.width = width;
+                canvas.height = height;
+                imageData = ctx2d.createImageData(width, height);
+                frameRes = `${width}×${height}`;
+              }
+              const pixels = new Uint8ClampedArray(payload, 8, expectedBytes);
+              imageData.data.set(pixels);
+              ctx2d.putImageData(imageData, 0, 0);
+
+              frameCounter += 1;
+              const now = performance.now();
+              if (now - lastFpsStamp >= 1000) {
+                streamFps = Math.round((frameCounter * 1000) / (now - lastFpsStamp));
+                frameCounter = 0;
+                lastFpsStamp = now;
+              }
+            }
+          }
+        } catch (err) {
+          console.warn(`preview poll failed for ${outputId}:`, err);
+          nextDelay = ERROR_BACKOFF_MS;
+        }
       }
 
-      const header = new DataView(payload, 0, 8);
-      const width = header.getUint32(0, true);
-      const height = header.getUint32(4, true);
-      const expectedBytes = width * height * 4;
-      if (width === 0 || height === 0 || payload.byteLength < 8 + expectedBytes) {
-        return;
+      if (!cancelled && !destroyed) {
+        const elapsed = performance.now() - started;
+        const delay = Math.max(16, nextDelay - elapsed);
+        timer = setTimeout(() => void pollOnce(), delay);
       }
+    }
 
-      if (canvas.width !== width || canvas.height !== height || !imageData) {
-        canvas.width = width;
-        canvas.height = height;
-        imageData = ctx2d.createImageData(width, height);
-        frameRes = `${width}×${height}`;
-      }
-
-      const pixels = new Uint8ClampedArray(payload, 8, expectedBytes);
-      imageData.data.set(pixels);
-      ctx2d.putImageData(imageData, 0, 0);
-
-      frameCounter += 1;
-      const now = performance.now();
-      if (now - lastFpsStamp >= 1000) {
-        streamFps = Math.round((frameCounter * 1000) / (now - lastFpsStamp));
-        frameCounter = 0;
-        lastFpsStamp = now;
-      }
-    };
-
-    invoke("start_preview_stream", { outputId, onFrame: channel }).catch((err) => {
-      console.warn(`preview stream failed for ${outputId}:`, err);
-    });
+    void pollOnce();
 
     return () => {
-      stopStream = true;
+      cancelled = true;
+      if (timer !== null) clearTimeout(timer);
     };
   });
 
   onDestroy(() => {
-    stopStream = true;
+    destroyed = true;
   });
 </script>
 
