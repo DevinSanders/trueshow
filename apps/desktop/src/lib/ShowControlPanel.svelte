@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
+  import PcoPdfImporterPanel from "./PcoPdfImporterPanel.svelte";
   import type { MacroRecord, SceneState, ScheduledEventRecord } from "./types";
 
   interface Props {
@@ -351,6 +352,8 @@
       </div>
     </div>
   </div>
+
+  <PcoPdfImporterPanel {onSceneChange} />
 
   <div class="section">
     <h3>Clean-Room Importer (ChordPro, SongSelect .usr, Plain Text, Bible OSIS, FreeShow .show, OpenSong, ProPresenter)</h3>

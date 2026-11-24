@@ -8,6 +8,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 pub const PCO_AUTH_ENDPOINT: &str = "https://api.planningcenteronline.com/oauth/authorize";
@@ -20,6 +21,8 @@ pub enum PcoError {
     InvalidConfig(String),
     #[error("JSON:API parse error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 /// OAuth 2.0 PKCE session parameters for desktop loopback sign-in (zero embedded client secret).
@@ -243,6 +246,280 @@ pub fn parse_pco_plans_json_api(json_body: &str) -> Result<Vec<PcoPlanSummary>, 
     Ok(plans)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PcoAttachmentKind {
+    LyricPdf,
+    Image,
+    Video,
+    Audio,
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PcoAttachment {
+    pub id: String,
+    pub filename: String,
+    pub display_name: String,
+    pub content_type: Option<String>,
+    pub file_size: Option<u64>,
+    pub kind: PcoAttachmentKind,
+    pub context_label: String,
+    pub open_endpoint: String,
+    pub download_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StagedMediaFile {
+    pub blake3_hash: String,
+    pub disk_path: PathBuf,
+    pub safe_file_name: String,
+    pub display_name: String,
+    pub media_kind: String,
+    pub size_bytes: u64,
+    pub deduplicated: bool,
+}
+
+pub fn build_pco_plan_attachments_url(service_type_id: &str, plan_id: &str) -> String {
+    format!("{PCO_SERVICES_BASE}/service_types/{service_type_id}/plans/{plan_id}/attachments?per_page=100")
+}
+
+pub fn build_pco_item_attachments_url(
+    service_type_id: &str,
+    plan_id: &str,
+    item_id: &str,
+) -> String {
+    format!(
+        "{PCO_SERVICES_BASE}/service_types/{service_type_id}/plans/{plan_id}/items/{item_id}/attachments?per_page=100"
+    )
+}
+
+pub fn build_pco_song_attachments_url(song_id: &str) -> String {
+    format!("{PCO_SERVICES_BASE}/songs/{song_id}/attachments?per_page=100")
+}
+
+pub fn build_pco_attachment_open_url(attachment_id: &str) -> String {
+    format!("{PCO_SERVICES_BASE}/attachments/{attachment_id}/open")
+}
+
+pub fn classify_attachment_kind(
+    filename: &str,
+    content_type: Option<&str>,
+) -> PcoAttachmentKind {
+    let ext = Path::new(filename)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+    let ct = content_type.unwrap_or("").to_ascii_lowercase();
+
+    if ext == "pdf" || ct.contains("application/pdf") {
+        return PcoAttachmentKind::LyricPdf;
+    }
+    if matches!(
+        ext.as_str(),
+        "png" | "jpg" | "jpeg" | "webp" | "bmp" | "gif" | "svg" | "tif" | "tiff"
+    ) || ct.starts_with("image/")
+    {
+        return PcoAttachmentKind::Image;
+    }
+    if matches!(ext.as_str(), "mp4" | "mov" | "webm" | "mkv" | "m4v" | "avi")
+        || ct.starts_with("video/")
+    {
+        return PcoAttachmentKind::Video;
+    }
+    if matches!(ext.as_str(), "mp3" | "wav" | "flac" | "ogg" | "m4a" | "aac" | "opus")
+        || ct.starts_with("audio/")
+    {
+        return PcoAttachmentKind::Audio;
+    }
+    PcoAttachmentKind::Other
+}
+
+/// Parses a Planning Center Services v2 `/attachments` JSON:API response into typed attachments.
+pub fn parse_pco_attachments_json_api(
+    json_body: &str,
+    context_label: Option<&str>,
+) -> Result<Vec<PcoAttachment>, PcoError> {
+    let root: serde_json::Value = serde_json::from_str(json_body)?;
+    let Some(data) = root.get("data").and_then(|v| v.as_array()) else {
+        return Ok(Vec::new());
+    };
+    let ctx = context_label
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("Planning Center")
+        .to_string();
+
+    let mut out = Vec::new();
+    for item in data {
+        let id = item
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        if id.is_empty() {
+            continue;
+        }
+        let attrs = item.get("attributes");
+        let filename = attrs
+            .and_then(|a| a.get("filename"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("attachment.bin")
+            .to_string();
+        let display_name = attrs
+            .and_then(|a| a.get("display_name"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&filename)
+            .to_string();
+        let content_type = attrs
+            .and_then(|a| a.get("content_type"))
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let file_size = attrs
+            .and_then(|a| a.get("file_size"))
+            .and_then(|v| v.as_u64());
+        let download_url = attrs
+            .and_then(|a| a.get("url").or_else(|| a.get("attachment_url")))
+            .and_then(|v| v.as_str())
+            .filter(|s| s.starts_with("http"))
+            .map(String::from);
+        let kind = classify_attachment_kind(&filename, content_type.as_deref());
+
+        out.push(PcoAttachment {
+            open_endpoint: build_pco_attachment_open_url(&id),
+            id,
+            filename,
+            display_name,
+            content_type,
+            file_size,
+            kind,
+            context_label: ctx.clone(),
+            download_url,
+        });
+    }
+    Ok(out)
+}
+
+/// Extracts the signed temporary download URL returned by `POST /services/v2/attachments/{id}/open`.
+pub fn parse_pco_open_attachment_url(json_body: &str) -> Result<String, PcoError> {
+    let root: serde_json::Value = serde_json::from_str(json_body)?;
+    root.pointer("/data/attributes/attachment_url")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .map(String::from)
+        .ok_or_else(|| {
+            PcoError::InvalidConfig("PCO attachment open response missing attachment_url".into())
+        })
+}
+
+fn sanitize_slug(raw: &str, max_len: usize) -> String {
+    let mut out = String::new();
+    let mut prev_dash = false;
+    for ch in raw.trim().chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch);
+            prev_dash = false;
+        } else if !prev_dash && !out.is_empty() {
+            out.push('-');
+            prev_dash = true;
+        }
+        if out.len() >= max_len {
+            break;
+        }
+    }
+    out.trim_end_matches('-').to_string()
+}
+
+/// Generates a meaningful, collision-proof disk filename (`{context}__{stem}__{hash8}.{ext}`)
+/// and human-readable display label (`{context} — {stem}.{ext}`) so media from different
+/// presentations sharing the same original filename (e.g. `background.mp4`) NEVER overwrite each other.
+pub fn build_safe_media_names(
+    context_label: &str,
+    original_filename: &str,
+    blake3_hex: &str,
+) -> (String, String) {
+    let path = Path::new(original_filename);
+    let raw_stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("media");
+    let raw_ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric()))
+        .unwrap_or_else(|| "bin".to_string());
+
+    let ctx_slug = sanitize_slug(context_label, 36);
+    let stem_slug = sanitize_slug(raw_stem, 48);
+    let stem_slug = if stem_slug.is_empty() {
+        "media".to_string()
+    } else {
+        stem_slug
+    };
+    let hash8 = &blake3_hex[..blake3_hex.len().min(8)];
+
+    let safe_disk_name = if ctx_slug.is_empty() {
+        format!("{stem_slug}__{hash8}.{raw_ext}")
+    } else {
+        format!("{ctx_slug}__{stem_slug}__{hash8}.{raw_ext}")
+    };
+
+    let clean_ctx = context_label.trim();
+    let display_name = if clean_ctx.is_empty()
+        || raw_stem
+            .to_ascii_lowercase()
+            .contains(&clean_ctx.to_ascii_lowercase())
+    {
+        format!("{raw_stem}.{raw_ext}")
+    } else {
+        format!("{clean_ctx} — {raw_stem}.{raw_ext}")
+    };
+
+    (safe_disk_name, display_name)
+}
+
+/// Content-addresses and writes imported media bytes into `dest_dir` with a meaningful,
+/// collision-proof filename (`{context}__{stem}__{hash8}.{ext}`).
+///
+/// - Two distinct files with the same original filename (`background.mp4`) get different `hash8`
+///   suffixes and NEVER overwrite each other.
+/// - Two byte-identical files share the exact same `blake3_hash` and reuse the staged file cleanly.
+pub fn stage_imported_media_bytes(
+    dest_dir: &Path,
+    context_label: &str,
+    original_filename: &str,
+    bytes: &[u8],
+) -> Result<StagedMediaFile, PcoError> {
+    if bytes.is_empty() {
+        return Err(PcoError::InvalidConfig("imported media payload is empty".into()));
+    }
+    std::fs::create_dir_all(dest_dir)?;
+    let blake3_hash = blake3::hash(bytes).to_hex().to_string();
+    let (safe_file_name, display_name) =
+        build_safe_media_names(context_label, original_filename, &blake3_hash);
+    let disk_path = dest_dir.join(&safe_file_name);
+    let deduplicated = disk_path.exists();
+    if !deduplicated {
+        std::fs::write(&disk_path, bytes)?;
+    }
+    let media_kind = core_library::infer_media_kind(&disk_path).to_string();
+
+    Ok(StagedMediaFile {
+        blake3_hash,
+        disk_path,
+        safe_file_name,
+        display_name,
+        media_kind,
+        size_bytes: bytes.len() as u64,
+        deduplicated,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -304,5 +581,87 @@ mod tests {
         assert_eq!(plans[0].items[0].arrangement_key.as_deref(), Some("G"));
 
         assert!(parse_pco_plans_json_api("{bad json").is_err());
+    }
+
+    #[test]
+    fn parses_pco_attachments_and_stages_collision_safe_media_without_overwriting() {
+        assert!(build_pco_plan_attachments_url("10", "20").contains("/plans/20/attachments"));
+        assert!(build_pco_item_attachments_url("10", "20", "30").contains("/items/30/attachments"));
+        assert!(build_pco_song_attachments_url("99").contains("/songs/99/attachments"));
+
+        let att_json = r#"{
+            "data": [
+                {
+                    "type": "Attachment",
+                    "id": "att-1",
+                    "attributes": {
+                        "filename": "Goodness Of God-lyrics.pdf",
+                        "display_name": "Goodness Of God (Lyrics PDF)",
+                        "content_type": "application/pdf",
+                        "file_size": 48200
+                    }
+                },
+                {
+                    "type": "Attachment",
+                    "id": "att-2",
+                    "attributes": {
+                        "filename": "background.mp4",
+                        "content_type": "video/mp4",
+                        "file_size": 1200000
+                    }
+                },
+                {
+                    "type": "Attachment",
+                    "id": "att-3",
+                    "attributes": {
+                        "filename": "title-slide.png",
+                        "content_type": "image/png"
+                    }
+                },
+                {
+                    "type": "Attachment",
+                    "id": "att-4",
+                    "attributes": {
+                        "filename": "walkin.mp3",
+                        "content_type": "audio/mpeg"
+                    }
+                }
+            ]
+        }"#;
+
+        let list = parse_pco_attachments_json_api(att_json, Some("Sunday Service")).expect("parse");
+        assert_eq!(list.len(), 4);
+        assert_eq!(list[0].kind, PcoAttachmentKind::LyricPdf);
+        assert_eq!(list[1].kind, PcoAttachmentKind::Video);
+        assert_eq!(list[2].kind, PcoAttachmentKind::Image);
+        assert_eq!(list[3].kind, PcoAttachmentKind::Audio);
+        assert!(list[0].open_endpoint.ends_with("/attachments/att-1/open"));
+
+        let open_json = r#"{"data":{"type":"AttachmentActivity","attributes":{"attachment_url":"https://s3.example.com/signed.pdf"}}}"#;
+        assert_eq!(
+            parse_pco_open_attachment_url(open_json).expect("open url"),
+            "https://s3.example.com/signed.pdf"
+        );
+        assert!(parse_pco_open_attachment_url("{}").is_err());
+
+        // Collision-safe staging: two different presentations both attach "background.mp4" with different bytes!
+        let tmp_dir = std::env::temp_dir().join(format!("op-pco-media-{}", uuid::Uuid::new_v4()));
+        let first = stage_imported_media_bytes(&tmp_dir, "Amazing Grace", "background.mp4", b"video-bytes-A")
+            .expect("stage A");
+        let second = stage_imported_media_bytes(&tmp_dir, "Sermon Opener", "background.mp4", b"video-bytes-B")
+            .expect("stage B");
+        let dup = stage_imported_media_bytes(&tmp_dir, "Amazing Grace", "background.mp4", b"video-bytes-A")
+            .expect("stage dup");
+
+        assert_ne!(first.disk_path, second.disk_path);
+        assert_ne!(first.blake3_hash, second.blake3_hash);
+        assert!(first.safe_file_name.starts_with("Amazing-Grace__background__"));
+        assert!(second.safe_file_name.starts_with("Sermon-Opener__background__"));
+        assert_eq!(first.display_name, "Amazing Grace — background.mp4");
+        assert!(dup.deduplicated);
+        assert_eq!(std::fs::read(&first.disk_path).expect("read A"), b"video-bytes-A");
+        assert_eq!(std::fs::read(&second.disk_path).expect("read B"), b"video-bytes-B");
+        assert!(stage_imported_media_bytes(&tmp_dir, "Empty", "a.png", b"").is_err());
+        let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 }

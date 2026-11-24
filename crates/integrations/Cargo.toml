@@ -12,6 +12,7 @@ blake3.workspace = true
 chrono.workspace = true
 core-library.workspace = true
 core-scene.workspace = true
+flate2.workspace = true
 loro.workspace = true
 prost.workspace = true
 quick-xml.workspace = true

@@ -6,6 +6,7 @@ pub mod bible;
 pub mod ccli;
 pub mod importers;
 pub mod pco;
+pub mod pdf_lyrics;
 pub mod sync;
 
 pub use bible::{
@@ -23,8 +24,15 @@ pub use importers::{
     import_pptx_bytes, import_pro6_xml, import_pro7_protobuf,
 };
 pub use pco::{
-    PcoOAuthPkceSession, PcoPlanSummary, PcoRateLimitState, build_pco_plans_url,
-    parse_pco_plans_json_api,
+    PcoAttachment, PcoAttachmentKind, PcoOAuthPkceSession, PcoPlanSummary, PcoRateLimitState,
+    StagedMediaFile, build_pco_attachment_open_url, build_pco_item_attachments_url,
+    build_pco_plan_attachments_url, build_pco_plans_url, build_pco_song_attachments_url,
+    build_safe_media_names, classify_attachment_kind, parse_pco_attachments_json_api,
+    parse_pco_open_attachment_url, parse_pco_plans_json_api, stage_imported_media_bytes,
+};
+pub use pdf_lyrics::{
+    ParsedLyricSheet, PdfLyricsError, extract_pdf_text, import_lyric_sheet_pdf,
+    parse_lyric_sheet_text,
 };
 pub use sync::{
     AssetSyncPlan, LocalCrdtLibrary, S3ProviderKind, S3SyncConfig, plan_blake3_asset_sync,

@@ -2450,6 +2450,47 @@ fn import_worship_file(
         .unwrap_or("Imported Deck")
         .to_string();
 
+    if format == "pdf"
+        || path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
+    {
+        let bytes = std::fs::read(&path)
+            .map_err(|e| format!("failed to read '{}': {e}", path.display()))?;
+        let parsed = integrations::import_lyric_sheet_pdf(&bytes, Some(&stem))
+            .map_err(|e| e.to_string())?;
+        let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+        let slide_count = parsed.slides.len();
+        let rec = SongRecord {
+            id: Uuid::new_v4().to_string(),
+            library_id: DEFAULT_LIBRARY_ID.to_string(),
+            title: parsed.title.clone(),
+            author: parsed.author,
+            copyright: parsed.copyright,
+            ccli_number: parsed.ccli_number.clone(),
+            key_signature: parsed.key_signature,
+            bpm: None,
+            lyrics_plain: parsed
+                .slides
+                .iter()
+                .map(|s| s.plain_text())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            slides: parsed.slides,
+            arrangements: parsed.arrangements,
+            cue_tracks: Vec::new(),
+            updated_at: chrono::Utc::now(),
+        };
+        lib.upsert_song(&rec).map_err(|e| e.to_string())?;
+        return Ok(ImportSummaryDto {
+            title: parsed.title,
+            slide_count,
+            ccli_number: parsed.ccli_number,
+            source_format: "Lyric Sheet PDF".into(),
+        });
+    }
+
     if format == "pptx" || path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("pptx")) {
         let bytes = std::fs::read(&path).map_err(|e| format!("failed to read '{}': {e}", path.display()))?;
         let imported = integrations::import_pptx_bytes(&stem, &bytes).map_err(|e| e.to_string())?;
@@ -2486,6 +2527,377 @@ fn import_worship_file(
         format
     };
     import_worship_document(bridge, auto_format, content)
+}
+
+#[derive(serde::Serialize)]
+struct PdfImportResultDto {
+    song_id: String,
+    library_id: String,
+    title: String,
+    author: String,
+    ccli_number: Option<String>,
+    slide_count: usize,
+    arrangement_count: usize,
+    scene: Option<SceneState>,
+}
+
+fn managed_imported_media_dir() -> PathBuf {
+    std::env::temp_dir()
+        .join("openpresenter-data")
+        .join("imported-media")
+}
+
+fn resolve_target_library_id(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed == "all" {
+        DEFAULT_LIBRARY_ID.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn resolve_target_bin_id(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed == "all" {
+        core_library::DEFAULT_MEDIA_BIN_ID.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+async fn persist_parsed_pdf_song(
+    bridge: &EngineBridgeState,
+    parsed: integrations::ParsedLyricSheet,
+    library_id: &str,
+    load_to_deck: bool,
+) -> Result<PdfImportResultDto, String> {
+    let resolved_lib = resolve_target_library_id(library_id);
+    let song_id = Uuid::new_v4().to_string();
+    let slide_count = parsed.slides.len();
+    let arrangement_count = parsed.arrangements.len();
+    let rec = SongRecord {
+        id: song_id.clone(),
+        library_id: resolved_lib.clone(),
+        title: parsed.title.clone(),
+        author: parsed.author.clone(),
+        copyright: parsed.copyright,
+        ccli_number: parsed.ccli_number.clone(),
+        key_signature: parsed.key_signature,
+        bpm: None,
+        lyrics_plain: parsed
+            .slides
+            .iter()
+            .map(|s| s.plain_text())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        slides: parsed.slides.clone(),
+        arrangements: parsed.arrangements.clone(),
+        cue_tracks: Vec::new(),
+        updated_at: chrono::Utc::now(),
+    };
+    {
+        let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+        lib.upsert_song(&rec).map_err(|e| e.to_string())?;
+    }
+
+    let scene = if load_to_deck {
+        if let Ok(mut g) = bridge.active_song_id.lock() {
+            *g = Some(song_id.clone());
+        }
+        let active_id = parsed.arrangements.first().map(|a| a.id.clone());
+        let _ = apply_scene_diff(
+            bridge,
+            SceneDiff::LoadPresentation {
+                slides: parsed.slides,
+                arrangements: parsed.arrangements,
+                active_arrangement_id: active_id,
+            },
+        )
+        .await?;
+        let _ = apply_scene_diff(bridge, SceneDiff::SetCueTracks(Vec::new())).await;
+        let st = apply_scene_diff(
+            bridge,
+            SceneDiff::SetActivePresentationMeta {
+                id: Some(song_id.clone()),
+                title: Some(parsed.title.clone()),
+            },
+        )
+        .await?;
+        Some(st)
+    } else {
+        None
+    };
+
+    Ok(PdfImportResultDto {
+        song_id,
+        library_id: resolved_lib,
+        title: parsed.title,
+        author: parsed.author,
+        ccli_number: parsed.ccli_number,
+        slide_count,
+        arrangement_count,
+        scene,
+    })
+}
+
+#[tauri::command]
+async fn import_lyric_sheet_pdf_file(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    file_path: String,
+    library_id: String,
+    load_to_deck: bool,
+) -> Result<PdfImportResultDto, String> {
+    let trimmed = file_path.trim();
+    if trimmed.is_empty() {
+        return Err("Provide a local PDF lyric sheet path".to_string());
+    }
+    let path = PathBuf::from(trimmed);
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("Imported Lyric Sheet");
+    let bytes = std::fs::read(&path)
+        .map_err(|e| format!("failed to read PDF '{}': {e}", path.display()))?;
+    let parsed = integrations::import_lyric_sheet_pdf(&bytes, Some(stem))
+        .map_err(|e| e.to_string())?;
+    persist_parsed_pdf_song(&bridge, parsed, &library_id, load_to_deck).await
+}
+
+#[derive(serde::Serialize)]
+struct SafeMediaImportDto {
+    asset: MediaAssetRecord,
+    safe_file_name: String,
+    deduplicated: bool,
+}
+
+fn persist_staged_media(
+    bridge: &EngineBridgeState,
+    context_label: &str,
+    original_filename: &str,
+    bytes: &[u8],
+    target_bin_id: &str,
+) -> Result<SafeMediaImportDto, String> {
+    let staged = integrations::stage_imported_media_bytes(
+        &managed_imported_media_dir(),
+        context_label,
+        original_filename,
+        bytes,
+    )
+    .map_err(|e| e.to_string())?;
+    let resolved_bin = resolve_target_bin_id(target_bin_id);
+    let record = MediaAssetRecord {
+        blake3_hash: staged.blake3_hash,
+        bin_id: resolved_bin,
+        file_name: staged.display_name,
+        local_path: staged.disk_path.to_string_lossy().into_owned(),
+        kind: staged.media_kind,
+        width: None,
+        height: None,
+        duration_ms: None,
+        has_alpha: original_filename.to_ascii_lowercase().ends_with(".png"),
+        size_bytes: staged.size_bytes,
+    };
+    let lib = bridge.library.lock().map_err(|e| e.to_string())?;
+    lib.upsert_media_asset(&record).map_err(|e| e.to_string())?;
+    Ok(SafeMediaImportDto {
+        asset: record,
+        safe_file_name: staged.safe_file_name,
+        deduplicated: staged.deduplicated,
+    })
+}
+
+#[tauri::command]
+fn import_media_file_safe(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    file_path: String,
+    context_label: String,
+    target_bin_id: String,
+) -> Result<SafeMediaImportDto, String> {
+    let trimmed = file_path.trim();
+    if trimmed.is_empty() {
+        return Err("Provide a local media file path".to_string());
+    }
+    let path = PathBuf::from(trimmed);
+    let orig_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("media.bin");
+    let bytes = std::fs::read(&path)
+        .map_err(|e| format!("failed to read '{}': {e}", path.display()))?;
+    persist_staged_media(&bridge, &context_label, orig_name, &bytes, &target_bin_id)
+}
+
+fn pco_curl_request(
+    method: &str,
+    url: &str,
+    app_id_or_bearer: &str,
+    secret: Option<&str>,
+) -> Result<Vec<u8>, String> {
+    let auth_id = app_id_or_bearer.trim();
+    if auth_id.is_empty() {
+        return Err(
+            "Enter your Planning Center App ID + Secret (or OAuth Bearer token)".to_string(),
+        );
+    }
+    let curl_bin = if cfg!(windows) { "curl.exe" } else { "curl" };
+    let mut cmd = Command::new(curl_bin);
+    cmd.args(["-sS", "-L", "-f", "--max-time", "30", "-X", method]);
+    if let Some(sec) = secret.map(str::trim).filter(|s| !s.is_empty()) {
+        cmd.arg("-u").arg(format!("{auth_id}:{sec}"));
+    } else {
+        cmd.arg("-H").arg(format!("Authorization: Bearer {auth_id}"));
+    }
+    cmd.arg("-H").arg("Accept: application/json");
+    cmd.arg(url);
+
+    let out = cmd
+        .output()
+        .map_err(|e| format!("failed to invoke {curl_bin} for Planning Center request: {e}"))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(format!("Planning Center API error: {}", stderr.trim()));
+    }
+    Ok(out.stdout)
+}
+
+fn pco_curl_download_signed_url(url: &str) -> Result<Vec<u8>, String> {
+    let curl_bin = if cfg!(windows) { "curl.exe" } else { "curl" };
+    let out = Command::new(curl_bin)
+        .args(["-sS", "-L", "-f", "--max-time", "60", url])
+        .output()
+        .map_err(|e| format!("failed to download attachment via {curl_bin}: {e}"))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(format!("Attachment download failed: {}", stderr.trim()));
+    }
+    Ok(out.stdout)
+}
+
+#[tauri::command]
+fn pco_list_plans(
+    app_id_or_bearer: String,
+    secret: Option<String>,
+    service_type_id: String,
+) -> Result<Vec<integrations::PcoPlanSummary>, String> {
+    let st_id = service_type_id.trim();
+    if st_id.is_empty() {
+        return Err("Provide a Planning Center Service Type ID".to_string());
+    }
+    let url = integrations::build_pco_plans_url(st_id);
+    let body = pco_curl_request("GET", &url, &app_id_or_bearer, secret.as_deref())?;
+    let json_str = String::from_utf8_lossy(&body);
+    integrations::parse_pco_plans_json_api(&json_str).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn pco_list_plan_attachments(
+    app_id_or_bearer: String,
+    secret: Option<String>,
+    service_type_id: String,
+    plan_id: String,
+    plan_title: Option<String>,
+) -> Result<Vec<integrations::PcoAttachment>, String> {
+    let st_id = service_type_id.trim();
+    let pid = plan_id.trim();
+    if st_id.is_empty() || pid.is_empty() {
+        return Err("Provide Service Type ID and Plan ID".to_string());
+    }
+    let url = integrations::build_pco_plan_attachments_url(st_id, pid);
+    let body = pco_curl_request("GET", &url, &app_id_or_bearer, secret.as_deref())?;
+    let json_str = String::from_utf8_lossy(&body);
+    integrations::parse_pco_attachments_json_api(&json_str, plan_title.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[derive(serde::Serialize)]
+struct PcoAttachmentImportDto {
+    kind: String,
+    summary: String,
+    scene: Option<SceneState>,
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn pco_import_attachment(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    app_id_or_bearer: String,
+    secret: Option<String>,
+    attachment: integrations::PcoAttachment,
+    target_library_id: String,
+    target_media_bin_id: String,
+    load_to_deck: bool,
+) -> Result<PcoAttachmentImportDto, String> {
+    let download_url = if let Some(url) = attachment.download_url.clone() {
+        url
+    } else {
+        let open_body = pco_curl_request(
+            "POST",
+            &attachment.open_endpoint,
+            &app_id_or_bearer,
+            secret.as_deref(),
+        )?;
+        let open_json = String::from_utf8_lossy(&open_body);
+        integrations::parse_pco_open_attachment_url(&open_json).map_err(|e| e.to_string())?
+    };
+
+    let bytes = pco_curl_download_signed_url(&download_url)?;
+
+    match attachment.kind {
+        integrations::PcoAttachmentKind::LyricPdf => {
+            let fallback = PathBuf::from(&attachment.filename)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(&attachment.display_name)
+                .to_string();
+            let parsed = integrations::import_lyric_sheet_pdf(&bytes, Some(&fallback))
+                .map_err(|e| e.to_string())?;
+            let res = persist_parsed_pdf_song(&bridge, parsed, &target_library_id, load_to_deck).await?;
+            Ok(PcoAttachmentImportDto {
+                kind: "LyricPdf".into(),
+                summary: format!(
+                    "Imported lyric PDF \"{}\" ({} slides{}) into library '{}'",
+                    res.title,
+                    res.slide_count,
+                    res.ccli_number
+                        .as_deref()
+                        .map(|c| format!(", CCLI #{c}"))
+                        .unwrap_or_default(),
+                    res.library_id
+                ),
+                scene: res.scene,
+            })
+        }
+        integrations::PcoAttachmentKind::Image
+        | integrations::PcoAttachmentKind::Video
+        | integrations::PcoAttachmentKind::Audio => {
+            let staged = persist_staged_media(
+                &bridge,
+                &attachment.context_label,
+                &attachment.filename,
+                &bytes,
+                &target_media_bin_id,
+            )?;
+            Ok(PcoAttachmentImportDto {
+                kind: format!("{:?}", attachment.kind),
+                summary: format!(
+                    "Imported media \"{}\" as {} into bin '{}'{}",
+                    staged.asset.file_name,
+                    staged.safe_file_name,
+                    staged.asset.bin_id,
+                    if staged.deduplicated {
+                        " (deduplicated)"
+                    } else {
+                        ""
+                    }
+                ),
+                scene: None,
+            })
+        }
+        integrations::PcoAttachmentKind::Other => Err(format!(
+            "Unsupported Planning Center attachment type for '{}'",
+            attachment.filename
+        )),
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -2901,6 +3313,11 @@ pub fn run() {
             dispatch_control_command,
             import_worship_document,
             import_worship_file,
+            import_lyric_sheet_pdf_file,
+            import_media_file_safe,
+            pco_list_plans,
+            pco_list_plan_attachments,
+            pco_import_attachment,
             export_library_backup,
             import_library_backup,
             export_ccli_csv_report,

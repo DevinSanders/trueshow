@@ -2282,6 +2282,7 @@ dependencies = [
  "chrono",
  "core-library",
  "core-scene",
+ "flate2",
  "loro",
  "prost",
  "quick-xml 0.37.5",
