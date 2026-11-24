@@ -98,6 +98,7 @@ Instead of crowding dozens of buttons across the top edge of the window, all nav
 | **View** | Switch between **Show Workspace**, **Scripture Drawer**, **Quick Lyrics**, and check/uncheck **Libraries & Playlists Drawer**, **Layer Manager Dock**, and **Media Bin Drawer** to show or hide workspace panels. |
 | **Screens** | **Configure Screens & Monitors**, **Looks & Templates**, **Stage Layout Designer**, **Broadcast I/O & LAN Remote**. |
 | **Tools** | **Live Timers**, **Macros, Calendar & OSC**, **Import & Planning Center**, **CCLI Attribution & Reports**, **Backup & Restore (`.opbundle`)**, and **Diagnostics & Logs** (displays a crash badge count if any issue was recorded). |
+| **Help** | **User Guide** (opens this complete illustrated manual right inside OpenPresenter, 100% offline with search and click-to-zoom screenshots), **Keyboard Shortcuts** (jumps straight to Section 20), and **Diagnostics & Logs**. |
 
 On the far right of the Menu Bar:
 - **Active View Pill:** Shows which screen you are currently viewing (e.g., `Show Deck`, `Slide Editor`, `Import & Planning Center`).

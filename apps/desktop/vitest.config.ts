@@ -1,8 +1,14 @@
 import { svelte } from "@sveltejs/vite-plugin-svelte";
+import path from "node:path";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   plugins: [svelte()],
+  server: {
+    fs: {
+      allow: [path.resolve(__dirname, "../..")],
+    },
+  },
   resolve: {
     conditions: ["browser"],
   },

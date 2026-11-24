@@ -86,6 +86,16 @@ describe("MenuBar & StatusBar desktop chrome", () => {
     await fireEvent.click(screen.getByRole("menuitem", { name: "Screens" }));
     await fireEvent.click(screen.getByRole("menuitem", { name: /Broadcast I\/O/ }));
     expect(onSelectTab).toHaveBeenCalledWith("broadcast");
+
+    // Open Help menu and trigger User Guide & Keyboard Shortcuts
+    await fireEvent.click(screen.getByRole("menuitem", { name: "Help" }));
+    expect(screen.getByRole("menu", { name: "Help menu" })).toBeTruthy();
+    await fireEvent.click(screen.getByRole("menuitem", { name: /User Guide/ }));
+    expect(onSelectTab).toHaveBeenCalledWith("guide");
+
+    await fireEvent.click(screen.getByRole("menuitem", { name: "Help" }));
+    await fireEvent.click(screen.getByRole("menuitem", { name: /Keyboard Shortcuts/ }));
+    expect(onSelectTab).toHaveBeenCalledWith("guide", undefined, "20-complete-keyboard-shortcuts-reference");
   });
 
   it("renders compact bottom StatusBar for connected, frozen, blackout, and disconnected states", async () => {

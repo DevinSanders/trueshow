@@ -20,6 +20,7 @@
   import SlideEditor from "./lib/SlideEditor.svelte";
   import StageDesignerPanel from "./lib/StageDesignerPanel.svelte";
   import StatusBar from "./lib/StatusBar.svelte";
+  import UserGuidePanel from "./lib/UserGuidePanel.svelte";
   import { allowDrop, clearAppDrag, readDroppedMedia, startAppDrag } from "./lib/dragStore";
   import type {
     DiagnosticsStatus,
@@ -40,6 +41,7 @@
   let errorText = $state<string | null>(null);
   let activeTab = $state<WorkspaceTab>("show");
   let activeControlSection = $state<ControlSection>("timers");
+  let guideAnchor = $state<string | null>(null);
   let editingTimerSlideId = $state<string | null>(null);
   let crashCount = $state(0);
   let showLibraryDrawer = $state(true);
@@ -70,9 +72,10 @@
     errorText = msg;
   }
 
-  function selectTab(tab: WorkspaceTab, section?: ControlSection) {
+  function selectTab(tab: WorkspaceTab, section?: ControlSection, anchor?: string) {
     activeTab = tab;
     if (section) activeControlSection = section;
+    guideAnchor = anchor ?? null;
   }
 
   function openSlideContextMenu(event: MouseEvent, slide: Slide) {
@@ -580,6 +583,8 @@
         />
       {:else if activeTab === "diagnostics"}
         <DiagnosticsPanel />
+      {:else if activeTab === "guide"}
+        <UserGuidePanel initialAnchor={guideAnchor} onClose={() => selectTab("show")} />
       {:else if activeTab === "editor" && editableSlide}
         <SlideEditor slide={editableSlide} onUpdateElement={updateSlideElement} onSceneChange={applySceneState} />
       {:else}

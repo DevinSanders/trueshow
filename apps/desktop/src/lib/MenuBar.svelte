@@ -12,7 +12,8 @@
     | "editor"
     | "broadcast"
     | "ecosystem"
-    | "diagnostics";
+    | "diagnostics"
+    | "guide";
 
   interface MenuItem {
     id: string;
@@ -39,7 +40,7 @@
     showLibraryDrawer: boolean;
     showLayerDock: boolean;
     showMediaDrawer: boolean;
-    onSelectTab: (tab: WorkspaceTab, section?: ControlSection) => void;
+    onSelectTab: (tab: WorkspaceTab, section?: ControlSection, anchor?: string) => void;
     onToggleLibraryDrawer: () => void;
     onToggleLayerDock: () => void;
     onToggleMediaDrawer: () => void;
@@ -88,6 +89,7 @@
     broadcast: "Broadcast I/O",
     ecosystem: "Show Control & Sync",
     diagnostics: "Diagnostics",
+    guide: "User Guide",
   };
 
   const sectionTitles: Record<ControlSection, string> = {
@@ -167,6 +169,20 @@
         },
       ],
     },
+    {
+      id: "help",
+      label: "Help",
+      items: [
+        { id: "tab:guide", label: "User Guide", checked: activeTab === "guide" },
+        { id: "guide:shortcuts", label: "Keyboard Shortcuts" },
+        {
+          id: "tab:diagnostics",
+          label: crashCount > 0 ? `Diagnostics (${crashCount})` : "Diagnostics & Logs",
+          checked: activeTab === "diagnostics",
+          separator: true,
+        },
+      ],
+    },
   ]);
 
   function toggleMenu(id: string) {
@@ -188,6 +204,10 @@
     }
     if (item.id.startsWith("tool:")) {
       onSelectTab("ecosystem", item.id.slice(5) as ControlSection);
+      return;
+    }
+    if (item.id === "guide:shortcuts") {
+      onSelectTab("guide", undefined, "20-complete-keyboard-shortcuts-reference");
       return;
     }
     switch (item.id) {
