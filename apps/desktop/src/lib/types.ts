@@ -192,3 +192,34 @@ export interface PlaylistRecord {
   item_song_ids: string[];
   updated_at: string;
 }
+
+export interface DiagnosticsStatus {
+  log_dir: string;
+  crash_dir: string;
+  engine_log_path: string;
+  desktop_log_path: string;
+  active_log_level: string;
+  crash_count: number;
+}
+
+export interface CrashReport {
+  id: string;
+  timestamp_utc: string;
+  component: string;
+  kind: string;
+  app_version: string;
+  pid: number;
+  os: string;
+  arch: string;
+  thread: string;
+  message: string;
+  location: string | null;
+  backtrace: string;
+  recent_logs: string[];
+}
+
+export interface ExportedBundle {
+  file_path: string;
+  crash_count: number;
+  markdown: string;
+}

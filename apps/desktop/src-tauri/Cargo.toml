@@ -15,6 +15,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 broadcast-io = { path = "../../../crates/broadcast-io" }
 chrono = { version = "0.4", features = ["serde"] }
+core-diagnostics = { path = "../../../crates/core-diagnostics" }
 core-ipc = { path = "../../../crates/core-ipc" }
 core-library = { path = "../../../crates/core-library" }
 core-scene = { path = "../../../crates/core-scene" }

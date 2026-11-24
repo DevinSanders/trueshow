@@ -580,6 +580,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "core-diagnostics"
+version = "0.1.0-m3"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "core-foundation"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3402,6 +3415,7 @@ version = "0.1.0-m1"
 dependencies = [
  "broadcast-io",
  "chrono",
+ "core-diagnostics",
  "core-ipc",
  "core-library",
  "core-scene",

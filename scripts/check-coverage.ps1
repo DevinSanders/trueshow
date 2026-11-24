@@ -2,6 +2,7 @@
 # using built-in `rustc -C instrument-coverage`, `llvm-profdata`, and `llvm-cov`.
 param(
     [string[]]$Packages = @(
+        "core-diagnostics",
         "core-scene",
         "core-ipc",
         "core-library",
@@ -46,7 +47,7 @@ $merged = Join-Path $covDir "merged.profdata"
 
 # Collect only the newest unit test binary per crate (avoids stale hash duplicates from prior version bumps)
 $bins = Get-ChildItem -Path (Join-Path $covDir "target\debug") -Recurse -Filter "*.exe" |
-    Where-Object { $_.Name -match "^(core_scene|core_ipc|core_library|render_text|media_engine|broadcast_io|show_control|integrations|plugin_sdk|plugin_host)-[0-9a-f]+\.exe$" } |
+    Where-Object { $_.Name -match "^(core_diagnostics|core_scene|core_ipc|core_library|render_text|media_engine|broadcast_io|show_control|integrations|plugin_sdk|plugin_host)-[0-9a-f]+\.exe$" } |
     Group-Object { ($_.Name -split '-')[0] } |
     ForEach-Object { $_.Group | Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName }
 

@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/core-diagnostics",
     "crates/core-scene",
     "crates/core-ipc",
     "crates/core-library",
@@ -61,6 +62,7 @@ wgpu = "30.0"
 winit = "0.30"
 zip = { version = "2.2", default-features = false, features = ["deflate"] }
 
+core-diagnostics = { path = "crates/core-diagnostics" }
 core-scene = { path = "crates/core-scene" }
 core-ipc = { path = "crates/core-ipc" }
 core-library = { path = "crates/core-library" }

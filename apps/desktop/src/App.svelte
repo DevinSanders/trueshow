@@ -3,9 +3,11 @@
   import { onMount } from "svelte";
   import PreviewCanvas from "./lib/PreviewCanvas.svelte";
   import BroadcastPanel from "./lib/BroadcastPanel.svelte";
+  import DiagnosticsPanel from "./lib/DiagnosticsPanel.svelte";
   import ShowControlPanel from "./lib/ShowControlPanel.svelte";
   import SlideEditor from "./lib/SlideEditor.svelte";
   import type {
+    DiagnosticsStatus,
     EngineSnapshot,
     EngineTelemetry,
     LayerKind,
@@ -19,7 +21,8 @@
   let telemetry = $state<EngineTelemetry | null>(null);
   let statusMessage = $state("Connecting to openpresenter-engine sidecar...");
   let errorText = $state<string | null>(null);
-  let activeTab = $state<"show" | "editor" | "broadcast" | "ecosystem">("show");
+  let activeTab = $state<"show" | "editor" | "broadcast" | "ecosystem" | "diagnostics">("show");
+  let crashCount = $state(0);
 
   let transitionKind = $state<"Cut" | "Dissolve" | "PushLeft" | "WipeRight">("Dissolve");
   let dissolveMs = $state(450);
@@ -183,6 +186,32 @@
 
   onMount(() => {
     void attachEngine();
+    void invoke<DiagnosticsStatus>("get_diagnostics_status")
+      .then((d) => {
+        if (d) crashCount = d.crash_count;
+      })
+      .catch(() => {});
+
+    const onWindowError = (event: ErrorEvent) => {
+      void invoke("report_frontend_crash", {
+        kind: "ui-window-error",
+        message: event.message || "Unhandled window error",
+        stack: event.error instanceof Error ? (event.error.stack ?? null) : null,
+      }).catch(() => {});
+      crashCount += 1;
+    };
+    const onUnhandledRejection = (event: PromiseRejectionEvent) => {
+      const reason = event.reason;
+      void invoke("report_frontend_crash", {
+        kind: "ui-unhandled-rejection",
+        message: reason instanceof Error ? reason.message : String(reason),
+        stack: reason instanceof Error ? (reason.stack ?? null) : null,
+      }).catch(() => {});
+      crashCount += 1;
+    };
+    window.addEventListener("error", onWindowError);
+    window.addEventListener("unhandledrejection", onUnhandledRejection);
+
     let consecutiveErrors = 0;
     const timer = setInterval(async () => {
       if (!snapshot) return;
@@ -197,7 +226,11 @@
         }
       }
     }, 500);
-    return () => clearInterval(timer);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("error", onWindowError);
+      window.removeEventListener("unhandledrejection", onUnhandledRejection);
+    };
   });
 </script>
 
@@ -219,6 +252,9 @@
         </button>
         <button class="tab" class:active={activeTab === "ecosystem"} onclick={() => (activeTab = "ecosystem")}>
           Control & Sync
+        </button>
+        <button class="tab" class:active={activeTab === "diagnostics"} onclick={() => (activeTab = "diagnostics")}>
+          Diagnostics{#if crashCount > 0} ({crashCount}){/if}
         </button>
       </nav>
     </div>
@@ -280,6 +316,8 @@
         <BroadcastPanel />
       {:else if activeTab === "ecosystem"}
         <ShowControlPanel />
+      {:else if activeTab === "diagnostics"}
+        <DiagnosticsPanel />
       {:else if activeTab === "editor" && editableSlide}
         <SlideEditor slide={editableSlide} onUpdateElement={updateSlideElement} />
       {:else}

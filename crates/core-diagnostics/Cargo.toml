@@ -1,0 +1,18 @@
+[package]
+name = "core-diagnostics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Persistent rolling debug logging, panic/crash report capture, and redacted diagnostic bundle export for OpenPresenter."
+
+[lints]
+workspace = true
+
+[dependencies]
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true

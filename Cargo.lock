@@ -612,6 +612,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
+name = "core-diagnostics"
+version = "0.1.0-m3"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "core-foundation"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2941,6 +2954,7 @@ version = "0.1.0-m3"
 dependencies = [
  "broadcast-io",
  "clap",
+ "core-diagnostics",
  "core-ipc",
  "core-scene",
  "interprocess",
@@ -3467,6 +3481,7 @@ name = "render-wgpu"
 version = "0.1.0-m3"
 dependencies = [
  "bytemuck",
+ "core-diagnostics",
  "core-ipc",
  "core-scene",
  "pollster",

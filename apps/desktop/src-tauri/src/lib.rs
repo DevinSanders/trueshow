@@ -5,6 +5,9 @@
 //! - Preview plane: lock-free shared-memory RGBA8 ring streamed via Tauri `Channel<Response>`.
 //! - Local library: offline SQLite WAL + FTS5 persistence (`core-library`).
 
+use core_diagnostics::{
+    CrashReport, DiagnosticsPaths, ExportedBundle, LogLevel, LoggingController,
+};
 use core_ipc::{
     EngineCommand, EngineEvent, EngineSnapshot, EngineTelemetry, PreviewBusDescriptor,
     ShmPreviewReader, default_socket_name, read_frame, to_local_socket_name, write_frame,
@@ -23,7 +26,7 @@ use std::time::Duration;
 use tauri::State;
 use tauri::ipc::{Channel, Response};
 use tokio::sync::Mutex;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 struct EngineBridgeState {
@@ -32,10 +35,13 @@ struct EngineBridgeState {
     preview_buses: Mutex<HashMap<OutputId, PreviewBusDescriptor>>,
     library: StdMutex<LibraryStore>,
     timers: StdMutex<show_control::TimerEngine>,
+    diagnostics: DiagnosticsPaths,
+    logging: Option<LoggingController>,
+    last_gpu_summary: StdMutex<Option<String>>,
 }
 
 impl EngineBridgeState {
-    fn new() -> Self {
+    fn new(diagnostics: DiagnosticsPaths, logging: Option<LoggingController>) -> Self {
         let db_path = std::env::temp_dir()
             .join("openpresenter-data")
             .join("library.sqlite3");
@@ -50,6 +56,9 @@ impl EngineBridgeState {
             preview_buses: Mutex::new(HashMap::new()),
             library: StdMutex::new(store),
             timers: StdMutex::new(show_control::TimerEngine::new()),
+            diagnostics,
+            logging,
+            last_gpu_summary: StdMutex::new(None),
         }
     }
 
@@ -70,7 +79,12 @@ impl EngineBridgeState {
         if !auto_spawn {
             return Err("openpresenter-engine is not running".to_string());
         }
-        spawn_engine_sidecar(&self.socket_name)?;
+        let log_level = self
+            .logging
+            .as_ref()
+            .map(|l| l.current_level())
+            .unwrap_or(LogLevel::Info);
+        spawn_engine_sidecar(&self.socket_name, log_level, self.diagnostics.clone())?;
         for _ in 0..40 {
             tokio::time::sleep(Duration::from_millis(125)).await;
             if let Ok(stream) = self.try_connect_once().await {
@@ -143,22 +157,60 @@ fn find_engine_binary() -> Option<PathBuf> {
     None
 }
 
-fn spawn_engine_sidecar(socket_name: &str) -> Result<(), String> {
+fn spawn_engine_sidecar(
+    socket_name: &str,
+    log_level: LogLevel,
+    diag_paths: DiagnosticsPaths,
+) -> Result<(), String> {
     let bin = find_engine_binary().ok_or_else(|| {
         "could not locate `openpresenter-engine` binary; run `cargo build --bin openpresenter-engine` first"
             .to_string()
     })?;
-    info!("spawning decoupled engine sidecar: {}", bin.display());
-    Command::new(&bin)
+    info!(
+        path = %bin.display(),
+        level = log_level.as_str(),
+        "spawning decoupled engine sidecar"
+    );
+    let mut child = Command::new(&bin)
         .arg("--socket")
         .arg(socket_name)
         .arg("--outputs")
         .arg("2")
+        .arg("--log-level")
+        .arg(log_level.as_str())
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .spawn()
         .map_err(|e| format!("failed to spawn {}: {e}", bin.display()))?;
+
+    let child_pid = child.id();
+    std::thread::Builder::new()
+        .name(format!("engine-exit-watcher-{child_pid}"))
+        .spawn(move || match child.wait() {
+            Ok(status) if status.success() => {
+                info!(pid = child_pid, "openpresenter-engine exited cleanly");
+            }
+            Ok(status) => {
+                let msg = format!(
+                    "openpresenter-engine (pid={child_pid}) exited abnormally with status: {status}"
+                );
+                error!("{msg}");
+                let _ = core_diagnostics::record_runtime_error(
+                    &diag_paths,
+                    "openpresenter-engine",
+                    "sidecar-abnormal-exit",
+                    env!("CARGO_PKG_VERSION"),
+                    &msg,
+                    Some("apps/desktop/src-tauri/src/lib.rs"),
+                    Some("Process terminated unexpectedly; inspect recent_logs for engine stderr/trace."),
+                );
+            }
+            Err(err) => {
+                warn!(pid = child_pid, "failed waiting on engine sidecar: {err}");
+            }
+        })
+        .ok();
     Ok(())
 }
 
@@ -172,6 +224,15 @@ async fn connect_engine(
     };
     match event {
         EngineEvent::Snapshot(snap) => {
+            if let Ok(mut gpu) = bridge.last_gpu_summary.lock() {
+                *gpu = Some(format!(
+                    "{} ({}) · PID {} · {} display(s)",
+                    snap.gpu_adapter_name,
+                    snap.gpu_backend,
+                    snap.engine_pid,
+                    snap.displays.len()
+                ));
+            }
             let mut map = bridge.preview_buses.lock().await;
             map.clear();
             for bus in &snap.preview_buses {
@@ -584,16 +645,142 @@ async fn start_preview_stream(
     Ok(())
 }
 
+#[derive(serde::Serialize)]
+struct DiagnosticsStatusDto {
+    log_dir: String,
+    crash_dir: String,
+    engine_log_path: String,
+    desktop_log_path: String,
+    active_log_level: String,
+    crash_count: usize,
+}
+
+#[tauri::command]
+fn get_diagnostics_status(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+) -> Result<DiagnosticsStatusDto, String> {
+    let crashes = core_diagnostics::list_crash_reports(&bridge.diagnostics)
+        .map_err(|e| e.to_string())?;
+    let active_level = bridge
+        .logging
+        .as_ref()
+        .map(|l| l.current_level())
+        .unwrap_or(LogLevel::Info);
+    Ok(DiagnosticsStatusDto {
+        log_dir: bridge.diagnostics.log_dir.to_string_lossy().into_owned(),
+        crash_dir: bridge.diagnostics.crash_dir.to_string_lossy().into_owned(),
+        engine_log_path: bridge
+            .diagnostics
+            .log_file_for("engine")
+            .to_string_lossy()
+            .into_owned(),
+        desktop_log_path: bridge
+            .diagnostics
+            .log_file_for("desktop")
+            .to_string_lossy()
+            .into_owned(),
+        active_log_level: active_level.as_str().to_string(),
+        crash_count: crashes.len(),
+    })
+}
+
+#[tauri::command]
+async fn set_debug_logging(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    level: String,
+) -> Result<String, String> {
+    let parsed = LogLevel::parse(&level).map_err(|e| e.to_string())?;
+    if let Some(ctrl) = bridge.logging.as_ref() {
+        ctrl.set_level(parsed).map_err(|e| e.to_string())?;
+    }
+    // Forward live log level change to the decoupled engine sidecar if connected.
+    let _ = bridge
+        .request(EngineCommand::SetLogLevel(parsed.as_str().to_string()), false)
+        .await;
+    Ok(parsed.as_str().to_string())
+}
+
+#[tauri::command]
+fn read_diagnostic_logs(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    source: String,
+    max_lines: Option<usize>,
+) -> Result<Vec<String>, String> {
+    core_diagnostics::read_recent_logs(&bridge.diagnostics, &source, max_lines.unwrap_or(200))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_crash_reports(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+) -> Result<Vec<CrashReport>, String> {
+    core_diagnostics::list_crash_reports(&bridge.diagnostics).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn clear_crash_reports(bridge: State<'_, Arc<EngineBridgeState>>) -> Result<usize, String> {
+    core_diagnostics::clear_crash_reports(&bridge.diagnostics).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn report_frontend_crash(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+    kind: String,
+    message: String,
+    stack: Option<String>,
+) -> Result<CrashReport, String> {
+    error!(kind = %kind, message = %message, "recorded frontend UI crash report");
+    core_diagnostics::record_runtime_error(
+        &bridge.diagnostics,
+        "openpresenter-ui",
+        &kind,
+        env!("CARGO_PKG_VERSION"),
+        &message,
+        None,
+        stack.as_deref(),
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn export_diagnostics_bundle(
+    bridge: State<'_, Arc<EngineBridgeState>>,
+) -> Result<ExportedBundle, String> {
+    let level = bridge
+        .logging
+        .as_ref()
+        .map(|l| l.current_level())
+        .unwrap_or(LogLevel::Info);
+    let gpu = bridge
+        .last_gpu_summary
+        .lock()
+        .ok()
+        .and_then(|g| g.clone());
+    core_diagnostics::export_diagnostic_bundle(
+        &bridge.diagnostics,
+        env!("CARGO_PKG_VERSION"),
+        level,
+        gpu.as_deref(),
+    )
+    .map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
-        )
-        .init();
+    let diag_paths = DiagnosticsPaths::default_system();
+    core_diagnostics::install_crash_hook(
+        "openpresenter-desktop",
+        env!("CARGO_PKG_VERSION"),
+        diag_paths.clone(),
+    );
+    let logging = core_diagnostics::init_logging("desktop", &diag_paths, LogLevel::Info).ok();
+    info!(
+        log_dir = %diag_paths.log_dir.display(),
+        crash_dir = %diag_paths.crash_dir.display(),
+        "OpenPresenter desktop control surface starting with persistent diagnostics"
+    );
 
-    let bridge = Arc::new(EngineBridgeState::new());
+    let bridge = Arc::new(EngineBridgeState::new(diag_paths, logging));
 
     tauri::Builder::default()
         .manage(bridge)
@@ -619,6 +806,13 @@ pub fn run() {
             list_plugin_tiers,
             shutdown_engine,
             start_preview_stream,
+            get_diagnostics_status,
+            set_debug_logging,
+            read_diagnostic_logs,
+            list_crash_reports,
+            clear_crash_reports,
+            report_frontend_crash,
+            export_diagnostics_bundle,
         ])
         .run(tauri::generate_context!())
         .expect("error while running OpenPresenter desktop control surface");

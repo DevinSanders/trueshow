@@ -8,6 +8,7 @@ description = "Multi-surface wgpu 30 + winit 30 7-layer real-time GPU compositor
 
 [dependencies]
 bytemuck.workspace = true
+core-diagnostics.workspace = true
 core-ipc.workspace = true
 core-scene.workspace = true
 pollster.workspace = true

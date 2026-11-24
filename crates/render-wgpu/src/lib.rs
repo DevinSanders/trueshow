@@ -794,6 +794,16 @@ impl ApplicationHandler<EngineWakeEvent> for CompositorApp {
 
         device.on_uncaptured_error(Arc::new(|err| {
             error!("wgpu uncaptured device error (suppressed to keep live outputs alive): {err}");
+            let paths = core_diagnostics::DiagnosticsPaths::default_system();
+            let _ = core_diagnostics::record_runtime_error(
+                &paths,
+                "openpresenter-engine",
+                "wgpu-device-error",
+                env!("CARGO_PKG_VERSION"),
+                &err.to_string(),
+                Some("crates/render-wgpu/src/lib.rs"),
+                None,
+            );
         }));
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {

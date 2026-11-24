@@ -4,6 +4,9 @@
 //! 60 fps even if the Tauri 2 operator UI crashes, reloads, or restarts.
 
 use clap::Parser;
+use core_diagnostics::{
+    DiagnosticsPaths, LogLevel, LoggingController, init_logging, install_crash_hook,
+};
 use core_ipc::{
     EngineCommand, EngineEvent, default_preview_dir, default_socket_name,
     protocol::cleanup_stale_socket, read_frame, to_local_socket_name, write_frame,
@@ -42,17 +45,29 @@ struct Cli {
     /// Run IPC control server without opening physical OS windows (for headless CI tests).
     #[arg(long, default_value_t = false)]
     headless: bool,
+
+    /// Initial logging verbosity (`error`, `warn`, `info`, `debug`, `trace`).
+    #[arg(long, default_value = "info")]
+    log_level: String,
 }
 
 fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,wgpu=warn".into()),
-        )
-        .init();
-
     let cli = Cli::parse();
+    let diag_paths = DiagnosticsPaths::default_system();
+    let initial_level = LogLevel::parse(&cli.log_level).unwrap_or(LogLevel::Info);
+    install_crash_hook(
+        "openpresenter-engine",
+        env!("CARGO_PKG_VERSION"),
+        diag_paths.clone(),
+    );
+    let logging = init_logging("engine", &diag_paths, initial_level).ok();
+    info!(
+        log_dir = %diag_paths.log_dir.display(),
+        crash_dir = %diag_paths.crash_dir.display(),
+        level = initial_level.as_str(),
+        "initialized persistent diagnostics logging and crash reporter"
+    );
+
     let ffmpeg_status = media_engine::probe_dynamic_lgpl_ffmpeg(&[]);
     let ndi_status = broadcast_io::probe_ndi_runtime(&[]);
     let decklink_status = broadcast_io::probe_decklink_runtime(&[]);
@@ -73,7 +88,7 @@ fn main() {
             .enable_all()
             .build()
             .expect("create tokio runtime");
-        rt.block_on(run_ipc_server(cli.socket, shared, None));
+        rt.block_on(run_ipc_server(cli.socket, shared, None, logging));
         return;
     }
 
@@ -92,6 +107,7 @@ fn main() {
     let ipc_socket = cli.socket.clone();
     let ipc_shared = Arc::clone(&shared);
     let ipc_proxy = proxy.clone();
+    let ipc_logging = logging.clone();
 
     std::thread::Builder::new()
         .name("ipc-control-server".to_string())
@@ -100,7 +116,12 @@ fn main() {
                 .enable_all()
                 .build()
                 .expect("create tokio runtime");
-            rt.block_on(run_ipc_server(ipc_socket, ipc_shared, Some(ipc_proxy)));
+            rt.block_on(run_ipc_server(
+                ipc_socket,
+                ipc_shared,
+                Some(ipc_proxy),
+                ipc_logging,
+            ));
         })
         .expect("spawn IPC server thread");
 
@@ -113,6 +134,15 @@ fn main() {
 
     if let Err(err) = run_compositor(event_loop, shared, cli.preview_dir) {
         error!("compositor exited with error: {err}");
+        let _ = core_diagnostics::record_runtime_error(
+            &diag_paths,
+            "openpresenter-engine",
+            "compositor-fatal-error",
+            env!("CARGO_PKG_VERSION"),
+            &err,
+            Some("bins/engine/src/main.rs"),
+            None,
+        );
         std::process::exit(1);
     }
 }
@@ -121,6 +151,7 @@ async fn run_ipc_server(
     socket_id: String,
     shared: Arc<SharedEngineState>,
     proxy: Option<EventLoopProxy<EngineWakeEvent>>,
+    logging: Option<LoggingController>,
 ) {
     cleanup_stale_socket(&socket_id);
     let name = match to_local_socket_name(&socket_id) {
@@ -164,8 +195,11 @@ async fn run_ipc_server(
                 let shared_c = Arc::clone(&shared);
                 let proxy_c = proxy.clone();
                 let stage_c = stage_server.clone();
+                let logging_c = logging.clone();
                 tokio::spawn(async move {
-                    if let Err(err) = handle_client(stream, shared_c, proxy_c, stage_c).await {
+                    if let Err(err) =
+                        handle_client(stream, shared_c, proxy_c, stage_c, logging_c).await
+                    {
                         warn!("operator control client detached ({err}); live outputs remain active");
                     } else {
                         info!("operator control client detached cleanly; live outputs remain active");
@@ -184,6 +218,7 @@ async fn handle_client(
     shared: Arc<SharedEngineState>,
     proxy: Option<EventLoopProxy<EngineWakeEvent>>,
     stage_server: Option<Arc<show_control::WebStageServer>>,
+    logging: Option<LoggingController>,
 ) -> std::io::Result<()> {
     loop {
         let cmd: EngineCommand = match read_frame(&mut stream).await {
@@ -218,6 +253,19 @@ async fn handle_client(
             },
             EngineCommand::ListDisplays => EngineEvent::Displays(shared.displays()),
             EngineCommand::GetTelemetry => EngineEvent::Telemetry(shared.telemetry()),
+            EngineCommand::SetLogLevel(level_str) => match LogLevel::parse(&level_str) {
+                Ok(lvl) => {
+                    if let Some(ctrl) = logging.as_ref() {
+                        match ctrl.set_level(lvl) {
+                            Ok(()) => EngineEvent::LogLevelUpdated(lvl.as_str().to_string()),
+                            Err(err) => EngineEvent::Error(err.to_string()),
+                        }
+                    } else {
+                        EngineEvent::LogLevelUpdated(lvl.as_str().to_string())
+                    }
+                }
+                Err(err) => EngineEvent::Error(err.to_string()),
+            },
             EngineCommand::Ping(seq) => EngineEvent::Pong(seq),
             EngineCommand::Shutdown => {
                 let _ = write_frame(&mut stream, &EngineEvent::ShuttingDown).await;

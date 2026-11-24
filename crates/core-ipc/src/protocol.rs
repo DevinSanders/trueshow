@@ -131,6 +131,7 @@ pub enum EngineCommand {
     ApplyDiff(Box<SceneDiff>),
     ListDisplays,
     GetTelemetry,
+    SetLogLevel(String),
     Ping(u64),
     Shutdown,
 }
@@ -142,6 +143,7 @@ pub enum EngineEvent {
     StateUpdated(Box<SceneState>),
     Displays(Vec<DisplayInfo>),
     Telemetry(EngineTelemetry),
+    LogLevelUpdated(String),
     Pong(u64),
     ShuttingDown,
     Error(String),

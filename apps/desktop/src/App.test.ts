@@ -225,6 +225,21 @@ describe("OpenPresenter Operator Control Surface UI (Happy & Failure Paths)", ()
           };
           return structuredClone(currentState);
         }
+        case "get_diagnostics_status":
+          return {
+            log_dir: "/tmp/logs",
+            crash_dir: "/tmp/crashes",
+            engine_log_path: "/tmp/logs/engine.log",
+            desktop_log_path: "/tmp/logs/desktop.log",
+            active_log_level: "info",
+            crash_count: 0,
+          };
+        case "list_crash_reports":
+          return [];
+        case "read_diagnostic_logs":
+          return ["INFO ok"];
+        case "report_frontend_crash":
+          return null;
         case "shutdown_engine":
           return null;
         default:
@@ -275,6 +290,11 @@ describe("OpenPresenter Operator Control Surface UI (Happy & Failure Paths)", ()
     await fireEvent.click(screen.getByText("Left"));
     await fireEvent.click(screen.getByText("X →"));
     await fireEvent.click(screen.getByText("Y ↓"));
+
+    // 5b. Switch to Diagnostics tab and verify global window error crash reporting hook
+    await fireEvent.click(screen.getByText(/Diagnostics/));
+    await waitFor(() => expect(screen.getByTestId("diagnostics-panel")).toBeTruthy());
+    window.dispatchEvent(new ErrorEvent("error", { message: "Simulated UI error" }));
 
     // 6. Clean engine shutdown
     await fireEvent.click(screen.getByText("Stop Engine"));
