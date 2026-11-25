@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+publish = false
 description = "Broadcast 2D vector and typography rasterizer behind Vector2DRasterizer trait (cosmic-text + tiny-skia default; optional skia-safe feature)."
 
 [features]

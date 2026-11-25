@@ -3,6 +3,7 @@ name = "core-diagnostics"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish = false
 description = "Persistent rolling debug logging, panic/crash report capture, and redacted diagnostic bundle export for TrueShow."
 
 [lints]

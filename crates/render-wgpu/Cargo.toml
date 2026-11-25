@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+publish = false
 description = "Multi-surface wgpu 30 + winit 30 7-layer real-time GPU compositor with render-text integration and async staging readback."
 
 [dependencies]

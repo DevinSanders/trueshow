@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+publish = false
 description = "Broadcast video I/O for TrueShow: dynamic NDI 6, MIT Open Media Transport (OMT), Blackmagic DeckLink SDI Key & Fill, and Syphon/Spout2 virtual outputs."
 
 [dependencies]

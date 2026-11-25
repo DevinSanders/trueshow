@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+publish = false
 description = "Clean-room worship ecosystem integrations: Bibles (OSIS/Zefania/USFX/Beblia + BYOK API.Bible), Planning Center v2, CCLI/ChordPro/.usr, Pro6/Pro7/OpenLyrics/PPTX/Keynote importers, and Loro CRDT + S3/R2 sync."
 
 [dependencies]

@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+publish = false
 description = "LAN WebSocket Stage Display, concurrent timers, macros, bidirectional MIDI (MultiTracks/Ableton), OSC, SMPTE LTC/MTC, and Bitfocus Companion API."
 
 [dependencies]

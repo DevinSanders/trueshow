@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+publish = false
 description = "Local-first SQLite (WAL + FTS5) store for songs, presentations, playlists, Bibles, BLAKE3 media assets, and CCLI usage logs."
 
 [dependencies]
