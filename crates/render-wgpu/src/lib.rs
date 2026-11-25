@@ -34,6 +34,7 @@ pub use winit::event_loop::EventLoopProxy;
 
 const TRUESHOW_WINDOW_ICON_PNG: &[u8] =
     include_bytes!("../../../apps/desktop/src-tauri/icons/64x64.png");
+#[cfg(any(target_os = "windows", test))]
 const TRUESHOW_TASKBAR_ICON_PNG: &[u8] =
     include_bytes!("../../../apps/desktop/src-tauri/icons/128x128.png");
 
@@ -70,6 +71,7 @@ fn load_trueshow_window_icon() -> Option<Icon> {
     Icon::from_rgba(rgba, width, height).ok()
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn load_trueshow_taskbar_icon() -> Option<Icon> {
     let (rgba, width, height) = decode_png_to_straight_rgba(TRUESHOW_TASKBAR_ICON_PNG)?;
     Icon::from_rgba(rgba, width, height).ok()
