@@ -342,7 +342,7 @@ pub fn import_pptx_bytes(
     let mut archive = ZipArchive::new(Cursor::new(pptx_bytes))?;
     let mut slide_paths: Vec<String> = (0..archive.len())
         .filter_map(|i| {
-            let name = archive.by_index(i).ok()?.name().to_string();
+            let name = archive.by_index(i).ok()?.name().ok()?.into_owned();
             if name.starts_with("ppt/slides/slide") && name.ends_with(".xml") {
                 Some(name)
             } else {
@@ -705,7 +705,7 @@ pub fn import_keynote_bytes(
 
     // 1. Check for Keynote `index.apxl` XML containing editable slide text runs.
     let apxl_name = (0..archive.len()).find_map(|i| {
-        let name = archive.by_index(i).ok()?.name().to_string();
+        let name = archive.by_index(i).ok()?.name().ok()?.into_owned();
         if name.eq_ignore_ascii_case("index.apxl") || name.ends_with("/index.apxl") {
             Some(name)
         } else {
@@ -731,7 +731,7 @@ pub fn import_keynote_bytes(
     // 2. Fall back to embedded slide media/preview images inside modern `.key` ZIP archives.
     let mut image_entries: Vec<String> = (0..archive.len())
         .filter_map(|i| {
-            let name = archive.by_index(i).ok()?.name().to_string();
+            let name = archive.by_index(i).ok()?.name().ok()?.into_owned();
             let lower = name.to_ascii_lowercase();
             let is_img =
                 lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg");
