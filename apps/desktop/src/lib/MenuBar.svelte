@@ -242,7 +242,35 @@
 
 <header class="menubar" data-testid="menu-bar">
   <div class="menubar-left">
-    <strong class="brand-name">TrueShow</strong>
+    <div class="brand-lockup">
+      <svg
+        class="brand-logo"
+        width="18"
+        height="18"
+        viewBox="0 0 64 64"
+        fill="none"
+        xmlns="http://www.w3.org/2000/svg"
+        aria-hidden="true"
+      >
+        <defs>
+          <linearGradient id="mb-ts-bg" x1="6" y1="4" x2="58" y2="60" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stop-color="#172554" />
+            <stop offset="100%" stop-color="#0b1120" />
+          </linearGradient>
+          <linearGradient id="mb-ts-slide" x1="10" y1="20" x2="48" y2="52" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stop-color="#38bdf8" />
+            <stop offset="100%" stop-color="#2563eb" />
+          </linearGradient>
+        </defs>
+        <rect width="64" height="64" rx="15" fill="url(#mb-ts-bg)" />
+        <rect x="0.75" y="0.75" width="62.5" height="62.5" rx="14.25" stroke="#38bdf8" stroke-opacity="0.28" stroke-width="1.5" />
+        <rect x="20" y="13" width="33" height="23" rx="4.5" fill="#1e3a8a" stroke="#60a5fa" stroke-opacity="0.35" stroke-width="1.2" />
+        <rect x="15" y="19" width="35" height="25" rx="5" fill="#1d4ed8" fill-opacity="0.85" stroke="#7dd3fc" stroke-opacity="0.4" stroke-width="1.2" />
+        <rect x="10" y="25" width="38" height="27" rx="5.5" fill="url(#mb-ts-slide)" />
+        <path d="M25.5 32.8C25.5 31.8 26.6 31.2 27.4 31.7L36.2 37.4C37 37.9 37 39.1 36.2 39.6L27.4 45.3C26.6 45.8 25.5 45.2 25.5 44.2V32.8Z" fill="#f8fafc" />
+      </svg>
+      <strong class="brand-name">TrueShow</strong>
+    </div>
 
     <div class="menubar-menus" aria-label="Application menu" role="menubar">
       {#each menus as group (group.id)}
@@ -334,14 +362,27 @@
     min-width: 0;
   }
 
+  .brand-lockup {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding-right: 8px;
+    border-right: 1px solid var(--border);
+    margin-right: 4px;
+    flex-shrink: 0;
+  }
+
+  .brand-logo {
+    display: block;
+    flex-shrink: 0;
+    border-radius: 4px;
+  }
+
   .brand-name {
     font-size: 12px;
     font-weight: 700;
     letter-spacing: 0.02em;
     color: var(--text-0);
-    padding-right: 8px;
-    border-right: 1px solid var(--border);
-    margin-right: 4px;
     white-space: nowrap;
   }
 

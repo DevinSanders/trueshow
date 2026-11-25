@@ -1,4 +1,4 @@
-# TrueShow
+# <img src="docs/images/logo.svg" alt="TrueShow Logo" width="36" height="36" align="absmiddle" /> TrueShow
 
 Clean-room, open-source, cross-platform (**Windows, macOS, Linux**) worship presentation engine built in **Rust (`wgpu` 30 + `winit` 30)** with a **Tauri 2 + Svelte 5** operator control surface.
 
