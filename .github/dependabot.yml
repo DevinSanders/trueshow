@@ -24,6 +24,15 @@ updates:
       # Hold on 0.14.x until crates/render-text is migrated.
       - dependency-name: "cosmic-text"
         versions: [">=0.15.0"]
+      # symphonia 0.6+ overhauled core::probe, SampleBuffer, CODEC_TYPE_NULL,
+      # DecoderOptions, Probe::format, and CodecRegistry::make.
+      # Hold on 0.5.x until crates/media-engine is migrated.
+      - dependency-name: "symphonia"
+        versions: [">=0.6.0"]
+      # quick-xml 0.38+ removed BytesText::unescape() used by XML Bible and
+      # presentation importers. Hold on 0.37.x until crates/integrations is migrated.
+      - dependency-name: "quick-xml"
+        versions: [">=0.38.0"]
 
   # Svelte 5 + Vite + Tauri CLI frontend packages.
   - package-ecosystem: "npm"
