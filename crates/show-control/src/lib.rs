@@ -22,4 +22,6 @@ pub use midi::{MidiCueBinding, MidiCueRouter, MidiMessage, MidiTrigger, list_mid
 pub use osc::{OscControlEvent, OscError, decode_osc_packet, encode_osc_event};
 pub use timecode::{FrameRate, MtcAssembler, SmpteTimecode, decode_ltc_bits, encode_ltc_bits};
 pub use timers::{TimerEngine, TimerId, TimerKind, TimerSnapshot};
-pub use web_stage::{StageHub, StageViewPayload, WebStageServer, build_stage_router, payload_from_scene};
+pub use web_stage::{
+    StageHub, StageViewPayload, WebStageServer, build_stage_router, payload_from_scene,
+};

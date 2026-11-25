@@ -436,9 +436,10 @@ impl LibraryStore {
             "UPDATE songs SET library_id = ?1 WHERE library_id = ?2",
             params![DEFAULT_LIBRARY_ID, id],
         )?;
-        let removed = self
-            .conn
-            .execute("DELETE FROM presentation_libraries WHERE id = ?1", params![id])?;
+        let removed = self.conn.execute(
+            "DELETE FROM presentation_libraries WHERE id = ?1",
+            params![id],
+        )?;
         Ok(removed > 0)
     }
 
@@ -722,9 +723,9 @@ impl LibraryStore {
     }
 
     pub fn list_playlists(&self) -> Result<Vec<PlaylistRecord>, LibraryError> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id, name, items_json, updated_at FROM playlists ORDER BY updated_at DESC")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, items_json, updated_at FROM playlists ORDER BY updated_at DESC",
+        )?;
         let rows = stmt.query_map([], |row| {
             let items_json: String = row.get(2)?;
             let updated_str: String = row.get(3)?;
@@ -965,7 +966,10 @@ impl LibraryStore {
         Ok(out)
     }
 
-    pub fn insert_bible_verses(&mut self, verses: &[BibleVerseRecord]) -> Result<usize, LibraryError> {
+    pub fn insert_bible_verses(
+        &mut self,
+        verses: &[BibleVerseRecord],
+    ) -> Result<usize, LibraryError> {
         let tx = self.conn.transaction()?;
         {
             let mut insert_main = tx.prepare(
@@ -987,13 +991,7 @@ impl LibraryStore {
                     v.attribution,
                     v.cached_at_epoch,
                 ])?;
-                insert_fts.execute(params![
-                    v.translation,
-                    v.book,
-                    v.chapter,
-                    v.verse,
-                    v.text,
-                ])?;
+                insert_fts.execute(params![v.translation, v.book, v.chapter, v.verse, v.text,])?;
             }
         }
         tx.commit()?;
@@ -1136,7 +1134,11 @@ impl LibraryStore {
     }
 
     /// Purges API.Bible cached verses older than `max_age_secs` (enforces mandatory 30-day rule).
-    pub fn purge_expired_cached_verses(&self, now_epoch: i64, max_age_secs: i64) -> Result<usize, LibraryError> {
+    pub fn purge_expired_cached_verses(
+        &self,
+        now_epoch: i64,
+        max_age_secs: i64,
+    ) -> Result<usize, LibraryError> {
         let cutoff = now_epoch - max_age_secs;
         let deleted = self.conn.execute(
             "DELETE FROM bible_verses WHERE cached_at_epoch IS NOT NULL AND cached_at_epoch < ?1",
@@ -1228,7 +1230,12 @@ impl LibraryStore {
                 config_json = excluded.config_json,
                 updated_at = excluded.updated_at
             "#,
-            params![look.id.0.to_string(), look.name, json, Utc::now().to_rfc3339()],
+            params![
+                look.id.0.to_string(),
+                look.name,
+                json,
+                Utc::now().to_rfc3339()
+            ],
         )?;
         Ok(())
     }
@@ -1315,12 +1322,7 @@ impl LibraryStore {
                 assignments_json = excluded.assignments_json,
                 updated_at = excluded.updated_at
             "#,
-            params![
-                preset.id,
-                preset.name,
-                json,
-                preset.updated_at.to_rfc3339()
-            ],
+            params![preset.id, preset.name, json, preset.updated_at.to_rfc3339()],
         )?;
         Ok(())
     }
@@ -1394,9 +1396,9 @@ impl LibraryStore {
     }
 
     pub fn list_message_templates(&self) -> Result<Vec<MessageTemplate>, LibraryError> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT config_json FROM message_templates ORDER BY name COLLATE NOCASE ASC")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT config_json FROM message_templates ORDER BY name COLLATE NOCASE ASC",
+        )?;
         let mut out = Vec::new();
         for r in stmt.query_map([], |row| row.get::<_, String>(0))? {
             if let Ok(item) = serde_json::from_str::<MessageTemplate>(&r?) {
@@ -1423,9 +1425,9 @@ impl LibraryStore {
     }
 
     pub fn list_macros(&self) -> Result<Vec<MacroRecord>, LibraryError> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id, name, steps_json, updated_at FROM macros ORDER BY name COLLATE NOCASE ASC")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, steps_json, updated_at FROM macros ORDER BY name COLLATE NOCASE ASC",
+        )?;
         let rows = stmt.query_map([], |row| {
             let steps_json: String = row.get(2)?;
             let updated_str: String = row.get(3)?;
@@ -1913,7 +1915,12 @@ impl LibraryStore {
             ccli_number: Some("22025".to_string()),
             key_signature: Some("G".to_string()),
             bpm: Some(72.0),
-            lyrics_plain: format!("{}\n{}\n{}", deck[1].plain_text(), ag_v2.plain_text(), ag_chorus.plain_text()),
+            lyrics_plain: format!(
+                "{}\n{}\n{}",
+                deck[1].plain_text(),
+                ag_v2.plain_text(),
+                ag_chorus.plain_text()
+            ),
             slides: vec![deck[1].clone(), ag_chorus, ag_v2, ag_v3],
             arrangements: vec![
                 Arrangement {
@@ -2000,8 +2007,7 @@ fn row_to_song(row: &rusqlite::Row<'_>) -> rusqlite::Result<SongRecord> {
     let slides: Vec<Slide> = serde_json::from_str(&slides_json).unwrap_or_default();
     let arrangements: Vec<Arrangement> =
         serde_json::from_str(&arrangements_json).unwrap_or_default();
-    let cue_tracks: Vec<AutoPlayTrack> =
-        serde_json::from_str(&cue_tracks_json).unwrap_or_default();
+    let cue_tracks: Vec<AutoPlayTrack> = serde_json::from_str(&cue_tracks_json).unwrap_or_default();
     let chord_chart: Option<ChordChartDocument> =
         serde_json::from_str(&chord_chart_json).unwrap_or(None);
     let sheet_music: Option<SheetMusicDocument> =
@@ -2238,7 +2244,10 @@ pub fn build_scripture_slides(
         let range_ref = if first.verse == last.verse {
             format!("{} {}:{}", first.book, first.chapter, first.verse)
         } else {
-            format!("{} {}:{}-{}", first.book, first.chapter, first.verse, last.verse)
+            format!(
+                "{} {}:{}-{}",
+                first.book, first.chapter, first.verse, last.verse
+            )
         };
         let body_text = chunk
             .iter()
@@ -2338,32 +2347,188 @@ pub fn build_scripture_slides(
 
 fn starter_public_domain_scripture() -> Vec<BibleVerseRecord> {
     let entries: &[(&str, &str, u32, u32, &str)] = &[
-        ("KJV", "Genesis", 1, 1, "In the beginning God created the heaven and the earth."),
-        ("KJV", "Genesis", 1, 2, "And the earth was without form, and void; and darkness was upon the face of the deep."),
-        ("KJV", "Genesis", 1, 3, "And God said, Let there be light: and there was light."),
-        ("KJV", "Numbers", 6, 24, "The LORD bless thee, and keep thee:"),
-        ("KJV", "Numbers", 6, 25, "The LORD make his face shine upon thee, and be gracious unto thee:"),
-        ("KJV", "Numbers", 6, 26, "The LORD lift up his countenance upon thee, and give thee peace."),
-        ("KJV", "Psalm", 23, 1, "The LORD is my shepherd; I shall not want."),
-        ("KJV", "Psalm", 23, 2, "He maketh me to lie down in green pastures: he leadeth me beside the still waters."),
-        ("KJV", "Psalm", 23, 3, "He restoreth my soul: he leadeth me in the paths of righteousness for his name's sake."),
-        ("KJV", "Psalm", 100, 1, "Make a joyful noise unto the LORD, all ye lands."),
-        ("KJV", "Psalm", 100, 2, "Serve the LORD with gladness: come before his presence with singing."),
-        ("KJV", "Proverbs", 3, 5, "Trust in the LORD with all thine heart; and lean not unto thine own understanding."),
-        ("KJV", "Proverbs", 3, 6, "In all thy ways acknowledge him, and he shall direct thy paths."),
-        ("KJV", "Matthew", 28, 19, "Go ye therefore, and teach all nations, baptizing them in the name of the Father, and of the Son, and of the Holy Ghost:"),
-        ("KJV", "Matthew", 28, 20, "Teaching them to observe all things whatsoever I have commanded you: and, lo, I am with you alway, even unto the end of the world."),
-        ("KJV", "John", 3, 16, "For God so loved the world, that he gave his only begotten Son, that whosoever believeth in him should not perish, but have everlasting life."),
-        ("KJV", "John", 3, 17, "For God sent not his Son into the world to condemn the world; but that the world through him might be saved."),
-        ("KJV", "Romans", 8, 28, "And we know that all things work together for good to them that love God, to them who are the called according to his purpose."),
-        ("WEB", "Genesis", 1, 1, "In the beginning, God created the heavens and the earth."),
-        ("WEB", "Psalm", 23, 1, "Yahweh is my shepherd: I shall lack nothing."),
-        ("WEB", "Psalm", 23, 2, "He makes me lie down in green pastures. He leads me beside still waters."),
-        ("WEB", "Psalm", 100, 1, "Shout for joy to Yahweh, all you lands!"),
-        ("WEB", "Psalm", 100, 2, "Serve Yahweh with gladness. Come before his presence with singing."),
-        ("WEB", "John", 3, 16, "For God so loved the world, that he gave his one and only Son, that whoever believes in him should not perish, but have eternal life."),
-        ("WEB", "John", 3, 17, "For God didn't send his Son into the world to judge the world, but that the world should be saved through him."),
-        ("WEB", "Romans", 8, 28, "We know that all things work together for good for those who love God, for those who are called according to his purpose."),
+        (
+            "KJV",
+            "Genesis",
+            1,
+            1,
+            "In the beginning God created the heaven and the earth.",
+        ),
+        (
+            "KJV",
+            "Genesis",
+            1,
+            2,
+            "And the earth was without form, and void; and darkness was upon the face of the deep.",
+        ),
+        (
+            "KJV",
+            "Genesis",
+            1,
+            3,
+            "And God said, Let there be light: and there was light.",
+        ),
+        (
+            "KJV",
+            "Numbers",
+            6,
+            24,
+            "The LORD bless thee, and keep thee:",
+        ),
+        (
+            "KJV",
+            "Numbers",
+            6,
+            25,
+            "The LORD make his face shine upon thee, and be gracious unto thee:",
+        ),
+        (
+            "KJV",
+            "Numbers",
+            6,
+            26,
+            "The LORD lift up his countenance upon thee, and give thee peace.",
+        ),
+        (
+            "KJV",
+            "Psalm",
+            23,
+            1,
+            "The LORD is my shepherd; I shall not want.",
+        ),
+        (
+            "KJV",
+            "Psalm",
+            23,
+            2,
+            "He maketh me to lie down in green pastures: he leadeth me beside the still waters.",
+        ),
+        (
+            "KJV",
+            "Psalm",
+            23,
+            3,
+            "He restoreth my soul: he leadeth me in the paths of righteousness for his name's sake.",
+        ),
+        (
+            "KJV",
+            "Psalm",
+            100,
+            1,
+            "Make a joyful noise unto the LORD, all ye lands.",
+        ),
+        (
+            "KJV",
+            "Psalm",
+            100,
+            2,
+            "Serve the LORD with gladness: come before his presence with singing.",
+        ),
+        (
+            "KJV",
+            "Proverbs",
+            3,
+            5,
+            "Trust in the LORD with all thine heart; and lean not unto thine own understanding.",
+        ),
+        (
+            "KJV",
+            "Proverbs",
+            3,
+            6,
+            "In all thy ways acknowledge him, and he shall direct thy paths.",
+        ),
+        (
+            "KJV",
+            "Matthew",
+            28,
+            19,
+            "Go ye therefore, and teach all nations, baptizing them in the name of the Father, and of the Son, and of the Holy Ghost:",
+        ),
+        (
+            "KJV",
+            "Matthew",
+            28,
+            20,
+            "Teaching them to observe all things whatsoever I have commanded you: and, lo, I am with you alway, even unto the end of the world.",
+        ),
+        (
+            "KJV",
+            "John",
+            3,
+            16,
+            "For God so loved the world, that he gave his only begotten Son, that whosoever believeth in him should not perish, but have everlasting life.",
+        ),
+        (
+            "KJV",
+            "John",
+            3,
+            17,
+            "For God sent not his Son into the world to condemn the world; but that the world through him might be saved.",
+        ),
+        (
+            "KJV",
+            "Romans",
+            8,
+            28,
+            "And we know that all things work together for good to them that love God, to them who are the called according to his purpose.",
+        ),
+        (
+            "WEB",
+            "Genesis",
+            1,
+            1,
+            "In the beginning, God created the heavens and the earth.",
+        ),
+        (
+            "WEB",
+            "Psalm",
+            23,
+            1,
+            "Yahweh is my shepherd: I shall lack nothing.",
+        ),
+        (
+            "WEB",
+            "Psalm",
+            23,
+            2,
+            "He makes me lie down in green pastures. He leads me beside still waters.",
+        ),
+        (
+            "WEB",
+            "Psalm",
+            100,
+            1,
+            "Shout for joy to Yahweh, all you lands!",
+        ),
+        (
+            "WEB",
+            "Psalm",
+            100,
+            2,
+            "Serve Yahweh with gladness. Come before his presence with singing.",
+        ),
+        (
+            "WEB",
+            "John",
+            3,
+            16,
+            "For God so loved the world, that he gave his one and only Son, that whoever believes in him should not perish, but have eternal life.",
+        ),
+        (
+            "WEB",
+            "John",
+            3,
+            17,
+            "For God didn't send his Son into the world to judge the world, but that the world should be saved through him.",
+        ),
+        (
+            "WEB",
+            "Romans",
+            8,
+            28,
+            "We know that all things work together for good for those who love God, for those who are called according to his purpose.",
+        ),
     ];
     entries
         .iter()
@@ -2435,7 +2600,9 @@ mod tests {
             .expect("purge expired");
         assert_eq!(purged, 1);
 
-        let hits = store.search_bible(Some("KJV"), "joyful", 10).expect("search");
+        let hits = store
+            .search_bible(Some("KJV"), "joyful", 10)
+            .expect("search");
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].book, "Psalm");
     }
@@ -2470,12 +2637,21 @@ mod tests {
         let all = store.search_songs("   ", 10).expect("empty search");
         assert_eq!(all.len(), 3);
         assert!(store.get_song(&all[0].id).expect("get hit").is_some());
-        assert!(store.get_song("nonexistent-id").expect("get miss").is_none());
+        assert!(
+            store
+                .get_song("nonexistent-id")
+                .expect("get miss")
+                .is_none()
+        );
 
         // Libraries & playlists CRUD
         let libs = store.list_libraries().expect("list libs");
         assert_eq!(libs.len(), 3);
-        assert!(!store.delete_library(DEFAULT_LIBRARY_ID).expect("protect default"));
+        assert!(
+            !store
+                .delete_library(DEFAULT_LIBRARY_ID)
+                .expect("protect default")
+        );
         store
             .upsert_library(&PresentationLibraryRecord {
                 id: "youth".into(),
@@ -2507,7 +2683,11 @@ mod tests {
         // Media bins & filtered media CRUD + extension inference
         let bins = store.list_media_bins().expect("list bins");
         assert_eq!(bins.len(), 4);
-        assert!(!store.delete_media_bin(DEFAULT_MEDIA_BIN_ID).expect("protect default bin"));
+        assert!(
+            !store
+                .delete_media_bin(DEFAULT_MEDIA_BIN_ID)
+                .expect("protect default bin")
+        );
         store
             .upsert_media_bin(&MediaBinRecord {
                 id: "christmas".into(),
@@ -2523,10 +2703,22 @@ mod tests {
                 .len(),
             2
         );
-        assert!(store.move_song_to_library(&all[0].id, "worship-songs").expect("move song"));
-        assert!(store.move_media_to_bin("builtin-bg-aurora-wave", "images").expect("move media"));
+        assert!(
+            store
+                .move_song_to_library(&all[0].id, "worship-songs")
+                .expect("move song")
+        );
+        assert!(
+            store
+                .move_media_to_bin("builtin-bg-aurora-wave", "images")
+                .expect("move media")
+        );
         assert!(store.delete_media_bin("christmas").expect("delete bin"));
-        assert!(store.delete_media_asset("builtin-bg-aurora-wave").expect("delete media"));
+        assert!(
+            store
+                .delete_media_asset("builtin-bg-aurora-wave")
+                .expect("delete media")
+        );
         assert!(store.delete_song(&all[0].id).expect("delete song"));
 
         assert_eq!(infer_media_kind(Path::new("slide.PNG")), "image");
@@ -2546,18 +2738,35 @@ mod tests {
                 cached_at_epoch: None,
             }])
             .expect("insert");
-        assert!(!store.search_bible(None, "loved", 5).expect("all trans").is_empty());
-        assert!(store.search_bible(None, "   ", 5).expect("blank").is_empty());
+        assert!(
+            !store
+                .search_bible(None, "loved", 5)
+                .expect("all trans")
+                .is_empty()
+        );
+        assert!(
+            store
+                .search_bible(None, "   ", 5)
+                .expect("blank")
+                .is_empty()
+        );
 
         // CRDT snapshot persistence
         assert!(store.load_crdt_snapshot("doc-1").expect("miss").is_none());
-        store.save_crdt_snapshot("doc-1", b"loro-binary-blob").expect("save");
+        store
+            .save_crdt_snapshot("doc-1", b"loro-binary-blob")
+            .expect("save");
         assert_eq!(
             store.load_crdt_snapshot("doc-1").expect("hit").as_deref(),
             Some(b"loro-binary-blob".as_slice())
         );
 
-        let slide = slide_from_text("Test Song", "Chorus", "Line 1\nLine 2", Some("12345".into()));
+        let slide = slide_from_text(
+            "Test Song",
+            "Chorus",
+            "Line 1\nLine 2",
+            Some("12345".into()),
+        );
         assert_eq!(slide.ccli_number.as_deref(), Some("12345"));
         assert!(slide.plain_text().contains("Line 2"));
 
@@ -2580,10 +2789,26 @@ mod tests {
         store.upsert_look(&custom_look).expect("upsert look");
         assert_eq!(store.list_looks().expect("list looks").len(), 4);
 
-        assert!(!store.delete_look(LOOK_AUDIENCE_FULL).expect("protect audience"));
-        assert!(!store.delete_look(LOOK_STAGE_CONFIDENCE).expect("protect stage"));
-        assert!(store.delete_look(custom_look.id).expect("delete custom look"));
-        assert!(store.delete_template(custom_tpl.id).expect("delete custom tpl"));
+        assert!(
+            !store
+                .delete_look(LOOK_AUDIENCE_FULL)
+                .expect("protect audience")
+        );
+        assert!(
+            !store
+                .delete_look(LOOK_STAGE_CONFIDENCE)
+                .expect("protect stage")
+        );
+        assert!(
+            store
+                .delete_look(custom_look.id)
+                .expect("delete custom look")
+        );
+        assert!(
+            store
+                .delete_template(custom_tpl.id)
+                .expect("delete custom tpl")
+        );
 
         let preset = LookPresetRecord {
             id: "preset-sermon".into(),
@@ -2596,7 +2821,11 @@ mod tests {
         };
         store.upsert_look_preset(&preset).expect("upsert preset");
         assert_eq!(store.list_look_presets().expect("presets").len(), 3);
-        assert!(store.delete_look_preset("preset-sermon").expect("delete preset"));
+        assert!(
+            store
+                .delete_look_preset("preset-sermon")
+                .expect("delete preset")
+        );
 
         drop(store);
         let _ = std::fs::remove_dir_all(db_path.parent().expect("parent"));
@@ -2612,18 +2841,26 @@ mod tests {
         assert!(translations.contains(&"WEB".to_string()));
 
         // Reference lookup (single, range, abbreviated book, chapter-only) & FTS5 fallback
-        let john = store.lookup_scripture(Some("KJV"), "John 3:16-17", 10).expect("john");
+        let john = store
+            .lookup_scripture(Some("KJV"), "John 3:16-17", 10)
+            .expect("john");
         assert_eq!(john.len(), 2);
-        let ps = store.lookup_scripture(Some("WEB"), "Ps 100", 10).expect("ps100");
+        let ps = store
+            .lookup_scripture(Some("WEB"), "Ps 100", 10)
+            .expect("ps100");
         assert_eq!(ps.len(), 2);
-        let kw = store.lookup_scripture(Some("KJV"), "shepherd", 10).expect("kw");
+        let kw = store
+            .lookup_scripture(Some("KJV"), "shepherd", 10)
+            .expect("kw");
         assert_eq!(kw.len(), 1);
         let empty = store.lookup_scripture(None, "", 5).expect("empty");
         assert_eq!(empty.len(), 5);
         assert!(parse_scripture_reference("invalid").is_none());
 
         // Build dual-translation slides
-        let john_web = store.lookup_scripture(Some("WEB"), "jn 3:16-17", 10).expect("john web");
+        let john_web = store
+            .lookup_scripture(Some("WEB"), "jn 3:16-17", 10)
+            .expect("john web");
         let slides = build_scripture_slides(&john, &john_web, 1, true);
         assert_eq!(slides.len(), 2);
         assert!(slides[0].headline.contains("KJV / WEB"));
@@ -2631,9 +2868,13 @@ mod tests {
 
         // Quick Lyrics with [Verse 1]/[Chorus], repeated chorus, max_lines=2, and dual-language '//'
         let raw = "[Verse 1]\nLine 1 // Linea 1\nLine 2 // Linea 2\nLine 3\n\n[Chorus]\nHoly holy\n\n[Chorus]\nHoly holy";
-        let (parsed_slides, arrangements) = parse_quick_lyrics("Holy Song", raw, 2, Some("99999".into()));
+        let (parsed_slides, arrangements) =
+            parse_quick_lyrics("Holy Song", raw, 2, Some("99999".into()));
         assert_eq!(parsed_slides.len(), 3); // Verse 1 split into 2 slides + 1 master Chorus slide
-        assert_eq!(arrangements[0].group_order, vec!["Verse 1", "Chorus", "Chorus"]);
+        assert_eq!(
+            arrangements[0].group_order,
+            vec!["Verse 1", "Chorus", "Chorus"]
+        );
         assert_eq!(parsed_slides[0].elements.len(), 2); // primary + secondary translation
 
         let (empty_slides, _) = parse_quick_lyrics("Blank", "   ", 4, None);
@@ -2646,7 +2887,10 @@ mod tests {
         store.upsert_overlay(&ov).expect("upsert ov");
         assert!(store.delete_overlay("ov-test").expect("del ov"));
 
-        assert_eq!(store.list_message_templates().expect("seeded msgs").len(), 2);
+        assert_eq!(
+            store.list_message_templates().expect("seeded msgs").len(),
+            2
+        );
         let mut mt = default_message_templates()[0].clone();
         mt.id = "mt-test".into();
         store.upsert_message_template(&mt).expect("upsert mt");
@@ -2663,7 +2907,10 @@ mod tests {
             .expect("upsert macro");
         assert!(store.delete_macro("m-test").expect("del macro"));
 
-        assert_eq!(store.list_scheduled_events().expect("seeded sched").len(), 1);
+        assert_eq!(
+            store.list_scheduled_events().expect("seeded sched").len(),
+            1
+        );
         store
             .upsert_scheduled_event(&ScheduledEventRecord {
                 id: "ev-test".into(),
@@ -2677,8 +2924,8 @@ mod tests {
         assert!(store.delete_scheduled_event("ev-test").expect("del sched"));
 
         // Portable .tsbundle backup export & import round-trip
-        let bundle_path = std::env::temp_dir()
-            .join(format!("op-backup-test-{}.tsbundle", Uuid::new_v4()));
+        let bundle_path =
+            std::env::temp_dir().join(format!("op-backup-test-{}.tsbundle", Uuid::new_v4()));
         let exported = store
             .export_backup_bundle(&bundle_path)
             .expect("export bundle");
@@ -2690,7 +2937,10 @@ mod tests {
             .expect("import bundle");
         assert_eq!(imported, exported);
         assert_eq!(
-            restored_store.list_songs_in_library(None).expect("songs").len(),
+            restored_store
+                .list_songs_in_library(None)
+                .expect("songs")
+                .len(),
             store.list_songs_in_library(None).expect("orig songs").len()
         );
         assert_eq!(
@@ -2708,7 +2958,11 @@ mod tests {
             name: "Easter Choir".into(),
             group_order: vec!["Verse 1".into(), "Chorus".into(), "Chorus".into()],
         }];
-        assert!(store.update_song_arrangements(&ag_id, &custom_arrs).expect("save arrs"));
+        assert!(
+            store
+                .update_song_arrangements(&ag_id, &custom_arrs)
+                .expect("save arrs")
+        );
         let track = AutoPlayTrack {
             id: "cue-track-1".into(),
             name: "Rehearsal Timing".into(),
@@ -2724,7 +2978,10 @@ mod tests {
                 .update_song_slides_and_cues(&ag_id, Some(&ag_before.slides), Some(&[track]))
                 .expect("save cues")
         );
-        let ag_after = store.get_song(&ag_id).expect("get ag 2").expect("ag exists 2");
+        let ag_after = store
+            .get_song(&ag_id)
+            .expect("get ag 2")
+            .expect("ag exists 2");
         assert_eq!(ag_after.arrangements.len(), 1);
         assert_eq!(ag_after.arrangements[0].name, "Easter Choir");
         assert_eq!(ag_after.cue_tracks.len(), 1);
@@ -2734,10 +2991,15 @@ mod tests {
         let mut ccli_cfg = store.get_ccli_display_config().expect("default ccli");
         ccli_cfg.church_license_number = "987654".into();
         ccli_cfg.placement = core_scene::CcliDisplayPlacement::LastSlide;
-        store.save_ccli_display_config(&ccli_cfg).expect("save ccli");
+        store
+            .save_ccli_display_config(&ccli_cfg)
+            .expect("save ccli");
         let loaded_ccli = store.get_ccli_display_config().expect("load ccli");
         assert_eq!(loaded_ccli.church_license_number, "987654");
-        assert_eq!(loaded_ccli.placement, core_scene::CcliDisplayPlacement::LastSlide);
+        assert_eq!(
+            loaded_ccli.placement,
+            core_scene::CcliDisplayPlacement::LastSlide
+        );
 
         // Persistent Musician Chord Chart & Sheet Music attachment round-trip
         assert!(ag_after.chord_chart.is_some());

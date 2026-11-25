@@ -32,7 +32,10 @@ pub enum PixelFormat {
 
 impl PixelFormat {
     pub const fn has_alpha(self) -> bool {
-        matches!(self, Self::Rgba8 | Self::Bgra8 | Self::Yuva420p | Self::Yuva444p10)
+        matches!(
+            self,
+            Self::Rgba8 | Self::Bgra8 | Self::Yuva420p | Self::Yuva444p10
+        )
     }
 
     pub const fn bytes_per_frame_rgba_equivalent(self, width: u32, height: u32) -> usize {
@@ -154,7 +157,13 @@ pub struct ProceduralMotionDecoder {
 }
 
 impl ProceduralMotionDecoder {
-    pub fn new(width: u32, height: u32, fps: u32, total_frames: u64, with_alpha: bool) -> Result<Self, VideoError> {
+    pub fn new(
+        width: u32,
+        height: u32,
+        fps: u32,
+        total_frames: u64,
+        with_alpha: bool,
+    ) -> Result<Self, VideoError> {
         if width == 0 || height == 0 || fps == 0 || total_frames == 0 {
             return Err(VideoError::UnsupportedCodec(
                 "dimensions, fps, and total_frames must be non-zero".into(),
@@ -167,7 +176,11 @@ impl ProceduralMotionDecoder {
             fps_num: fps,
             fps_den: 1,
             duration_us: frame_us * total_frames,
-            codec: if with_alpha { "prores4444-sim".into() } else { "h264-sim".into() },
+            codec: if with_alpha {
+                "prores4444-sim".into()
+            } else {
+                "h264-sim".into()
+            },
             pixel_format: PixelFormat::Rgba8,
             backend: HwAccelBackend::CpuStagingFallback,
         };
@@ -199,7 +212,11 @@ impl VideoDecoder for ProceduralMotionDecoder {
         let r = ((phase.sin() * 0.5 + 0.5) * 255.0) as u8;
         let g = (((phase + 2.0).sin() * 0.5 + 0.5) * 255.0) as u8;
         let b = (((phase + 4.0).sin() * 0.5 + 0.5) * 255.0) as u8;
-        let a = if self.meta.codec.contains("4444") { 200 } else { 255 };
+        let a = if self.meta.codec.contains("4444") {
+            200
+        } else {
+            255
+        };
 
         for px in rgba.as_chunks_mut::<4>().0 {
             px[0] = r;
@@ -251,7 +268,10 @@ mod tests {
         assert!(PixelFormat::Yuva420p.has_alpha());
         assert!(!PixelFormat::Nv12.has_alpha());
         assert!(!PixelFormat::P010.has_alpha());
-        assert_eq!(PixelFormat::Rgba8.bytes_per_frame_rgba_equivalent(10, 10), 400);
+        assert_eq!(
+            PixelFormat::Rgba8.bytes_per_frame_rgba_equivalent(10, 10),
+            400
+        );
 
         assert_eq!(
             HwAccelBackend::select_for_codec("vp9", true, true),

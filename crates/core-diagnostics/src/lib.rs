@@ -79,7 +79,10 @@ impl LogLevel {
     pub fn filter_directive(self) -> String {
         match self {
             Self::Trace => "trace,naga=info".to_string(),
-            Self::Debug => "debug,wgpu=warn,wgpu_hal=warn,wgpu_core=warn,naga=warn,cosmic_text=warn".to_string(),
+            Self::Debug => {
+                "debug,wgpu=warn,wgpu_hal=warn,wgpu_core=warn,naga=warn,cosmic_text=warn"
+                    .to_string()
+            }
             Self::Info => "info,wgpu=warn,wgpu_hal=warn,naga=warn,cosmic_text=warn".to_string(),
             Self::Warn => "warn".to_string(),
             Self::Error => "error".to_string(),
@@ -384,9 +387,7 @@ pub fn init_logging(
         .try_init();
 
     let reload_fn = Arc::new(move |new_filter: EnvFilter| {
-        reload_handle
-            .reload(new_filter)
-            .map_err(|e| e.to_string())
+        reload_handle.reload(new_filter).map_err(|e| e.to_string())
     });
 
     Ok(LoggingController {
@@ -763,10 +764,7 @@ mod tests {
     use super::*;
 
     fn temp_paths(tag: &str) -> DiagnosticsPaths {
-        let dir = std::env::temp_dir().join(format!(
-            "trueshow-diag-test-{tag}-{}",
-            Uuid::new_v4()
-        ));
+        let dir = std::env::temp_dir().join(format!("trueshow-diag-test-{tag}-{}", Uuid::new_v4()));
         DiagnosticsPaths::from_root(dir)
     }
 
@@ -804,7 +802,9 @@ mod tests {
         let engine_log = paths.log_file_for("engine");
         let writer = RollingFileWriter::new(&engine_log, 300, 3).expect("create writer");
         for i in 0..15 {
-            let line = format!("2026-11-24T10:00:{i:02}Z INFO trueshow_engine line={i} padding_data_0123456789\n");
+            let line = format!(
+                "2026-11-24T10:00:{i:02}Z INFO trueshow_engine line={i} padding_data_0123456789\n"
+            );
             let mut guard = writer.make_writer();
             guard.write_all(line.as_bytes()).expect("write line");
             guard.flush().expect("flush");
@@ -842,7 +842,11 @@ mod tests {
         assert!(list_crash_reports(&paths).expect("empty list").is_empty());
         assert_eq!(clear_crash_reports(&paths).expect("empty clear"), 0);
         assert_eq!(prune_crash_reports(&paths, 5).expect("empty prune"), 0);
-        assert!(read_recent_logs(&paths, "engine", 10).expect("missing file").is_empty());
+        assert!(
+            read_recent_logs(&paths, "engine", 10)
+                .expect("missing file")
+                .is_empty()
+        );
 
         paths.ensure_dirs().expect("ensure dirs");
         fs::write(

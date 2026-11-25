@@ -1,11 +1,11 @@
 //! Wire protocol definitions and cross-platform local socket naming.
 
 use core_scene::{OutputId, SceneDiff, SceneState};
+use interprocess::local_socket::Name;
 #[cfg(not(windows))]
 use interprocess::local_socket::{GenericFilePath, ToFsName};
 #[cfg(windows)]
 use interprocess::local_socket::{GenericNamespaced, ToNsName};
-use interprocess::local_socket::Name;
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::path::PathBuf;

@@ -5,8 +5,15 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CompanionCommand {
     Ping(String),
-    AddDevice { device_id: String, product_name: String },
-    KeyPress { device_id: String, key: u16, pressed: bool },
+    AddDevice {
+        device_id: String,
+        product_name: String,
+    },
+    KeyPress {
+        device_id: String,
+        key: u16,
+        pressed: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

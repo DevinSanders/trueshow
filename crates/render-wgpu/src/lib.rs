@@ -240,7 +240,8 @@ impl SharedEngineState {
                     .map(|s| s.transition)
                     .unwrap_or_default();
                 guard.transition_kind = spec.kind_code();
-                guard.transition_duration = Duration::from_millis(u64::from(spec.duration_ms().max(1)));
+                guard.transition_duration =
+                    Duration::from_millis(u64::from(spec.duration_ms().max(1)));
             }
         }
         Some(guard.scene.clone())
@@ -320,8 +321,11 @@ impl SharedEngineState {
         has_bg_image: bool,
     ) -> CompositorUniforms {
         let guard = self.inner.read().expect("engine state lock poisoned");
-        let look = guard.scene.look_for_output(output_id).cloned().unwrap_or(
-            LookConfig {
+        let look = guard
+            .scene
+            .look_for_output(output_id)
+            .cloned()
+            .unwrap_or(LookConfig {
                 id: core_scene::LOOK_AUDIENCE_FULL,
                 name: "Fallback".to_string(),
                 description: String::new(),
@@ -331,8 +335,7 @@ impl SharedEngineState {
                 slide_blend_mode: BlendMode::Normal,
                 template_id: None,
                 mask_override: None,
-            },
-        );
+            });
 
         let blend_t = (guard.transition_start.elapsed().as_secs_f32()
             / guard.transition_duration.as_secs_f32())
@@ -386,7 +389,10 @@ impl SharedEngineState {
 
         let (c1, c2, ca, cs) = background_colors(guard.scene.active_background.as_ref(), curr);
         let (p1, p2, pa, ps) = background_colors(
-            guard.prev_background.as_ref().or(guard.scene.active_background.as_ref()),
+            guard
+                .prev_background
+                .as_ref()
+                .or(guard.scene.active_background.as_ref()),
             prev,
         );
 
@@ -429,7 +435,12 @@ impl SharedEngineState {
                 cal.edge_blend_top,
                 cal.edge_blend_bottom,
             ],
-            color_cal: [cal.brightness, cal.contrast, cal.gamma, cal.edge_blend_gamma],
+            color_cal: [
+                cal.brightness,
+                cal.contrast,
+                cal.gamma,
+                cal.edge_blend_gamma,
+            ],
         }
     }
 }
@@ -698,9 +709,8 @@ impl CompositorApp {
                 .and_then(|cur| snap.state.deck.iter().position(|s| s.id == cur.id))
                 .unwrap_or(0);
             match layout.mode {
-                core_scene::StageDisplayMode::ChordChart => self
-                    .rasterizer
-                    .rasterize_musician_chord_chart(
+                core_scene::StageDisplayMode::ChordChart => {
+                    self.rasterizer.rasterize_musician_chord_chart(
                         snap.state.active_chord_chart.as_ref(),
                         &snap.state.deck,
                         snap.state.active_slide.as_ref(),
@@ -710,10 +720,10 @@ impl CompositorApp {
                         &layout,
                         LAYER_TEX_WIDTH,
                         LAYER_TEX_HEIGHT,
-                    ),
-                core_scene::StageDisplayMode::SheetMusic => self
-                    .rasterizer
-                    .rasterize_musician_sheet_music(
+                    )
+                }
+                core_scene::StageDisplayMode::SheetMusic => {
+                    self.rasterizer.rasterize_musician_sheet_music(
                         snap.state.active_sheet_music.as_ref(),
                         snap.state.active_slide.as_ref(),
                         active_idx,
@@ -723,10 +733,10 @@ impl CompositorApp {
                         &layout,
                         LAYER_TEX_WIDTH,
                         LAYER_TEX_HEIGHT,
-                    ),
-                core_scene::StageDisplayMode::Confidence => self
-                    .rasterizer
-                    .rasterize_stage_confidence(
+                    )
+                }
+                core_scene::StageDisplayMode::Confidence => {
+                    self.rasterizer.rasterize_stage_confidence(
                         snap.state.active_slide.as_ref(),
                         snap.state.next_slide_preview.as_ref(),
                         snap.state.stage_message.as_deref(),
@@ -734,7 +744,8 @@ impl CompositorApp {
                         &layout,
                         LAYER_TEX_WIDTH,
                         LAYER_TEX_HEIGHT,
-                    ),
+                    )
+                }
             }
         } else if let Some(fg) = fg_active {
             // Decode real local foreground PNG/BMP image directly onto Layer 2/3 when available.
@@ -786,8 +797,12 @@ impl CompositorApp {
                         },
                     },
                 ];
-                self.rasterizer
-                    .rasterize_slide(&fg_slide, LAYER_TEX_WIDTH, LAYER_TEX_HEIGHT, lower_third)
+                self.rasterizer.rasterize_slide(
+                    &fg_slide,
+                    LAYER_TEX_WIDTH,
+                    LAYER_TEX_HEIGHT,
+                    lower_third,
+                )
             }
         } else if let Some(slide) = snap.state.active_slide.as_ref() {
             let expanded = BroadcastRasterizer::expand_slide_tokens(
@@ -883,7 +898,8 @@ impl CompositorApp {
         };
 
         let phys = out.window.inner_size();
-        let minimized = out.window.is_minimized().unwrap_or(false) || phys.width == 0 || phys.height == 0;
+        let minimized =
+            out.window.is_minimized().unwrap_or(false) || phys.width == 0 || phys.height == 0;
 
         if !minimized
             && (phys.width != out.surface_config.width || phys.height != out.surface_config.height)
@@ -901,7 +917,8 @@ impl CompositorApp {
             .unwrap_or(false);
         if !is_frozen || out.frames_presented == 0 {
             let elapsed_sec = self.start_time.elapsed().as_secs_f32();
-            let aspect = (out.surface_config.width as f32) / (out.surface_config.height.max(1) as f32);
+            let aspect =
+                (out.surface_config.width as f32) / (out.surface_config.height.max(1) as f32);
             let uniforms = self.shared.uniforms_for_output(
                 out.config_meta.id,
                 out.config_meta.kind,
@@ -1054,9 +1071,7 @@ impl CompositorApp {
                 let pos = mon.position();
                 DisplayInfo {
                     index: idx,
-                    name: mon
-                        .name()
-                        .unwrap_or_else(|| format!("Display {}", idx + 1)),
+                    name: mon.name().unwrap_or_else(|| format!("Display {}", idx + 1)),
                     width: size.width,
                     height: size.height,
                     scale_factor: mon.scale_factor(),
@@ -1088,7 +1103,10 @@ impl CompositorApp {
                     .monitor_index
                     .and_then(|m| event_loop.available_monitors().nth(m));
                 attrs = attrs
-                    .with_inner_size(LogicalSize::new(cfg.width.max(320) as f64, cfg.height.max(180) as f64))
+                    .with_inner_size(LogicalSize::new(
+                        cfg.width.max(320) as f64,
+                        cfg.height.max(180) as f64,
+                    ))
                     .with_fullscreen(Some(Fullscreen::Borderless(target_mon)));
             }
             OutputPlacement::Region(reg) => {
@@ -1163,10 +1181,8 @@ impl CompositorApp {
                 window.set_fullscreen(None);
                 window.set_decorations(false);
                 window.set_window_level(WindowLevel::AlwaysOnTop);
-                let _ = window.request_inner_size(PhysicalSize::new(
-                    reg.width.max(64),
-                    reg.height.max(64),
-                ));
+                let _ = window
+                    .request_inner_size(PhysicalSize::new(reg.width.max(64), reg.height.max(64)));
                 window.set_outer_position(PhysicalPosition::new(
                     mon_origin.x + reg.x,
                     mon_origin.y + reg.y,
@@ -1312,8 +1328,12 @@ impl CompositorApp {
                         width: PREVIEW_WIDTH,
                         height: PREVIEW_HEIGHT,
                     };
-                    let ring =
-                        PreviewReadbackRing::new(&gpu.device, PREVIEW_WIDTH, PREVIEW_HEIGHT, writer);
+                    let ring = PreviewReadbackRing::new(
+                        &gpu.device,
+                        PREVIEW_WIDTH,
+                        PREVIEW_HEIGHT,
+                        writer,
+                    );
                     let ppipe = Self::create_pipeline(
                         &gpu.device,
                         &gpu.pipeline_layout,
@@ -1502,21 +1522,20 @@ impl ApplicationHandler<EngineWakeEvent> for CompositorApp {
             return;
         };
 
-        let adapter = match pollster::block_on(instance.request_adapter(
-            &wgpu::RequestAdapterOptions {
+        let adapter =
+            match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: Some(first_surface),
                 force_fallback_adapter: false,
                 ..Default::default()
-            },
-        )) {
-            Ok(a) => a,
-            Err(err) => {
-                error!("failed to acquire wgpu adapter: {err}");
-                event_loop.exit();
-                return;
-            }
-        };
+            })) {
+                Ok(a) => a,
+                Err(err) => {
+                    error!("failed to acquire wgpu adapter: {err}");
+                    event_loop.exit();
+                    return;
+                }
+            };
 
         let adapter_info = adapter.get_info();
         info!(
@@ -1524,21 +1543,20 @@ impl ApplicationHandler<EngineWakeEvent> for CompositorApp {
             adapter_info.name, adapter_info.backend
         );
 
-        let (device, queue) = match pollster::block_on(adapter.request_device(
-            &wgpu::DeviceDescriptor {
+        let (device, queue) =
+            match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
                 label: Some("trueshow_compositor_device"),
                 required_features: wgpu::Features::empty(),
                 required_limits: wgpu::Limits::default(),
                 ..Default::default()
-            },
-        )) {
-            Ok(pair) => pair,
-            Err(err) => {
-                error!("failed to create wgpu device: {err}");
-                event_loop.exit();
-                return;
-            }
-        };
+            })) {
+                Ok(pair) => pair,
+                Err(err) => {
+                    error!("failed to create wgpu device: {err}");
+                    event_loop.exit();
+                    return;
+                }
+            };
 
         device.on_uncaptured_error(Arc::new(|err| {
             error!("wgpu uncaptured device error (suppressed to keep live outputs alive): {err}");
@@ -1733,7 +1751,8 @@ impl ApplicationHandler<EngineWakeEvent> for CompositorApp {
     }
 }
 
-pub fn create_event_loop() -> Result<(EventLoop<EngineWakeEvent>, EventLoopProxy<EngineWakeEvent>), String> {
+pub fn create_event_loop()
+-> Result<(EventLoop<EngineWakeEvent>, EventLoopProxy<EngineWakeEvent>), String> {
     let event_loop = EventLoop::<EngineWakeEvent>::with_user_event()
         .build()
         .map_err(|e| e.to_string())?;
@@ -1770,7 +1789,9 @@ mod tests {
         let updated = state
             .apply_diff(SceneDiff::TriggerSlide {
                 slide_id: target_id,
-                transition_override: Some(core_scene::TransitionSpec::PushLeft { duration_ms: 400 }),
+                transition_override: Some(core_scene::TransitionSpec::PushLeft {
+                    duration_ms: 400,
+                }),
             })
             .expect("trigger slide");
         assert_eq!(updated.active_slide.as_ref().map(|s| s.id), Some(target_id));

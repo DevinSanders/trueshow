@@ -226,7 +226,8 @@ mod tests {
     #[test]
     fn parses_all_four_public_domain_bible_xml_formats() {
         let osis = r#"<osis><verse osisID="Ps.100.1">Make a joyful noise.</verse></osis>"#;
-        let v_osis = parse_bible_xml(osis, "KJV", "Public Domain", BibleXmlFormat::Osis).expect("osis");
+        let v_osis =
+            parse_bible_xml(osis, "KJV", "Public Domain", BibleXmlFormat::Osis).expect("osis");
         assert_eq!(v_osis.len(), 1);
         assert_eq!(v_osis[0].book, "Ps");
         assert_eq!(v_osis[0].chapter, 100);
@@ -248,14 +249,27 @@ mod tests {
         assert_eq!(v_usfx[0].verse, 28);
 
         // Failure path: malformed XML returns error
-        assert!(parse_bible_xml("<osis><verse></bad></osis>", "KJV", "PD", BibleXmlFormat::Osis).is_err());
+        assert!(
+            parse_bible_xml(
+                "<osis><verse></bad></osis>",
+                "KJV",
+                "PD",
+                BibleXmlFormat::Osis
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn enforces_byok_api_bible_key_verse_cap_and_30_day_cache_rules() {
-        assert_eq!(ApiBibleByokConfig::new("   "), Err(BibleError::MissingApiKey));
+        assert_eq!(
+            ApiBibleByokConfig::new("   "),
+            Err(BibleError::MissingApiKey)
+        );
         let cfg = ApiBibleByokConfig::new("user-secret-key").expect("valid");
-        let url = cfg.passage_url("de4e12af7f28f599-02", "JHN.3.16", 1).expect("url");
+        let url = cfg
+            .passage_url("de4e12af7f28f599-02", "JHN.3.16", 1)
+            .expect("url");
         assert!(url.contains("fums-version=3"));
 
         assert_eq!(
@@ -264,7 +278,10 @@ mod tests {
         );
 
         let now = 1_750_000_000;
-        assert_eq!(evaluate_api_bible_cache(now - 3 * 86_400, now), BibleCacheStatus::Fresh);
+        assert_eq!(
+            evaluate_api_bible_cache(now - 3 * 86_400, now),
+            BibleCacheStatus::Fresh
+        );
         assert_eq!(
             evaluate_api_bible_cache(now - 15 * 86_400, now),
             BibleCacheStatus::RefreshRecommended

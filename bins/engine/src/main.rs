@@ -184,10 +184,12 @@ async fn run_ipc_server(
                     .and_then(|a| snap.deck.iter().position(|s| s.id == a.id))
                     .unwrap_or(0);
                 let next_idx = (cur + 1).min(snap.deck.len().saturating_sub(1));
-                snap.deck.get(next_idx).map(|s| core_scene::SceneDiff::TriggerSlide {
-                    slide_id: s.id,
-                    transition_override: None,
-                })
+                snap.deck
+                    .get(next_idx)
+                    .map(|s| core_scene::SceneDiff::TriggerSlide {
+                        slide_id: s.id,
+                        transition_override: None,
+                    })
             }
             show_control::web_stage::RemoteCommand::PrevSlide => {
                 let snap = remote_shared.snapshot().state;
@@ -299,9 +301,13 @@ async fn run_ipc_server(
                     if let Err(err) =
                         handle_client(stream, shared_c, proxy_c, stage_c, logging_c).await
                     {
-                        warn!("operator control client detached ({err}); live outputs remain active");
+                        warn!(
+                            "operator control client detached ({err}); live outputs remain active"
+                        );
                     } else {
-                        info!("operator control client detached cleanly; live outputs remain active");
+                        info!(
+                            "operator control client detached cleanly; live outputs remain active"
+                        );
                     }
                 });
             }

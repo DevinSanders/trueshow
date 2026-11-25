@@ -75,7 +75,12 @@ pub trait Vector2DRasterizer {
         target_height: u32,
     ) -> RasterizedLayer;
 
-    fn hit_test_caret(&mut self, element: &SlideElement, canvas_x: f32, canvas_y: f32) -> Option<CaretGeometry>;
+    fn hit_test_caret(
+        &mut self,
+        element: &SlideElement,
+        canvas_x: f32,
+        canvas_y: f32,
+    ) -> Option<CaretGeometry>;
 }
 
 /// Cached broadcast rasterizer using `cosmic-text` (Unicode/RTL/CJK shaping & fallback)
@@ -171,7 +176,15 @@ impl BroadcastRasterizer {
                 );
             }
             let txt = resolve_dynamic_tokens(&ov.text, vars, timer, None, clock_str);
-            self.render_text_box(&mut pixmap, ov.bounds, &txt, &ov.style, 1.0, scale_x, scale_y);
+            self.render_text_box(
+                &mut pixmap,
+                ov.bounds,
+                &txt,
+                &ov.style,
+                1.0,
+                scale_x,
+                scale_y,
+            );
         }
 
         if let Some(msg) = audience_message
@@ -257,7 +270,15 @@ impl BroadcastRasterizer {
             v_align: VerticalAlign::Middle,
             ..TextStyle::default()
         };
-        self.render_text_box(&mut pixmap, cfg.bounds, ccli_text, &style, 1.0, scale_x, scale_y);
+        self.render_text_box(
+            &mut pixmap,
+            cfg.bounds,
+            ccli_text,
+            &style,
+            1.0,
+            scale_x,
+            scale_y,
+        );
         if pixmap.data().len() == rgba_premul.len() {
             rgba_premul.copy_from_slice(pixmap.data());
         }
@@ -297,7 +318,11 @@ impl BroadcastRasterizer {
                 let lyric_lines: Vec<&str> = s.body.lines().collect();
                 for (idx, ln) in lyric_lines.iter().enumerate() {
                     lines.push(ChordChartLine {
-                        chords: if idx == 0 { s.chords_line.clone() } else { None },
+                        chords: if idx == 0 {
+                            s.chords_line.clone()
+                        } else {
+                            None
+                        },
                         lyrics: (*ln).to_string(),
                     });
                 }
@@ -323,15 +348,13 @@ impl BroadcastRasterizer {
             &synthesized
         };
 
-        let active_group = active_slide
-            .map(|s| s.group.as_str())
-            .unwrap_or_else(|| {
-                effective_chart
-                    .sections
-                    .first()
-                    .map(|s| s.group.as_str())
-                    .unwrap_or("Verse 1")
-            });
+        let active_group = active_slide.map(|s| s.group.as_str()).unwrap_or_else(|| {
+            effective_chart
+                .sections
+                .first()
+                .map(|s| s.group.as_str())
+                .unwrap_or("Verse 1")
+        });
 
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"musician-chart-v1");
@@ -417,7 +440,10 @@ impl BroadcastRasterizer {
             .as_deref()
             .map(|t| format!(" · {t}"))
             .unwrap_or_default();
-        let header_title = format!("{}   |   {}{}{}", effective_chart.title, key_display, tempo_str, time_str);
+        let header_title = format!(
+            "{}   |   {}{}{}",
+            effective_chart.title, key_display, tempo_str, time_str
+        );
 
         let head_style = TextStyle {
             font_size: 34.0,
@@ -508,11 +534,12 @@ impl BroadcastRasterizer {
             scale_y,
         );
 
-        let body_bottom = if layout.show_stage_message && stage_message.is_some_and(|m| !m.trim().is_empty()) {
-            945.0
-        } else {
-            1050.0
-        };
+        let body_bottom =
+            if layout.show_stage_message && stage_message.is_some_and(|m| !m.trim().is_empty()) {
+                945.0
+            } else {
+                1050.0
+            };
         let body_h = body_bottom - 168.0;
 
         // Left column: ACTIVE SECTION (full multi-line chords + lyrics)
@@ -763,9 +790,7 @@ impl BroadcastRasterizer {
                     hasher.update(img.as_bytes());
                 }
             }
-            if show_two
-                && let Some(p2) = doc.pages.get(active_page_num as usize)
-            {
+            if show_two && let Some(p2) = doc.pages.get(active_page_num as usize) {
                 hasher.update(p2.label.as_bytes());
                 if let Some(ref img) = p2.image_path {
                     hasher.update(img.as_bytes());
@@ -821,7 +846,12 @@ impl BroadcastRasterizer {
             .map(|s| format!("SYNC: {}", s.group))
             .unwrap_or_else(|| "READY".to_string());
         let page_tag = if show_two && (active_page_num as usize) < total_pages {
-            format!("PAGES {}-{} OF {}", active_page_num, active_page_num + 1, total_pages)
+            format!(
+                "PAGES {}-{} OF {}",
+                active_page_num,
+                active_page_num + 1,
+                total_pages
+            )
         } else {
             format!("PAGE {} OF {}", active_page_num, total_pages)
         };
@@ -870,15 +900,16 @@ impl BroadcastRasterizer {
         }
 
         let page_top = 88.0f32;
-        let page_bottom = if layout.show_stage_message && stage_message.is_some_and(|m| !m.trim().is_empty()) {
-            966.0
-        } else {
-            1064.0
-        };
+        let page_bottom =
+            if layout.show_stage_message && stage_message.is_some_and(|m| !m.trim().is_empty()) {
+                966.0
+            } else {
+                1064.0
+            };
         let page_h = page_bottom - page_top;
 
-        let cur_page = sheet
-            .and_then(|d| d.pages.get((active_page_num as usize).saturating_sub(1)));
+        let cur_page =
+            sheet.and_then(|d| d.pages.get((active_page_num as usize).saturating_sub(1)));
         let next_page = if show_two {
             sheet.and_then(|d| d.pages.get(active_page_num as usize))
         } else {
@@ -1000,8 +1031,12 @@ impl BroadcastRasterizer {
         // If a real local PNG/BMP sheet music page image exists, blit it cleanly with Contain fit!
         if let Some(p) = page
             && let Some(ref img_path) = p.image_path
-            && let Some(mut rgba) =
-                decode_local_image_premul_rgba(std::path::Path::new(img_path), pw, ph, MediaFitMode::Contain)
+            && let Some(mut rgba) = decode_local_image_premul_rgba(
+                std::path::Path::new(img_path),
+                pw,
+                ph,
+                MediaFitMode::Contain,
+            )
         {
             if dark_invert {
                 for chunk in rgba.as_chunks_mut::<4>().0 {
@@ -1205,9 +1240,17 @@ impl BroadcastRasterizer {
 
         if fill.a > 0.001 {
             let mut paint = Paint::default();
-            paint.set_color(Color::from_rgba(fill.r, fill.g, fill.b, fill.a).unwrap_or(Color::TRANSPARENT));
+            paint.set_color(
+                Color::from_rgba(fill.r, fill.g, fill.b, fill.a).unwrap_or(Color::TRANSPARENT),
+            );
             paint.anti_alias = true;
-            pixmap.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
+            pixmap.fill_path(
+                &path,
+                &paint,
+                FillRule::Winding,
+                Transform::identity(),
+                None,
+            );
         }
 
         if let Some((sc, sw)) = stroke
@@ -1279,8 +1322,16 @@ impl BroadcastRasterizer {
 
         let attrs = Attrs::new()
             .family(family)
-            .weight(if style.bold { Weight::BOLD } else { Weight::NORMAL })
-            .style(if style.italic { Style::Italic } else { Style::Normal });
+            .weight(if style.bold {
+                Weight::BOLD
+            } else {
+                Weight::NORMAL
+            })
+            .style(if style.italic {
+                Style::Italic
+            } else {
+                Style::Normal
+            });
 
         let cosmic_align = match style.h_align {
             TextAlign::Left => cosmic_text::Align::Left,
@@ -1291,7 +1342,10 @@ impl BroadcastRasterizer {
         // Auto-shrink loop so long worship stanzas never overflow the safe bounding box.
         let mut buffer = Buffer::new(
             &mut self.font_system,
-            Metrics::new(font_size, (font_size * style.line_height).max(font_size + 2.0)),
+            Metrics::new(
+                font_size,
+                (font_size * style.line_height).max(font_size + 2.0),
+            ),
         );
         let mut total_height = 0.0f32;
         let max_attempts = if style.auto_shrink { 6 } else { 1 };
@@ -1360,13 +1414,9 @@ impl BroadcastRasterizer {
                         .iter()
                         .map(|rgb| rgb[0].max(rgb[1]).max(rgb[2]))
                         .collect(),
-                    cosmic_text::SwashContent::Color => image
-                        .data
-                        .as_chunks::<4>()
-                        .0
-                        .iter()
-                        .map(|c| c[3])
-                        .collect(),
+                    cosmic_text::SwashContent::Color => {
+                        image.data.as_chunks::<4>().0.iter().map(|c| c[3]).collect()
+                    }
                 };
                 if mask.len() < expected_px {
                     continue;
@@ -1385,7 +1435,9 @@ impl BroadcastRasterizer {
         if style.shadow_color.a > 0.01 {
             let sx = (style.shadow_offset_x * font_scale).round() as i32;
             let sy = (style.shadow_offset_y * font_scale).round() as i32;
-            let blur_r = (style.shadow_blur * font_scale * 0.25).round().clamp(0.0, 3.0) as i32;
+            let blur_r = (style.shadow_blur * font_scale * 0.25)
+                .round()
+                .clamp(0.0, 3.0) as i32;
             let mut sh = style.shadow_color;
             sh.a *= opacity;
             let taps: &[(i32, i32, f32)] = if blur_r >= 2 {
@@ -1403,7 +1455,17 @@ impl BroadcastRasterizer {
                 for &(dx, dy, weight) in taps {
                     let mut c = sh;
                     c.a *= weight;
-                    blit_glyph_mask(data, width, height, g.x + sx + dx, g.y + sy + dy, g.w, g.h, &g.mask, c);
+                    blit_glyph_mask(
+                        data,
+                        width,
+                        height,
+                        g.x + sx + dx,
+                        g.y + sy + dy,
+                        g.w,
+                        g.h,
+                        &g.mask,
+                        c,
+                    );
                 }
             }
         }
@@ -1425,7 +1487,17 @@ impl BroadcastRasterizer {
             ];
             for g in &glyphs {
                 for (dx, dy) in offsets {
-                    blit_glyph_mask(data, width, height, g.x + dx, g.y + dy, g.w, g.h, &g.mask, sc);
+                    blit_glyph_mask(
+                        data,
+                        width,
+                        height,
+                        g.x + dx,
+                        g.y + dy,
+                        g.w,
+                        g.h,
+                        &g.mask,
+                        sc,
+                    );
                 }
             }
         }
@@ -1568,9 +1640,8 @@ impl Vector2DRasterizer for BroadcastRasterizer {
             return hit.clone();
         }
 
-        let mut pixmap = Pixmap::new(w, h).unwrap_or_else(|| {
-            Pixmap::new(16, 16).expect("fallback pixmap")
-        });
+        let mut pixmap =
+            Pixmap::new(w, h).unwrap_or_else(|| Pixmap::new(16, 16).expect("fallback pixmap"));
 
         let scale_x = w as f32 / VIRTUAL_CANVAS_WIDTH;
         let scale_y = h as f32 / VIRTUAL_CANVAS_HEIGHT;
@@ -1588,7 +1659,15 @@ impl Vector2DRasterizer for BroadcastRasterizer {
                 v_align: VerticalAlign::Middle,
                 ..TextStyle::default()
             };
-            self.render_text_box(&mut pixmap, lt_bounds, &text, &lt_style, 1.0, scale_x, scale_y);
+            self.render_text_box(
+                &mut pixmap,
+                lt_bounds,
+                &text,
+                &lt_style,
+                1.0,
+                scale_x,
+                scale_y,
+            );
         } else {
             let mut sorted: Vec<&SlideElement> = effective_slide.elements.iter().collect();
             sorted.sort_by_key(|e| e.z_index);
@@ -1701,9 +1780,8 @@ impl Vector2DRasterizer for BroadcastRasterizer {
             return hit.clone();
         }
 
-        let mut pixmap = Pixmap::new(w, h).unwrap_or_else(|| {
-            Pixmap::new(16, 16).expect("fallback pixmap")
-        });
+        let mut pixmap =
+            Pixmap::new(w, h).unwrap_or_else(|| Pixmap::new(16, 16).expect("fallback pixmap"));
         let scale_x = w as f32 / VIRTUAL_CANVAS_WIDTH;
         let scale_y = h as f32 / VIRTUAL_CANVAS_HEIGHT;
 
@@ -1851,7 +1929,8 @@ impl Vector2DRasterizer for BroadcastRasterizer {
             return None;
         };
         let b = element.bounds;
-        if canvas_x < b.x || canvas_x > b.x + b.width || canvas_y < b.y || canvas_y > b.y + b.height {
+        if canvas_x < b.x || canvas_x > b.x + b.width || canvas_y < b.y || canvas_y > b.y + b.height
+        {
             return None;
         }
         let rel_x = (canvas_x - b.x).clamp(0.0, b.width);
@@ -1860,15 +1939,16 @@ impl Vector2DRasterizer for BroadcastRasterizer {
 
         let mut buffer = Buffer::new(&mut self.font_system, Metrics::new(style.font_size, line_h));
         buffer.set_size(&mut self.font_system, Some(b.width), Some(b.height));
-        buffer.set_text(&mut self.font_system, text, &Attrs::new(), Shaping::Advanced);
+        buffer.set_text(
+            &mut self.font_system,
+            text,
+            &Attrs::new(),
+            Shaping::Advanced,
+        );
         buffer.shape_until_scroll(&mut self.font_system, false);
 
         if let Some(cursor) = buffer.hit(rel_x, rel_y) {
-            let line_offset: usize = text
-                .lines()
-                .take(cursor.line)
-                .map(|l| l.len() + 1)
-                .sum();
+            let line_offset: usize = text.lines().take(cursor.line).map(|l| l.len() + 1).sum();
             let byte_index = (line_offset + cursor.index).min(text.len());
             return Some(CaretGeometry {
                 x: canvas_x,
@@ -1903,12 +1983,7 @@ pub fn decode_local_image_premul_rgba(
     let bytes = std::fs::read(path).ok()?;
     let (src_w, src_h, src_rgba) = decode_png_or_bmp_premul(&bytes)?;
     Some(scale_rgba_fit(
-        src_w,
-        src_h,
-        &src_rgba,
-        target_w,
-        target_h,
-        fit,
+        src_w, src_h, &src_rgba, target_w, target_h, fit,
     ))
 }
 
@@ -1943,7 +2018,11 @@ fn decode_png_or_bmp_premul(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
                 let b = bytes[sp];
                 let g = bytes[sp + 1];
                 let r = bytes[sp + 2];
-                let a = if bytes_per_px == 4 { bytes[sp + 3] } else { 255 };
+                let a = if bytes_per_px == 4 {
+                    bytes[sp + 3]
+                } else {
+                    255
+                };
                 let dp = (y * (w as usize) + x) * 4;
                 if a == 255 {
                     out[dp] = r;
@@ -2172,7 +2251,11 @@ mod tests {
         let png_path = dir.join("bg.png");
         pm.save_png(&png_path).expect("save png");
 
-        for fit in [MediaFitMode::Fill, MediaFitMode::Contain, MediaFitMode::Stretch] {
+        for fit in [
+            MediaFitMode::Fill,
+            MediaFitMode::Contain,
+            MediaFitMode::Stretch,
+        ] {
             let rgba = decode_local_image_premul_rgba(&png_path, 16, 16, fit).expect("decode png");
             assert_eq!(rgba.len(), 16 * 16 * 4);
             assert!(rgba.iter().any(|&b| b > 0));
@@ -2191,13 +2274,16 @@ mod tests {
         bmp[54..58].copy_from_slice(&[200, 100, 50, 128]);
         let bmp_path = dir.join("fg.bmp");
         std::fs::write(&bmp_path, &bmp).expect("write bmp");
-        let bmp_rgba =
-            decode_local_image_premul_rgba(&bmp_path, 8, 8, MediaFitMode::Contain).expect("decode bmp");
+        let bmp_rgba = decode_local_image_premul_rgba(&bmp_path, 8, 8, MediaFitMode::Contain)
+            .expect("decode bmp");
         assert_eq!(bmp_rgba.len(), 8 * 8 * 4);
         assert!(bmp_rgba.iter().any(|&b| b > 0));
 
         // 3. Failure paths: missing file, zero dims, unknown format
-        assert!(decode_local_image_premul_rgba(&dir.join("missing.png"), 16, 16, MediaFitMode::Fill).is_none());
+        assert!(
+            decode_local_image_premul_rgba(&dir.join("missing.png"), 16, 16, MediaFitMode::Fill)
+                .is_none()
+        );
         assert!(decode_local_image_premul_rgba(&png_path, 0, 16, MediaFitMode::Fill).is_none());
         let bad_path = dir.join("bad.bin");
         std::fs::write(&bad_path, b"not an image").expect("write bad");
@@ -2214,7 +2300,8 @@ mod tests {
             *text = "Welcome {{var:Church}} · {{timer}} · {{clock}}".into();
         }
         let vars = BTreeMap::from([("Church".into(), "Grace".into())]);
-        let expanded = BroadcastRasterizer::expand_slide_tokens(&slide, &vars, Some("03:00"), "10:00");
+        let expanded =
+            BroadcastRasterizer::expand_slide_tokens(&slide, &vars, Some("03:00"), "10:00");
         assert!(expanded.plain_text().contains("Grace"));
         assert!(expanded.plain_text().contains("03:00"));
 

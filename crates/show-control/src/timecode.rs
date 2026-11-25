@@ -74,10 +74,14 @@ impl SmpteTimecode {
             return Err(TimecodeError::InvalidField(format!("hours {hours} > 23")));
         }
         if minutes > 59 {
-            return Err(TimecodeError::InvalidField(format!("minutes {minutes} > 59")));
+            return Err(TimecodeError::InvalidField(format!(
+                "minutes {minutes} > 59"
+            )));
         }
         if seconds > 59 {
-            return Err(TimecodeError::InvalidField(format!("seconds {seconds} > 59")));
+            return Err(TimecodeError::InvalidField(format!(
+                "seconds {seconds} > 59"
+            )));
         }
         if frames > rate.max_frame() {
             return Err(TimecodeError::InvalidField(format!(
@@ -136,7 +140,10 @@ pub fn encode_ltc_bits(tc: SmpteTimecode) -> [u8; 80] {
 }
 
 /// Decodes an 80-bit SMPTE 12M LTC bit frame, verifying the `0xBFFC` sync word.
-pub fn decode_ltc_bits(bits: &[u8; 80], default_non_drop_rate: FrameRate) -> Result<SmpteTimecode, TimecodeError> {
+pub fn decode_ltc_bits(
+    bits: &[u8; 80],
+    default_non_drop_rate: FrameRate,
+) -> Result<SmpteTimecode, TimecodeError> {
     let mut sync = 0u16;
     for i in 0..16 {
         sync |= u16::from(bits[64 + i] & 1) << i;
@@ -172,7 +179,10 @@ impl MtcAssembler {
 
     /// Feeds one MTC quarter-frame data byte (`(piece_idx << 4) | nibble`).
     /// Returns `Some(SmpteTimecode)` once all 8 pieces (0..=7) have been assembled.
-    pub fn push_quarter_frame(&mut self, data_byte: u8) -> Option<Result<SmpteTimecode, TimecodeError>> {
+    pub fn push_quarter_frame(
+        &mut self,
+        data_byte: u8,
+    ) -> Option<Result<SmpteTimecode, TimecodeError>> {
         let idx = usize::from((data_byte >> 4) & 0x07);
         let nibble = data_byte & 0x0F;
         self.pieces[idx] = nibble;

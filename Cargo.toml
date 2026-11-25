@@ -23,7 +23,7 @@ exclude = [
 version = "0.1.0-m3"
 edition = "2024"
 license = "MPL-2.0"
-repository = "https://github.com/trueshow/TrueShow"
+repository = "https://github.com/DevinSanders/trueshow"
 
 [workspace.dependencies]
 axum = { version = "0.8", features = ["ws"] }

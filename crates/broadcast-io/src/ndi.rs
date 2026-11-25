@@ -56,7 +56,12 @@ pub fn ndi_candidate_paths() -> Vec<String> {
 
     for env_var in ["NDI_RUNTIME_DIR_V6", "NDI_RUNTIME_DIR_V5"] {
         if let Ok(dir) = std::env::var(env_var) {
-            paths.push(PathBuf::from(dir).join(lib_name).to_string_lossy().into_owned());
+            paths.push(
+                PathBuf::from(dir)
+                    .join(lib_name)
+                    .to_string_lossy()
+                    .into_owned(),
+            );
         }
     }
 
@@ -96,7 +101,8 @@ pub fn probe_ndi_runtime(extra_paths: &[String]) -> NdiRuntimeStatus {
     }
 
     NdiRuntimeStatus::NotInstalled {
-        install_hint: "Install the free NDI 6 Runtime from ndi.video to enable NDI send/receive.".to_string(),
+        install_hint: "Install the free NDI 6 Runtime from ndi.video to enable NDI send/receive."
+            .to_string(),
         searched_paths: searched,
     }
 }

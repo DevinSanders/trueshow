@@ -54,7 +54,9 @@ impl SeamlessLooper {
     }
 
     /// Returns the next frame continuously, seamlessly wrapping at end-of-stream with zero black frames.
-    pub fn next_frame(&mut self) -> Result<(DecodedVideoFrame, Option<LoopTransitionReport>), VideoError> {
+    pub fn next_frame(
+        &mut self,
+    ) -> Result<(DecodedVideoFrame, Option<LoopTransitionReport>), VideoError> {
         // 1. Drain any already-prerolled head frames if we just swapped loops.
         match self.active.decode_next() {
             Ok(frame) => {
@@ -139,7 +141,9 @@ mod tests {
         let mut seen_indices = Vec::new();
         let mut reports = Vec::new();
         for _ in 0..32 {
-            let (frame, report) = looper.next_frame().expect("never fails during continuous loop");
+            let (frame, report) = looper
+                .next_frame()
+                .expect("never fails during continuous loop");
             seen_indices.push(frame.frame_index);
             if let Some(r) = report {
                 reports.push(r);

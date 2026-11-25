@@ -1,0 +1,81 @@
+name: Bug report
+description: Something is broken, crashing, or behaving unexpectedly
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug! The single most useful thing you can attach is a **Diagnostics Bundle** or debug log.
+
+        **How to collect one:**
+
+        1. In TrueShow, open **View → Diagnostics** (or click **Diagnostics** in the bottom-right status bar).
+        2. Enable **Debug Logging** if the issue is reproducible, reproduce the issue, then click **Export Diagnostics Bundle**.
+        3. Drag the exported `.zip` or log file into the field below, or paste the relevant log lines.
+
+  - type: input
+    id: version
+    attributes:
+      label: App version
+      description: Found in Diagnostics or the release tag you installed.
+      placeholder: e.g. 0.1.0-m3
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows 11
+        - Windows 10
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Linux
+        - Other (specify below)
+    validations:
+      required: true
+
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU & display setup
+      description: Optional. e.g. "RTX 4070 (DX12), 1080p Audience + 1080p Stage + Musician Display".
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open Show Deck
+        2. Trigger slide ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected to happen
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What actually happened
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Diagnostics log / crash report
+      description: Paste relevant lines from View → Diagnostics or attach the exported bundle.
+      render: shell
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Screenshots, recordings, related issues, or hunches — anything that might help.

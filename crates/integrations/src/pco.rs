@@ -41,7 +41,11 @@ impl PcoOAuthPkceSession {
         if client_id.trim().is_empty() {
             return Err(PcoError::InvalidConfig("client_id cannot be empty".into()));
         }
-        let verifier = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
+        let verifier = format!(
+            "{}{}",
+            uuid::Uuid::new_v4().simple(),
+            uuid::Uuid::new_v4().simple()
+        );
         let digest = Sha256::digest(verifier.as_bytes());
         let challenge = URL_SAFE_NO_PAD.encode(digest);
         let state = uuid::Uuid::new_v4().simple().to_string();
@@ -170,7 +174,11 @@ pub fn parse_pco_plans_json_api(json_body: &str) -> Result<Vec<PcoPlanSummary>, 
     };
 
     for plan in data {
-        let id = plan.get("id").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        let id = plan
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
         let attrs = plan.get("attributes");
         let title = attrs
             .and_then(|a| a.get("title"))
@@ -190,7 +198,8 @@ pub fn parse_pco_plans_json_api(json_body: &str) -> Result<Vec<PcoPlanSummary>, 
         {
             for rel in rel_items {
                 let item_id = rel.get("id").and_then(|v| v.as_str()).unwrap_or_default();
-                if let Some(item_obj) = included_map.get(&("Item".to_string(), item_id.to_string())) {
+                if let Some(item_obj) = included_map.get(&("Item".to_string(), item_id.to_string()))
+                {
                     let i_attrs = item_obj.get("attributes");
                     let song_id = item_obj
                         .pointer("/relationships/song/data/id")
@@ -202,7 +211,11 @@ pub fn parse_pco_plans_json_api(json_body: &str) -> Result<Vec<PcoPlanSummary>, 
                     let song_ccli = song_id
                         .and_then(|sid| included_map.get(&("Song".to_string(), sid.to_string())))
                         .and_then(|s| s.pointer("/attributes/ccli_number"))
-                        .and_then(|v| v.as_u64().map(|n| n.to_string()).or_else(|| v.as_str().map(String::from)));
+                        .and_then(|v| {
+                            v.as_u64()
+                                .map(|n| n.to_string())
+                                .or_else(|| v.as_str().map(String::from))
+                        });
 
                     let arrangement_key = arr_id
                         .and_then(|aid| {
@@ -282,7 +295,9 @@ pub struct StagedMediaFile {
 }
 
 pub fn build_pco_plan_attachments_url(service_type_id: &str, plan_id: &str) -> String {
-    format!("{PCO_SERVICES_BASE}/service_types/{service_type_id}/plans/{plan_id}/attachments?per_page=100")
+    format!(
+        "{PCO_SERVICES_BASE}/service_types/{service_type_id}/plans/{plan_id}/attachments?per_page=100"
+    )
 }
 
 pub fn build_pco_item_attachments_url(
@@ -303,10 +318,7 @@ pub fn build_pco_attachment_open_url(attachment_id: &str) -> String {
     format!("{PCO_SERVICES_BASE}/attachments/{attachment_id}/open")
 }
 
-pub fn classify_attachment_kind(
-    filename: &str,
-    content_type: Option<&str>,
-) -> PcoAttachmentKind {
+pub fn classify_attachment_kind(filename: &str, content_type: Option<&str>) -> PcoAttachmentKind {
     let ext = Path::new(filename)
         .extension()
         .and_then(|e| e.to_str())
@@ -317,8 +329,22 @@ pub fn classify_attachment_kind(
 
     if ext == "pdf" || lower_name.contains(".pdf") || ct.contains("application/pdf") {
         let is_sheet = [
-            "sheet", "score", "piano", "satb", "vocal", "clef", "orchestr", "hymnal", "lead sheet",
-            "lead_sheet", "leadsheet", "notation", "choir", "strings", "brass", "horn",
+            "sheet",
+            "score",
+            "piano",
+            "satb",
+            "vocal",
+            "clef",
+            "orchestr",
+            "hymnal",
+            "lead sheet",
+            "lead_sheet",
+            "leadsheet",
+            "notation",
+            "choir",
+            "strings",
+            "brass",
+            "horn",
         ]
         .iter()
         .any(|k| lower_name.contains(k));
@@ -326,7 +352,15 @@ pub fn classify_attachment_kind(
             return PcoAttachmentKind::SheetMusicPdf;
         }
         let is_chord = [
-            "chord", "chart", "nashville", "number", "capo", "guitar", "acoustic", "rhythm", "band",
+            "chord",
+            "chart",
+            "nashville",
+            "number",
+            "capo",
+            "guitar",
+            "acoustic",
+            "rhythm",
+            "band",
         ]
         .iter()
         .any(|k| lower_name.contains(k));
@@ -347,8 +381,10 @@ pub fn classify_attachment_kind(
     {
         return PcoAttachmentKind::Video;
     }
-    if matches!(ext.as_str(), "mp3" | "wav" | "flac" | "ogg" | "m4a" | "aac" | "opus")
-        || ct.starts_with("audio/")
+    if matches!(
+        ext.as_str(),
+        "mp3" | "wav" | "flac" | "ogg" | "m4a" | "aac" | "opus"
+    ) || ct.starts_with("audio/")
     {
         return PcoAttachmentKind::Audio;
     }
@@ -413,7 +449,10 @@ pub fn parse_pco_attachments_json_api(
                 .map(|c| c.to_ascii_lowercase().contains("application/pdf"))
                 .unwrap_or(false)
         {
-            classify_attachment_kind(&format!("{filename} {display_name}"), Some("application/pdf"))
+            classify_attachment_kind(
+                &format!("{filename} {display_name}"),
+                Some("application/pdf"),
+            )
         } else {
             classify_attachment_kind(&filename, content_type.as_deref())
         };
@@ -472,10 +511,7 @@ pub fn build_safe_media_names(
     blake3_hex: &str,
 ) -> (String, String) {
     let path = Path::new(original_filename);
-    let raw_stem = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("media");
+    let raw_stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("media");
     let raw_ext = path
         .extension()
         .and_then(|s| s.to_str())
@@ -525,7 +561,9 @@ pub fn stage_imported_media_bytes(
     bytes: &[u8],
 ) -> Result<StagedMediaFile, PcoError> {
     if bytes.is_empty() {
-        return Err(PcoError::InvalidConfig("imported media payload is empty".into()));
+        return Err(PcoError::InvalidConfig(
+            "imported media payload is empty".into(),
+        ));
     }
     std::fs::create_dir_all(dest_dir)?;
     let blake3_hash = blake3::hash(bytes).to_hex().to_string();
@@ -675,21 +713,50 @@ mod tests {
 
         // Collision-safe staging: two different presentations both attach "background.mp4" with different bytes!
         let tmp_dir = std::env::temp_dir().join(format!("op-pco-media-{}", uuid::Uuid::new_v4()));
-        let first = stage_imported_media_bytes(&tmp_dir, "Amazing Grace", "background.mp4", b"video-bytes-A")
-            .expect("stage A");
-        let second = stage_imported_media_bytes(&tmp_dir, "Sermon Opener", "background.mp4", b"video-bytes-B")
-            .expect("stage B");
-        let dup = stage_imported_media_bytes(&tmp_dir, "Amazing Grace", "background.mp4", b"video-bytes-A")
-            .expect("stage dup");
+        let first = stage_imported_media_bytes(
+            &tmp_dir,
+            "Amazing Grace",
+            "background.mp4",
+            b"video-bytes-A",
+        )
+        .expect("stage A");
+        let second = stage_imported_media_bytes(
+            &tmp_dir,
+            "Sermon Opener",
+            "background.mp4",
+            b"video-bytes-B",
+        )
+        .expect("stage B");
+        let dup = stage_imported_media_bytes(
+            &tmp_dir,
+            "Amazing Grace",
+            "background.mp4",
+            b"video-bytes-A",
+        )
+        .expect("stage dup");
 
         assert_ne!(first.disk_path, second.disk_path);
         assert_ne!(first.blake3_hash, second.blake3_hash);
-        assert!(first.safe_file_name.starts_with("Amazing-Grace__background__"));
-        assert!(second.safe_file_name.starts_with("Sermon-Opener__background__"));
+        assert!(
+            first
+                .safe_file_name
+                .starts_with("Amazing-Grace__background__")
+        );
+        assert!(
+            second
+                .safe_file_name
+                .starts_with("Sermon-Opener__background__")
+        );
         assert_eq!(first.display_name, "Amazing Grace — background.mp4");
         assert!(dup.deduplicated);
-        assert_eq!(std::fs::read(&first.disk_path).expect("read A"), b"video-bytes-A");
-        assert_eq!(std::fs::read(&second.disk_path).expect("read B"), b"video-bytes-B");
+        assert_eq!(
+            std::fs::read(&first.disk_path).expect("read A"),
+            b"video-bytes-A"
+        );
+        assert_eq!(
+            std::fs::read(&second.disk_path).expect("read B"),
+            b"video-bytes-B"
+        );
         assert!(stage_imported_media_bytes(&tmp_dir, "Empty", "a.png", b"").is_err());
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }

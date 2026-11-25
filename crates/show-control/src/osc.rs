@@ -45,7 +45,8 @@ pub fn parse_osc_text_command(line: &str) -> Result<OscControlEvent, OscError> {
         addr: addr.to_string(),
         args,
     });
-    let bytes = rosc::encoder::encode(&pkt).map_err(|e| OscError::MalformedPacket(e.to_string()))?;
+    let bytes =
+        rosc::encoder::encode(&pkt).map_err(|e| OscError::MalformedPacket(e.to_string()))?;
     decode_osc_packet(&bytes)?
         .into_iter()
         .next()
@@ -54,8 +55,8 @@ pub fn parse_osc_text_command(line: &str) -> Result<OscControlEvent, OscError> {
 
 /// Decodes raw UDP OSC bytes into TrueShow show-control events.
 pub fn decode_osc_packet(bytes: &[u8]) -> Result<Vec<OscControlEvent>, OscError> {
-    let (_, packet) = rosc::decoder::decode_udp(bytes)
-        .map_err(|e| OscError::MalformedPacket(e.to_string()))?;
+    let (_, packet) =
+        rosc::decoder::decode_udp(bytes).map_err(|e| OscError::MalformedPacket(e.to_string()))?;
     let mut events = Vec::new();
     collect_packet(packet, &mut events)?;
     Ok(events)
@@ -78,7 +79,11 @@ fn route_message(msg: OscMessage) -> Result<OscControlEvent, OscError> {
         "/trueshow/slide/trigger" => {
             let id_str = match msg.args.first() {
                 Some(OscType::String(s)) => s,
-                _ => return Err(OscError::InvalidArgument("expected slide UUID string".into())),
+                _ => {
+                    return Err(OscError::InvalidArgument(
+                        "expected slide UUID string".into(),
+                    ));
+                }
             };
             let uuid = Uuid::parse_str(id_str)
                 .map_err(|e| OscError::InvalidArgument(format!("bad slide UUID: {e}")))?;
@@ -98,7 +103,11 @@ fn route_message(msg: OscMessage) -> Result<OscControlEvent, OscError> {
         "/trueshow/layer/clear" => {
             let layer_name = match msg.args.first() {
                 Some(OscType::String(s)) => s.as_str(),
-                _ => return Err(OscError::InvalidArgument("expected layer name string".into())),
+                _ => {
+                    return Err(OscError::InvalidArgument(
+                        "expected layer name string".into(),
+                    ));
+                }
             };
             let layer = match layer_name.to_ascii_lowercase().as_str() {
                 "video" => LayerKind::VideoInput,
@@ -108,7 +117,11 @@ fn route_message(msg: OscMessage) -> Result<OscControlEvent, OscError> {
                 "props" | "overlays" => LayerKind::PropsAndOverlays,
                 "masks" => LayerKind::Masks,
                 "messages" | "timers" => LayerKind::MessagesAndTimers,
-                other => return Err(OscError::InvalidArgument(format!("unknown layer '{other}'"))),
+                other => {
+                    return Err(OscError::InvalidArgument(format!(
+                        "unknown layer '{other}'"
+                    )));
+                }
             };
             Ok(OscControlEvent::Scene(Box::new(SceneDiff::ClearLayer(
                 layer,
@@ -119,14 +132,18 @@ fn route_message(msg: OscMessage) -> Result<OscControlEvent, OscError> {
                 Some(OscType::String(s)) if !s.trim().is_empty() => Some(s.clone()),
                 _ => None,
             };
-            Ok(OscControlEvent::Scene(Box::new(SceneDiff::SetStageMessage(
-                text,
-            ))))
+            Ok(OscControlEvent::Scene(Box::new(
+                SceneDiff::SetStageMessage(text),
+            )))
         }
         "/trueshow/macro/run" => {
             let id_str = match msg.args.first() {
                 Some(OscType::String(s)) => s,
-                _ => return Err(OscError::InvalidArgument("expected macro UUID string".into())),
+                _ => {
+                    return Err(OscError::InvalidArgument(
+                        "expected macro UUID string".into(),
+                    ));
+                }
             };
             let uuid = Uuid::parse_str(id_str)
                 .map_err(|e| OscError::InvalidArgument(format!("bad macro UUID: {e}")))?;
@@ -197,9 +214,9 @@ mod tests {
         .expect("msg");
         assert_eq!(
             decode_osc_packet(&pkt_msg).expect("decode msg"),
-            vec![OscControlEvent::Scene(Box::new(SceneDiff::SetStageMessage(
-                Some("Wrap up".into())
-            )))]
+            vec![OscControlEvent::Scene(Box::new(
+                SceneDiff::SetStageMessage(Some("Wrap up".into()))
+            ))]
         );
 
         let macro_uuid = Uuid::from_u128(77);

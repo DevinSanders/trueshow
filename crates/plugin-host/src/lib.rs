@@ -160,7 +160,8 @@ impl WasmSandboxHost {
     pub fn new(fuel_budget: u64) -> Result<Self, PluginHostError> {
         let mut config = Config::new();
         config.consume_fuel(true);
-        let engine = Engine::new(&config).map_err(|e| PluginHostError::WasmRuntime(e.to_string()))?;
+        let engine =
+            Engine::new(&config).map_err(|e| PluginHostError::WasmRuntime(e.to_string()))?;
         Ok(Self {
             engine,
             fuel_budget: fuel_budget.max(1_000),
@@ -281,6 +282,9 @@ mod tests {
         assert!(err.to_string().to_lowercase().contains("fuel"));
 
         // Failure path 2: missing export rejected cleanly
-        assert!(host.run_i32_hook(valid_wat, "does_not_exist", 0, 0).is_err());
+        assert!(
+            host.run_i32_hook(valid_wat, "does_not_exist", 0, 0)
+                .is_err()
+        );
     }
 }

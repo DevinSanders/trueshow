@@ -467,7 +467,11 @@ pub fn render_ccli_attribution_for_scene(state: &SceneState) -> Option<String> {
     }
     let active = state.active_slide.as_ref()?;
     let deck_len = state.deck.len();
-    let idx = state.deck.iter().position(|s| s.id == active.id).unwrap_or(0);
+    let idx = state
+        .deck
+        .iter()
+        .position(|s| s.id == active.id)
+        .unwrap_or(0);
     let is_first = idx == 0;
     let is_last = deck_len > 0 && idx + 1 >= deck_len;
 
@@ -549,7 +553,10 @@ pub fn render_ccli_attribution_for_scene(state: &SceneState) -> Option<String> {
 
 /// Expands a master slide list according to an optional [`Arrangement`], preserving
 /// slide content while allowing groups (e.g. Chorus) to repeat cleanly without duplicating data.
-pub fn expand_deck_by_arrangement(master: &[Slide], arrangement: Option<&Arrangement>) -> Vec<Slide> {
+pub fn expand_deck_by_arrangement(
+    master: &[Slide],
+    arrangement: Option<&Arrangement>,
+) -> Vec<Slide> {
     let Some(arr) = arrangement else {
         return master.to_vec();
     };
@@ -672,10 +679,16 @@ pub struct ActiveMessage {
 /// Automated action attached to an individual slide and fired automatically when the slide goes live.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SlideAction {
-    SetOutputLook { output_id: OutputId, look_id: LookId },
+    SetOutputLook {
+        output_id: OutputId,
+        look_id: LookId,
+    },
     ShowOverlay(String),
     HideOverlay(String),
-    SetVariable { key: String, value: String },
+    SetVariable {
+        key: String,
+        value: String,
+    },
     SetMask(MaskStyle),
 }
 
@@ -771,7 +784,8 @@ pub fn default_message_templates() -> Vec<MessageTemplate> {
         MessageTemplate {
             id: "msg-parking".to_string(),
             name: "Parking Lot Alert".to_string(),
-            template_text: "Owner of {vehicle} (Plate {plate}): lights are on in the {lot} lot.".to_string(),
+            template_text: "Owner of {vehicle} (Plate {plate}): lights are on in the {lot} lot."
+                .to_string(),
             show_on_audience: true,
             show_on_stage: false,
             auto_clear_secs: Some(30),
@@ -1095,7 +1109,12 @@ impl SheetMusicDocument {
 
     /// Resolves the 1-based page number to show for the active slide so Sheet Music Stage Displays
     /// automatically turn pages in sync with the presentation deck.
-    pub fn page_for_slide(&self, slide: Option<&Slide>, slide_index: usize, total_slides: usize) -> u32 {
+    pub fn page_for_slide(
+        &self,
+        slide: Option<&Slide>,
+        slide_index: usize,
+        total_slides: usize,
+    ) -> u32 {
         let max_page = self.pages.len().max(1) as u32;
         if let Some(s) = slide {
             let sid = s.id.0.to_string();
@@ -1185,7 +1204,8 @@ pub fn transpose_chord_token(token: &str, semitones: i8) -> String {
             || rest.chars().all(|c| {
                 matches!(
                     c,
-                    'm' | 'M' | 'a' | 'j' | 'i' | 'n' | 'd' | 'u' | 's' | 'g' | '0'..='9' | '+' | '-' | '°' | '(' | ')'
+                    'm' | 'M' | 'a' | 'j' | 'i' | 'n' | 'd' | 'u' | 's' | 'g' | '0'
+                        ..='9' | '+' | '-' | '°' | '(' | ')'
                 )
             });
         if valid_rest {
@@ -1673,7 +1693,8 @@ pub fn default_looks() -> Vec<LookConfig> {
         LookConfig {
             id: LOOK_STAGE_CONFIDENCE,
             name: "Stage Confidence".to_string(),
-            description: "High-contrast lyrics, chords, next-slide cue, and timer for stage".to_string(),
+            description: "High-contrast lyrics, chords, next-slide cue, and timer for stage"
+                .to_string(),
             enabled_layers: vec![LayerKind::Slide, LayerKind::MessagesAndTimers],
             lower_third_mode: false,
             transparent_background: false,
@@ -1684,7 +1705,9 @@ pub fn default_looks() -> Vec<LookConfig> {
         LookConfig {
             id: LOOK_BROADCAST_LOWER_THIRD,
             name: "Broadcast Lower Third (Alpha)".to_string(),
-            description: "Transparent alpha lower-third lyric bar for livestream / NDI / SDI key+fill".to_string(),
+            description:
+                "Transparent alpha lower-third lyric bar for livestream / NDI / SDI key+fill"
+                    .to_string(),
             enabled_layers: vec![LayerKind::Slide, LayerKind::PropsAndOverlays],
             lower_third_mode: true,
             transparent_background: true,
@@ -1766,11 +1789,14 @@ pub fn apply_template_to_slide_mut(slide: &mut Slide, template: &TemplateConfig)
             .get(1)
             .map(|&i| slide.elements[i].id)
             .unwrap_or_else(ElementId::new);
-        let sub_style = template.subtitle_style.clone().unwrap_or_else(|| TextStyle {
-            font_size: (template.text_style.font_size * 0.55).max(28.0),
-            bold: false,
-            ..template.text_style.clone()
-        });
+        let sub_style = template
+            .subtitle_style
+            .clone()
+            .unwrap_or_else(|| TextStyle {
+                font_size: (template.text_style.font_size * 0.55).max(28.0),
+                bold: false,
+                ..template.text_style.clone()
+            });
         new_elements.push(SlideElement {
             id: sub_id,
             name: "Reference / Subtitle".to_string(),
@@ -1969,13 +1995,16 @@ impl SceneState {
                         match action {
                             SlideAction::SetOutputLook { output_id, look_id } => {
                                 if self.looks.contains_key(&look_id)
-                                    && let Some(out) = self.outputs.iter_mut().find(|o| o.id == output_id)
+                                    && let Some(out) =
+                                        self.outputs.iter_mut().find(|o| o.id == output_id)
                                 {
                                     out.look_id = look_id;
                                 }
                             }
                             SlideAction::ShowOverlay(oid) => {
-                                if self.overlays.contains_key(&oid) && !self.active_overlay_ids.contains(&oid) {
+                                if self.overlays.contains_key(&oid)
+                                    && !self.active_overlay_ids.contains(&oid)
+                                {
                                     self.active_overlay_ids.push(oid);
                                     self.overlay_layer_active = true;
                                 }
@@ -2068,13 +2097,16 @@ impl SceneState {
                         match action {
                             SlideAction::SetOutputLook { output_id, look_id } => {
                                 if self.looks.contains_key(&look_id)
-                                    && let Some(out) = self.outputs.iter_mut().find(|o| o.id == output_id)
+                                    && let Some(out) =
+                                        self.outputs.iter_mut().find(|o| o.id == output_id)
                                 {
                                     out.look_id = look_id;
                                 }
                             }
                             SlideAction::ShowOverlay(oid) => {
-                                if self.overlays.contains_key(&oid) && !self.active_overlay_ids.contains(&oid) {
+                                if self.overlays.contains_key(&oid)
+                                    && !self.active_overlay_ids.contains(&oid)
+                                {
                                     self.active_overlay_ids.push(oid);
                                     self.overlay_layer_active = true;
                                 }
@@ -2147,9 +2179,8 @@ impl SceneState {
                         }
                     }
                     LayerKind::PropsAndOverlays => {
-                        self.active_overlay_ids.retain(|id| {
-                            self.overlays.get(id).is_some_and(|ov| ov.locked)
-                        });
+                        self.active_overlay_ids
+                            .retain(|id| self.overlays.get(id).is_some_and(|ov| ov.locked));
                         self.overlay_layer_active = !self.active_overlay_ids.is_empty();
                     }
                     LayerKind::Masks => self.mask_style = MaskStyle::None,
@@ -2169,9 +2200,8 @@ impl SceneState {
                 self.slide_layer_active = false;
                 self.active_foreground_media = None;
                 self.announcements_layer_active = false;
-                self.active_overlay_ids.retain(|id| {
-                    self.overlays.get(id).is_some_and(|ov| ov.locked)
-                });
+                self.active_overlay_ids
+                    .retain(|id| self.overlays.get(id).is_some_and(|ov| ov.locked));
                 self.overlay_layer_active = !self.active_overlay_ids.is_empty();
                 self.announcement_text = None;
                 self.mask_style = MaskStyle::None;
@@ -2210,9 +2240,10 @@ impl SceneState {
                 }
                 self.active_arrangements = arrangements;
                 self.active_arrangement_id = active_id;
-                let selected = self.active_arrangement_id.as_deref().and_then(|id| {
-                    self.active_arrangements.iter().find(|a| a.id == id)
-                });
+                let selected = self
+                    .active_arrangement_id
+                    .as_deref()
+                    .and_then(|id| self.active_arrangements.iter().find(|a| a.id == id));
                 self.deck = expand_deck_by_arrangement(&self.master_deck, selected);
                 self.active_slide = self.deck.first().cloned();
                 self.next_slide_preview = self.deck.get(1).cloned();
@@ -2229,9 +2260,10 @@ impl SceneState {
                     return false;
                 }
                 self.active_arrangement_id = active_id;
-                let selected = self.active_arrangement_id.as_deref().and_then(|id| {
-                    self.active_arrangements.iter().find(|a| a.id == id)
-                });
+                let selected = self
+                    .active_arrangement_id
+                    .as_deref()
+                    .and_then(|id| self.active_arrangements.iter().find(|a| a.id == id));
                 self.deck = expand_deck_by_arrangement(&self.master_deck, selected);
                 self.active_slide = self.deck.first().cloned();
                 self.next_slide_preview = self.deck.get(1).cloned();
@@ -2246,9 +2278,10 @@ impl SceneState {
                 self.master_deck = slides;
                 self.active_arrangements = arrangements;
                 self.active_arrangement_id = active_arrangement_id;
-                let selected = self.active_arrangement_id.as_deref().and_then(|id| {
-                    self.active_arrangements.iter().find(|a| a.id == id)
-                });
+                let selected = self
+                    .active_arrangement_id
+                    .as_deref()
+                    .and_then(|id| self.active_arrangements.iter().find(|a| a.id == id));
                 self.deck = expand_deck_by_arrangement(&self.master_deck, selected);
                 self.active_slide = self.deck.first().cloned();
                 self.next_slide_preview = self.deck.get(1).cloned();
@@ -2704,7 +2737,11 @@ impl SceneState {
     }
 }
 
-fn default_lyric_elements(base_id: u128, primary_text: &str, sub_text: Option<&str>) -> Vec<SlideElement> {
+fn default_lyric_elements(
+    base_id: u128,
+    primary_text: &str,
+    sub_text: Option<&str>,
+) -> Vec<SlideElement> {
     let mut els = vec![SlideElement {
         id: ElementId::from_u128(base_id),
         name: "Primary Lyrics".to_string(),
@@ -2941,12 +2978,21 @@ mod tests {
         let _ = SlideId::default();
         let _ = ElementId::default();
         assert_eq!(ColorRgba::WHITE.to_array(), [1.0, 1.0, 1.0, 1.0]);
-        assert_eq!(ColorRgba::rgba(1.0, 0.5, 0.0, 0.5).to_u8_rgba(), [255, 128, 0, 128]);
+        assert_eq!(
+            ColorRgba::rgba(1.0, 0.5, 0.0, 0.5).to_u8_rgba(),
+            [255, 128, 0, 128]
+        );
         assert_eq!(TransitionSpec::Cut.duration_ms(), 0);
         assert_eq!(TransitionSpec::Cut.kind_code(), 0);
-        assert_eq!(TransitionSpec::Dissolve { duration_ms: 250 }.duration_ms(), 250);
+        assert_eq!(
+            TransitionSpec::Dissolve { duration_ms: 250 }.duration_ms(),
+            250
+        );
         assert_eq!(TransitionSpec::PushLeft { duration_ms: 300 }.kind_code(), 1);
-        assert_eq!(TransitionSpec::WipeRight { duration_ms: 350 }.kind_code(), 2);
+        assert_eq!(
+            TransitionSpec::WipeRight { duration_ms: 350 }.kind_code(),
+            2
+        );
 
         let mut state = SceneState::demo_m0(2);
         let mut custom = state.deck[0].clone();
@@ -2954,11 +3000,17 @@ mod tests {
         custom.elements.clear();
         assert!(custom.plain_text().contains("WELCOME"));
 
-        assert!(state.apply(SceneDiff::TriggerCustomSlide { slide: custom.clone() }));
-        assert!(state.apply(SceneDiff::UpsertSlide { slide: custom.clone() }));
+        assert!(state.apply(SceneDiff::TriggerCustomSlide {
+            slide: custom.clone()
+        }));
+        assert!(state.apply(SceneDiff::UpsertSlide {
+            slide: custom.clone()
+        }));
         // Update existing slide via UpsertSlide
         custom.label = "Updated Label".into();
-        assert!(state.apply(SceneDiff::UpsertSlide { slide: custom.clone() }));
+        assert!(state.apply(SceneDiff::UpsertSlide {
+            slide: custom.clone()
+        }));
 
         // Add new element via UpdateElement
         let new_el = SlideElement {
@@ -2995,8 +3047,24 @@ mod tests {
     fn manages_dynamic_outputs_and_split_monitor_regions() {
         let regions = split_monitor_regions(3840, 2160, 2, 2);
         assert_eq!(regions.len(), 4);
-        assert_eq!(regions[0], MonitorRegion { x: 0, y: 0, width: 1920, height: 1080 });
-        assert_eq!(regions[3], MonitorRegion { x: 1920, y: 1080, width: 1920, height: 1080 });
+        assert_eq!(
+            regions[0],
+            MonitorRegion {
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080
+            }
+        );
+        assert_eq!(
+            regions[3],
+            MonitorRegion {
+                x: 1920,
+                y: 1080,
+                width: 1920,
+                height: 1080
+            }
+        );
 
         // Remainder pixels on odd resolution absorbed cleanly on last column/row.
         let odd = split_monitor_regions(1921, 1081, 3, 2);
@@ -3027,19 +3095,35 @@ mod tests {
             calibration: OutputCalibration::default(),
         };
         assert!(state.apply(SceneDiff::UpsertOutput(region_out)));
-        let stored = state.outputs.iter().find(|o| o.id == stage_id).expect("stored");
+        let stored = state
+            .outputs
+            .iter()
+            .find(|o| o.id == stage_id)
+            .expect("stored");
         assert_eq!(stored.look_id, LOOK_STAGE_CONFIDENCE);
         assert!(stored.stage_layout.is_some());
         assert_eq!(
             stored.effective_placement(),
-            OutputPlacement::Region(MonitorRegion { x: 960, y: 0, width: 960, height: 1080 })
+            OutputPlacement::Region(MonitorRegion {
+                x: 960,
+                y: 0,
+                width: 960,
+                height: 1080
+            })
         );
 
         // Update existing output to Fullscreen + update StageLayout
         let mut updated = stored.clone();
         updated.placement = OutputPlacement::Fullscreen;
         assert!(state.apply(SceneDiff::UpsertOutput(updated)));
-        assert!(state.outputs.iter().find(|o| o.id == stage_id).expect("updated").fullscreen);
+        assert!(
+            state
+                .outputs
+                .iter()
+                .find(|o| o.id == stage_id)
+                .expect("updated")
+                .fullscreen
+        );
 
         let mut legacy_fs = state.outputs[0].clone();
         legacy_fs.placement = OutputPlacement::Windowed;
@@ -3096,7 +3180,12 @@ mod tests {
             width: 1280,
             height: 720,
             fullscreen: false,
-            placement: OutputPlacement::Region(MonitorRegion { x: 0, y: 0, width: 0, height: 500 }),
+            placement: OutputPlacement::Region(MonitorRegion {
+                x: 0,
+                y: 0,
+                width: 0,
+                height: 500,
+            }),
             look_id: LOOK_AUDIENCE_FULL,
             stage_layout: None,
             calibration: OutputCalibration::default(),
@@ -3124,7 +3213,10 @@ mod tests {
             accent_color: ColorRgba::rgb(1.0, 0.88, 0.62),
         };
         assert!(state.apply(SceneDiff::SetBackground(glow_bg.clone())));
-        assert_eq!(state.active_slide.as_ref().map(|s| s.id), Some(original_slide_id));
+        assert_eq!(
+            state.active_slide.as_ref().map(|s| s.id),
+            Some(original_slide_id)
+        );
         assert_eq!(state.active_background.as_ref(), Some(&glow_bg));
         assert!(state.media_layer_active);
 
@@ -3273,7 +3365,14 @@ mod tests {
         unknown_tpl_look.id = LookId::new();
         unknown_tpl_look.template_id = Some(TemplateId::new());
         assert!(state.apply(SceneDiff::UpsertLook(unknown_tpl_look.clone())));
-        assert!(state.looks.get(&unknown_tpl_look.id).expect("sanitized").template_id.is_none());
+        assert!(
+            state
+                .looks
+                .get(&unknown_tpl_look.id)
+                .expect("sanitized")
+                .template_id
+                .is_none()
+        );
 
         // 3. Apply Look Routing atomically across outputs
         assert!(state.apply(SceneDiff::ApplyLookRouting {
@@ -3329,7 +3428,14 @@ mod tests {
         // 5. Removing Template clears look.template_id; Removing Look resets output fallback; Built-ins protected
         assert!(state.apply(SceneDiff::RemoveTemplate(custom_tpl_id)));
         assert!(!state.apply(SceneDiff::RemoveTemplate(custom_tpl_id)));
-        assert!(state.looks.get(&custom_look_id).expect("look").template_id.is_none());
+        assert!(
+            state
+                .looks
+                .get(&custom_look_id)
+                .expect("look")
+                .template_id
+                .is_none()
+        );
 
         assert!(!state.apply(SceneDiff::RemoveLook(LOOK_AUDIENCE_FULL)));
         assert!(!state.apply(SceneDiff::RemoveLook(LOOK_STAGE_CONFIDENCE)));
@@ -3356,24 +3462,28 @@ mod tests {
         assert!(state.apply(SceneDiff::SetFreeze(true)));
         assert!(state.freeze_output);
 
-        assert!(state.apply(SceneDiff::SetMediaTransport(MediaTransportState {
-            playing: false,
-            looping: true,
-            muted: false,
-            volume: 0.75,
-            fit_mode: MediaFitMode::Contain,
-            position_secs: 12.5,
-            duration_secs: 60.0,
-        })));
+        assert!(
+            state.apply(SceneDiff::SetMediaTransport(MediaTransportState {
+                playing: false,
+                looping: true,
+                muted: false,
+                volume: 0.75,
+                fit_mode: MediaFitMode::Contain,
+                position_secs: 12.5,
+                duration_secs: 60.0,
+            }))
+        );
         assert_eq!(state.media_transport.fit_mode, MediaFitMode::Contain);
 
-        assert!(state.apply(SceneDiff::SetAudioPlayback(Some(AudioPlaybackState {
-            title: "Walk-In Piano".into(),
-            media_path: "C:\\Audio\\walkin.mp3".into(),
-            playing: true,
-            looping: true,
-            volume: 0.8,
-        }))));
+        assert!(
+            state.apply(SceneDiff::SetAudioPlayback(Some(AudioPlaybackState {
+                title: "Walk-In Piano".into(),
+                media_path: "C:\\Audio\\walkin.mp3".into(),
+                playing: true,
+                looping: true,
+                volume: 0.8,
+            })))
+        );
         assert!(state.active_audio.is_some());
 
         let mut s_v1 = demo_deck()[0].clone();
@@ -3389,7 +3499,12 @@ mod tests {
         let arr = Arrangement {
             id: "arr-full".into(),
             name: "Full Band".into(),
-            group_order: vec!["Verse 1".into(), "Chorus".into(), "Verse 2".into(), "Chorus".into()],
+            group_order: vec![
+                "Verse 1".into(),
+                "Chorus".into(),
+                "Verse 2".into(),
+                "Chorus".into(),
+            ],
         };
         assert!(state.apply(SceneDiff::LoadPresentation {
             slides: vec![s_v1, s_ch, s_v2],
@@ -3435,7 +3550,10 @@ mod tests {
 
         // ClearAll clears unlocked overlays but keeps locked overlay active!
         assert!(state.apply(SceneDiff::ClearAll));
-        assert_eq!(state.active_overlay_ids, vec!["overlay-church-bug".to_string()]);
+        assert_eq!(
+            state.active_overlay_ids,
+            vec!["overlay-church-bug".to_string()]
+        );
         assert!(state.overlay_layer_active);
 
         // Upsert & Remove custom overlay (+ validation)
@@ -3451,15 +3569,13 @@ mod tests {
         assert!(state.apply(SceneDiff::SyncOverlays(vec![custom_ov])));
 
         // Tokenized Message rendering & Layer 6 activation
-        let tokens = BTreeMap::from([
-            ("code".into(), "42".into()),
-            ("room".into(), "B".into()),
-        ]);
-        let rendered = render_message_template(
-            &default_message_templates()[0].template_text,
-            &tokens,
+        let tokens = BTreeMap::from([("code".into(), "42".into()), ("room".into(), "B".into())]);
+        let rendered =
+            render_message_template(&default_message_templates()[0].template_text, &tokens);
+        assert_eq!(
+            rendered,
+            "Parent with Tag #42, please check Nursery Room B."
         );
-        assert_eq!(rendered, "Parent with Tag #42, please check Nursery Room B.");
         assert!(state.apply(SceneDiff::SetActiveMessage(Some(ActiveMessage {
             template_id: Some("msg-nursery".into()),
             rendered_text: rendered.clone(),
@@ -3521,8 +3637,15 @@ mod tests {
             slide_id: target_slide,
             transition_override: None,
         }));
-        assert!(state.active_overlay_ids.contains(&"overlay-speaker-lt".to_string()));
-        assert_eq!(state.variables.get("Status").map(String::as_str), Some("Live"));
+        assert!(
+            state
+                .active_overlay_ids
+                .contains(&"overlay-speaker-lt".to_string())
+        );
+        assert_eq!(
+            state.variables.get("Status").map(String::as_str),
+            Some("Live")
+        );
         assert_eq!(state.mask_style, MaskStyle::RoundedFrame);
         assert_eq!(
             state.look_for_output(OUTPUT_AUDIENCE_MAIN).map(|l| l.id),
@@ -3549,7 +3672,10 @@ mod tests {
             ccli_number: Some("22025".into()),
         }));
         assert_eq!(state.active_presentation_id.as_deref(), Some("song-9001"));
-        assert_eq!(state.active_presentation_title.as_deref(), Some("Amazing Grace"));
+        assert_eq!(
+            state.active_presentation_title.as_deref(),
+            Some("Amazing Grace")
+        );
 
         // Automated CCLI attribution placement: FirstSlide, LastSlide, FirstAndLastSlide, AllSlides, Disabled
         let mut ccli_cfg = CcliDisplayConfig {

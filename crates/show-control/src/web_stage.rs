@@ -4,12 +4,12 @@
 //! and urgent Stage Messages from any tablet/phone on sanctuary Wi-Fi without touching
 //! the native `wgpu` Audience or Stage outputs.
 
-use axum::extract::{Path as AxumPath, State};
+use axum::Router;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::{Path as AxumPath, State};
 use axum::http::{StatusCode, header};
 use axum::response::{Html, IntoResponse, Json};
 use axum::routing::{get, post};
-use axum::Router;
 use core_scene::{ChordChartDocument, SceneState, SheetMusicDocument};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
@@ -600,13 +600,21 @@ mod tests {
 
         state.apply(SceneDiff::SetStageMessage(Some("Nursery #42".into())));
         hub.publish(payload_from_scene(&state));
-        let streamed = sub.recv().await.expect("broadcast subscriber receives live update");
+        let streamed = sub
+            .recv()
+            .await
+            .expect("broadcast subscriber receives live update");
         assert_eq!(streamed.stage_message.as_deref(), Some("Nursery #42"));
 
         // Happy path 1: GET / returns Stage Display HTML
         let res1 = app
             .clone()
-            .oneshot(Request::builder().uri("/").body(axum::body::Body::empty()).expect("req"))
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .body(axum::body::Body::empty())
+                    .expect("req"),
+            )
             .await
             .expect("response 1");
         assert_eq!(res1.status(), StatusCode::OK);
@@ -658,7 +666,12 @@ mod tests {
         let remote_app = build_stage_router_with_hub(remote_hub);
         let remote_page = remote_app
             .clone()
-            .oneshot(Request::builder().uri("/remote").body(axum::body::Body::empty()).expect("req"))
+            .oneshot(
+                Request::builder()
+                    .uri("/remote")
+                    .body(axum::body::Body::empty())
+                    .expect("req"),
+            )
             .await
             .expect("remote html");
         assert_eq!(remote_page.status(), StatusCode::OK);
@@ -670,7 +683,9 @@ mod tests {
                     .method("POST")
                     .uri("/api/remote/command")
                     .header("content-type", "application/json")
-                    .body(axum::body::Body::from(r#"{"pin":"0000","action":"next_slide"}"#))
+                    .body(axum::body::Body::from(
+                        r#"{"pin":"0000","action":"next_slide"}"#,
+                    ))
                     .expect("req"),
             )
             .await
@@ -683,7 +698,9 @@ mod tests {
                     .method("POST")
                     .uri("/api/remote/command")
                     .header("content-type", "application/json")
-                    .body(axum::body::Body::from(r#"{"pin":"4321","action":"next_slide"}"#))
+                    .body(axum::body::Body::from(
+                        r#"{"pin":"4321","action":"next_slide"}"#,
+                    ))
                     .expect("req"),
             )
             .await
@@ -713,30 +730,52 @@ mod tests {
         let m_app = build_stage_router(payload_from_scene(&sheet_state));
         let m_html = m_app
             .clone()
-            .oneshot(Request::builder().uri("/musician").body(axum::body::Body::empty()).expect("req"))
+            .oneshot(
+                Request::builder()
+                    .uri("/musician")
+                    .body(axum::body::Body::empty())
+                    .expect("req"),
+            )
             .await
             .expect("musician html");
         assert_eq!(m_html.status(), StatusCode::OK);
 
         let fav = m_app
             .clone()
-            .oneshot(Request::builder().uri("/favicon.svg").body(axum::body::Body::empty()).expect("req"))
+            .oneshot(
+                Request::builder()
+                    .uri("/favicon.svg")
+                    .body(axum::body::Body::empty())
+                    .expect("req"),
+            )
             .await
             .expect("favicon");
         assert_eq!(fav.status(), StatusCode::OK);
         assert_eq!(
-            fav.headers().get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()),
+            fav.headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
             Some("image/svg+xml")
         );
 
         let p1 = m_app
             .clone()
-            .oneshot(Request::builder().uri("/api/stage/sheet-page/1").body(axum::body::Body::empty()).expect("req"))
+            .oneshot(
+                Request::builder()
+                    .uri("/api/stage/sheet-page/1")
+                    .body(axum::body::Body::empty())
+                    .expect("req"),
+            )
             .await
             .expect("page 1");
         assert_eq!(p1.status(), StatusCode::OK);
         let p9 = m_app
-            .oneshot(Request::builder().uri("/api/stage/sheet-page/9").body(axum::body::Body::empty()).expect("req"))
+            .oneshot(
+                Request::builder()
+                    .uri("/api/stage/sheet-page/9")
+                    .body(axum::body::Body::empty())
+                    .expect("req"),
+            )
             .await
             .expect("page 9");
         assert_eq!(p9.status(), StatusCode::NOT_FOUND);

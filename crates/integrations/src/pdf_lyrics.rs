@@ -448,7 +448,9 @@ fn detect_section_header(line: &str) -> Option<String> {
         if lower == p
             || lower.starts_with(&format!("{p} "))
             || (lower.starts_with(p)
-                && lower[p.len()..].chars().all(|c| c.is_ascii_digit() || c == 'a' || c == 'b'))
+                && lower[p.len()..]
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || c == 'a' || c == 'b'))
         {
             return Some(clean.to_string());
         }
@@ -664,7 +666,9 @@ pub fn parse_lyric_sheet_text(
                 tempo_bpm = Some(v);
             }
             if lower.contains("time")
-                && let Some(ts) = line.split_whitespace().find(|t| t.contains('/') && t.len() <= 5)
+                && let Some(ts) = line
+                    .split_whitespace()
+                    .find(|t| t.contains('/') && t.len() <= 5)
             {
                 time_signature = Some(ts.to_string());
             }
@@ -1052,7 +1056,9 @@ pub fn import_sheet_music_pdf(
 
     let embedded_images = extract_pdf_embedded_jpegs(pdf_bytes, &clean_slug, output_dir);
     let extracted_text = extract_pdf_text(pdf_bytes).ok();
-    let page_count = count_pdf_pages_approx(pdf_bytes).max(embedded_images.len()).max(1);
+    let page_count = count_pdf_pages_approx(pdf_bytes)
+        .max(embedded_images.len())
+        .max(1);
 
     let mut group_to_page: BTreeMap<String, u32> = BTreeMap::new();
     let mut page_hints: Vec<Vec<String>> = vec![Vec::new(); page_count];
@@ -1209,7 +1215,10 @@ ET"#;
             vec!["Verse 1", "Chorus", "Verse 2", "Chorus"]
         );
         // Chord line stripped from lyric body and captured on chords_line
-        assert_eq!(parsed.slides[0].chords_line.as_deref(), Some("A      D       A"));
+        assert_eq!(
+            parsed.slides[0].chords_line.as_deref(),
+            Some("A      D       A")
+        );
         assert!(!parsed.slides[0].plain_text().contains("SongSelect"));
         assert!(!parsed.slides[0].plain_text().contains("CCLI License"));
     }
@@ -1221,7 +1230,11 @@ ET"#;
         let parsed = import_lyric_sheet_pdf(&pdf, None).expect("parse uncompressed");
         assert_eq!(parsed.title, "Holy");
         assert_eq!(parsed.slides.len(), 1);
-        assert!(parsed.slides[0].plain_text().contains("Lord God (Almighty)"));
+        assert!(
+            parsed.slides[0]
+                .plain_text()
+                .contains("Lord God (Almighty)")
+        );
 
         // Invalid PDF and empty text error paths
         assert!(import_lyric_sheet_pdf(b"not a pdf", None).is_err());
@@ -1280,16 +1293,21 @@ Your name is the highest";
         // Multi-page Sheet Music PDF with embedded JPEG page + section hints
         let mut sheet_pdf = Vec::new();
         sheet_pdf.extend_from_slice(b"%PDF-1.4\n1 0 obj\n<< /Type /Pages /Count 2 >>\nendobj\n");
-        sheet_pdf.extend_from_slice(b"2 0 obj\n<< /Type /Page >>\nendobj\n3 0 obj\n<< /Type /Page >>\nendobj\n");
-        let fake_jpg = [0xFFu8, 0xD8, 0xFF, 0xE0, 0, 16, b'J', b'F', b'I', b'F', 0, 1, 1, 0, 0, 1, 0xFF, 0xD9];
+        sheet_pdf.extend_from_slice(
+            b"2 0 obj\n<< /Type /Page >>\nendobj\n3 0 obj\n<< /Type /Page >>\nendobj\n",
+        );
+        let fake_jpg = [
+            0xFFu8, 0xD8, 0xFF, 0xE0, 0, 16, b'J', b'F', b'I', b'F', 0, 1, 1, 0, 0, 1, 0xFF, 0xD9,
+        ];
         sheet_pdf.extend_from_slice(b"4 0 obj\n<< /Filter /DCTDecode >>\nstream\n");
         sheet_pdf.extend_from_slice(&fake_jpg);
         sheet_pdf.extend_from_slice(b"\nendstream\nendobj\n");
         sheet_pdf.extend_from_slice(b"5 0 obj\n<< /Length 64 >>\nstream\nBT (Verse 1) Tj T* (Chorus) Tj T* (Bridge) Tj ET\nendstream\nendobj\n%%EOF\n");
 
         let tmp = std::env::temp_dir().join(format!("op-sheet-test-{}", uuid::Uuid::new_v4()));
-        let sheet = import_sheet_music_pdf(&sheet_pdf, "Holy Forever Piano", Some("holy.pdf"), &tmp)
-            .expect("import sheet pdf");
+        let sheet =
+            import_sheet_music_pdf(&sheet_pdf, "Holy Forever Piano", Some("holy.pdf"), &tmp)
+                .expect("import sheet pdf");
         assert_eq!(sheet.pages.len(), 2);
         assert!(sheet.pages[0].image_path.is_some());
         assert_eq!(sheet.group_to_page.get("verse 1"), Some(&1));

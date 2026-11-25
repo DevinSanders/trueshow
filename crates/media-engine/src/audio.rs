@@ -77,7 +77,10 @@ pub struct DecodedAudio {
 }
 
 /// Decodes WAV, FLAC, MP3, AAC, or OGG/Vorbis audio bytes cleanly using MPL-2.0 `symphonia`.
-pub fn decode_audio_bytes(bytes: Vec<u8>, extension_hint: Option<&str>) -> Result<DecodedAudio, AudioEngineError> {
+pub fn decode_audio_bytes(
+    bytes: Vec<u8>,
+    extension_hint: Option<&str>,
+) -> Result<DecodedAudio, AudioEngineError> {
     let cursor = Cursor::new(bytes);
     let mss = MediaSourceStream::new(Box::new(cursor), Default::default());
     let mut hint = Hint::new();
@@ -86,7 +89,12 @@ pub fn decode_audio_bytes(bytes: Vec<u8>, extension_hint: Option<&str>) -> Resul
     }
 
     let probed = symphonia::default::get_probe()
-        .format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
+        .format(
+            &hint,
+            mss,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
         .map_err(|e| AudioEngineError::Decode(e.to_string()))?;
 
     let mut format = probed.format;
@@ -97,11 +105,7 @@ pub fn decode_audio_bytes(bytes: Vec<u8>, extension_hint: Option<&str>) -> Resul
         .ok_or(AudioEngineError::NoAudioTrack)?;
     let track_id = track.id;
     let sample_rate = track.codec_params.sample_rate.unwrap_or(48_000);
-    let channels = track
-        .codec_params
-        .channels
-        .map(|c| c.count())
-        .unwrap_or(2);
+    let channels = track.codec_params.channels.map(|c| c.count()).unwrap_or(2);
 
     let mut decoder = symphonia::default::get_codecs()
         .make(&track.codec_params, &DecoderOptions::default())
@@ -111,7 +115,9 @@ pub fn decode_audio_bytes(bytes: Vec<u8>, extension_hint: Option<&str>) -> Resul
     loop {
         let packet = match format.next_packet() {
             Ok(p) => p,
-            Err(SymphoniaError::IoError(err)) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
+            Err(SymphoniaError::IoError(err))
+                if err.kind() == std::io::ErrorKind::UnexpectedEof =>
+            {
                 break;
             }
             Err(SymphoniaError::ResetRequired) => continue,
@@ -301,7 +307,11 @@ mod tests {
         assert!(PlanarAudioRouter::new(64).is_err());
 
         let mut router = PlanarAudioRouter::new(4).expect("4-channel router");
-        assert!(router.add_bus(AudioBusId::MainSanctuary, (0, 9), 256).is_err());
+        assert!(
+            router
+                .add_bus(AudioBusId::MainSanctuary, (0, 9), 256)
+                .is_err()
+        );
 
         let mut main_feed = router
             .add_bus(AudioBusId::MainSanctuary, (0, 1), 512)

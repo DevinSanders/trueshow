@@ -171,10 +171,14 @@ mod tests {
         let office_pc = LocalCrdtLibrary::new();
 
         // Both machines edit offline independently
-        booth_mac.put_song_title("s1", "Amazing Grace").expect("put 1");
+        booth_mac
+            .put_song_title("s1", "Amazing Grace")
+            .expect("put 1");
         booth_mac.push_playlist_item("s1").expect("push 1");
 
-        office_pc.put_song_title("s2", "Great Is Thy Faithfulness").expect("put 2");
+        office_pc
+            .put_song_title("s2", "Great Is Thy Faithfulness")
+            .expect("put 2");
         office_pc.push_playlist_item("s2").expect("push 2");
 
         let snap_mac = booth_mac.export_snapshot().expect("export mac");
@@ -204,7 +208,10 @@ mod tests {
             prefix: "campus-north/".into(),
         };
         assert!(cfg.validate().is_ok());
-        assert_eq!(cfg.object_key_for_blake3("abc123"), "campus-north/media/abc123");
+        assert_eq!(
+            cfg.object_key_for_blake3("abc123"),
+            "campus-north/media/abc123"
+        );
 
         let bad_url = S3SyncConfig {
             endpoint_url: "ftp://invalid".into(),

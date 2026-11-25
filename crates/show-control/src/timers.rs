@@ -21,7 +21,10 @@ impl Default for TimerId {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TimerKind {
-    Countdown { initial_secs: i64, allow_overrun: bool },
+    Countdown {
+        initial_secs: i64,
+        allow_overrun: bool,
+    },
     CountUp,
     Elapsed,
 }

@@ -181,11 +181,13 @@ impl PreviewReadbackRing {
         let slot = &self.slots[slot_idx];
         slot.status.store(MAP_PENDING, Ordering::Release);
         let status = Arc::clone(&slot.status);
-        slot.buffer.slice(..).map_async(wgpu::MapMode::Read, move |res| {
-            status.store(
-                if res.is_ok() { MAP_OK } else { MAP_ERR },
-                Ordering::Release,
-            );
-        });
+        slot.buffer
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |res| {
+                status.store(
+                    if res.is_ok() { MAP_OK } else { MAP_ERR },
+                    Ordering::Release,
+                );
+            });
     }
 }

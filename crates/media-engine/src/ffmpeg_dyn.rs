@@ -46,7 +46,12 @@ pub fn candidate_avcodec_names() -> Vec<&'static str> {
     }
     #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
     {
-        vec!["libavcodec.so.62", "libavcodec.so.61", "libavcodec.so.60", "libavcodec.so"]
+        vec![
+            "libavcodec.so.62",
+            "libavcodec.so.61",
+            "libavcodec.so.60",
+            "libavcodec.so",
+        ]
     }
 }
 
@@ -126,7 +131,8 @@ mod tests {
     #[test]
     fn dynamic_probe_handles_missing_libraries_gracefully() {
         assert!(!candidate_avcodec_names().is_empty());
-        let status = probe_dynamic_lgpl_ffmpeg(&[std::path::PathBuf::from("__nonexistent_ffmpeg_dir__")]);
+        let status =
+            probe_dynamic_lgpl_ffmpeg(&[std::path::PathBuf::from("__nonexistent_ffmpeg_dir__")]);
         match status {
             FfmpegProbeStatus::Loaded(info) => assert!(info.avcodec_version > 0),
             FfmpegProbeStatus::NotInstalled { searched_names } => {

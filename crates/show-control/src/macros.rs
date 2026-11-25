@@ -20,14 +20,22 @@ pub enum MacroError {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum MacroAction {
     ApplyScene(Box<SceneDiff>),
-    SwitchLook { output_id: OutputId, look_id: LookId },
-    TriggerSlide { slide_id: SlideId },
+    SwitchLook {
+        output_id: OutputId,
+        look_id: LookId,
+    },
+    TriggerSlide {
+        slide_id: SlideId,
+    },
     ClearLayer(LayerKind),
     StartTimer(TimerId),
     PauseTimer(TimerId),
     ResetTimer(TimerId),
     SendMidiRaw(Vec<u8>),
-    SendOsc { address: String, string_arg: Option<String> },
+    SendOsc {
+        address: String,
+        string_arg: Option<String>,
+    },
     InvokeMacro(Uuid),
     DelayMs(u32),
 }
@@ -70,9 +78,11 @@ impl MacroRegistry {
     }
 
     pub fn find_by_hotkey(&self, hotkey: &str) -> Option<&MacroDefinition> {
-        self.macros
-            .values()
-            .find(|m| m.hotkey.as_deref().is_some_and(|h| h.eq_ignore_ascii_case(hotkey)))
+        self.macros.values().find(|m| {
+            m.hotkey
+                .as_deref()
+                .is_some_and(|h| h.eq_ignore_ascii_case(hotkey))
+        })
     }
 
     /// Expands nested `InvokeMacro` calls into a flat execution plan, rejecting recursive cycles.
@@ -100,10 +110,12 @@ impl MacroRegistry {
             match action {
                 MacroAction::InvokeMacro(child) => self.expand(*child, visiting, out)?,
                 MacroAction::SwitchLook { output_id, look_id } => {
-                    out.push(MacroAction::ApplyScene(Box::new(SceneDiff::SetOutputLook {
-                        output_id: *output_id,
-                        look_id: *look_id,
-                    })));
+                    out.push(MacroAction::ApplyScene(Box::new(
+                        SceneDiff::SetOutputLook {
+                            output_id: *output_id,
+                            look_id: *look_id,
+                        },
+                    )));
                 }
                 MacroAction::TriggerSlide { slide_id } => {
                     out.push(MacroAction::ApplyScene(Box::new(SceneDiff::TriggerSlide {
@@ -179,10 +191,7 @@ mod tests {
         .expect("upsert parent");
 
         assert_eq!(reg.list().len(), 2);
-        assert_eq!(
-            reg.find_by_hotkey("f5").map(|m| m.id),
-            Some(id_parent)
-        );
+        assert_eq!(reg.find_by_hotkey("f5").map(|m| m.id), Some(id_parent));
 
         let plan = reg.resolve_plan(id_parent).expect("resolve");
         assert_eq!(plan.steps.len(), 5);

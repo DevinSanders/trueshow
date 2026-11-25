@@ -305,7 +305,8 @@ fn csv_escape(field: &str) -> String {
 
 /// Exports local Audience projection usage records to an RFC-4180 CSV ready for CCLI Reporting.
 pub fn export_ccli_usage_csv(entries: &[CcliUsageEntry]) -> String {
-    let mut out = String::from("ProjectedAt,ServiceProfile,SongTitle,CCLINumber,Author,DisplaySeconds\n");
+    let mut out =
+        String::from("ProjectedAt,ServiceProfile,SongTitle,CCLINumber,Author,DisplaySeconds\n");
     for e in entries {
         out.push_str(&format!(
             "{},{},{},{},{},{}\n",
@@ -342,8 +343,18 @@ That saved a [D7]wretch like me
         assert_eq!(parsed.ccli_number.as_deref(), Some("22025"));
         assert_eq!(parsed.key.as_deref(), Some("G"));
         assert_eq!(parsed.slides.len(), 1);
-        assert!(parsed.slides[0].plain_text().contains("Amazing grace! How sweet the sound"));
-        assert!(parsed.slides[0].chords_line.as_deref().unwrap_or("").contains("[G]"));
+        assert!(
+            parsed.slides[0]
+                .plain_text()
+                .contains("Amazing grace! How sweet the sound")
+        );
+        assert!(
+            parsed.slides[0]
+                .chords_line
+                .as_deref()
+                .unwrap_or("")
+                .contains("[G]")
+        );
         assert!(parse_chordpro("   ").is_err());
 
         let usr = "[File]\nTitle=Holy Holy Holy\nAuthor=Reginald Heber\nCCLI=1156\nFields=Verse 1/tChorus\nWords=Holy, holy, holy/nLord God Almighty/tMerciful and mighty";

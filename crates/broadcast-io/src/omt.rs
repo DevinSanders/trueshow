@@ -192,9 +192,7 @@ mod tests {
             height: 2,
             timestamp_us: 99_000,
             sequence: 7,
-            rgba_premul: vec![
-                255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 0, 0, 0, 0,
-            ],
+            rgba_premul: vec![255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 0, 0, 0, 0],
         };
 
         let sent_bytes = write_omt_frame(&mut tx, &frame).await.expect("write omt");

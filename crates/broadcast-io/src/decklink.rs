@@ -9,7 +9,9 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum DeckLinkError {
-    #[error("invalid DeckLink key/fill sub-device pairing: fill ({fill}) and key ({key}) must be distinct")]
+    #[error(
+        "invalid DeckLink key/fill sub-device pairing: fill ({fill}) and key ({key}) must be distinct"
+    )]
     InvalidSubDevicePair { fill: u32, key: u32 },
     #[error("frame buffer dimensions mismatch ({width}x{height})")]
     InvalidFrameDimensions { width: u32, height: u32 },
@@ -42,7 +44,10 @@ impl DeckLinkStandard {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DeckLinkKeyMode {
     /// Paired SDI outputs (e.g., DeckLink Duo 2 SDI 1 = Fill, SDI 2 = Key) for ATEM/Ross external keyers.
-    ExternalDualSdiKeyFill { fill_subdevice: u32, key_subdevice: u32 },
+    ExternalDualSdiKeyFill {
+        fill_subdevice: u32,
+        key_subdevice: u32,
+    },
     /// Single-device internal alpha keying (`IDeckLinkKeyer`).
     InternalKeyer { subdevice: u32, level: u8 },
 }
@@ -128,7 +133,10 @@ impl DeckLinkScheduler {
     }
 
     /// Splits a composited RGBA8 frame into a genlocked Fill + Key pair with exact broadcast timing.
-    pub fn schedule_frame(&mut self, frame: &BroadcastFrame) -> Result<DeckLinkKeyFillPair, DeckLinkError> {
+    pub fn schedule_frame(
+        &mut self,
+        frame: &BroadcastFrame,
+    ) -> Result<DeckLinkKeyFillPair, DeckLinkError> {
         let expected = (frame.width as usize) * (frame.height as usize) * 4;
         if expected == 0 || frame.rgba_premul.len() != expected {
             return Err(DeckLinkError::InvalidFrameDimensions {
@@ -184,7 +192,10 @@ mod tests {
 
         assert_eq!(sched.standard().dimensions(), (1920, 1080));
         assert_eq!(DeckLinkStandard::Uhd2160p60.dimensions(), (3840, 2160));
-        assert_eq!(DeckLinkStandard::Uhd2160p60.timescale_and_duration(), (60_000, 1000));
+        assert_eq!(
+            DeckLinkStandard::Uhd2160p60.timescale_and_duration(),
+            (60_000, 1000)
+        );
         assert!(matches!(
             sched.mode(),
             DeckLinkKeyMode::ExternalDualSdiKeyFill { .. }

@@ -155,7 +155,9 @@ pub struct Pro7CueWire {
 /// Clean-room ProPresenter 7 (`.pro` binary Protobuf) decoder via `prost`.
 pub fn import_pro7_protobuf(bytes: &[u8]) -> Result<PresentationImportResult, ImporterError> {
     if bytes.is_empty() {
-        return Err(ImporterError::InvalidInput("empty .pro protobuf stream".into()));
+        return Err(ImporterError::InvalidInput(
+            "empty .pro protobuf stream".into(),
+        ));
     }
     let decoded = Pro7PresentationWire::decode(bytes)?;
     let title = if !decoded.name.trim().is_empty() {
@@ -202,7 +204,9 @@ pub fn import_pro7_protobuf(bytes: &[u8]) -> Result<PresentationImportResult, Im
 /// Clean-room OpenLyrics XML importer (`http://openlyrics.info/namespace/2009/song`).
 pub fn import_openlyrics_xml(xml: &str) -> Result<PresentationImportResult, ImporterError> {
     if !xml.contains("<song") {
-        return Err(ImporterError::InvalidInput("missing <song> root element".into()));
+        return Err(ImporterError::InvalidInput(
+            "missing <song> root element".into(),
+        ));
     }
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
@@ -282,9 +286,14 @@ pub fn import_openlyrics_xml(xml: &str) -> Result<PresentationImportResult, Impo
 }
 
 /// Smart plain-text lyric importer splitting `[Verse 1]` / `[Chorus]` and blank-line stanzas.
-pub fn import_plain_text_song(title: &str, text: &str) -> Result<PresentationImportResult, ImporterError> {
+pub fn import_plain_text_song(
+    title: &str,
+    text: &str,
+) -> Result<PresentationImportResult, ImporterError> {
     if text.trim().is_empty() {
-        return Err(ImporterError::InvalidInput("plain text input is empty".into()));
+        return Err(ImporterError::InvalidInput(
+            "plain text input is empty".into(),
+        ));
     }
     let mut group = "Verse 1".to_string();
     let mut stanza = Vec::new();
@@ -337,7 +346,10 @@ pub fn import_plain_text_song(title: &str, text: &str) -> Result<PresentationImp
 }
 
 /// Native pure-Rust PowerPoint `.pptx` OOXML importer extracting editable text runs from `ppt/slides/slide*.xml`.
-pub fn import_pptx_bytes(title: &str, pptx_bytes: &[u8]) -> Result<PresentationImportResult, ImporterError> {
+pub fn import_pptx_bytes(
+    title: &str,
+    pptx_bytes: &[u8],
+) -> Result<PresentationImportResult, ImporterError> {
     let mut archive = ZipArchive::new(Cursor::new(pptx_bytes))?;
     let mut slide_paths: Vec<String> = (0..archive.len())
         .filter_map(|i| {
@@ -368,7 +380,9 @@ pub fn import_pptx_bytes(title: &str, pptx_bytes: &[u8]) -> Result<PresentationI
         let mut texts = Vec::new();
         loop {
             match reader.read_event() {
-                Ok(Event::Start(e)) if e.name().as_ref().ends_with(b":t") || e.name().as_ref() == b"t" => {
+                Ok(Event::Start(e))
+                    if e.name().as_ref().ends_with(b":t") || e.name().as_ref() == b"t" =>
+                {
                     in_text = true;
                 }
                 Ok(Event::Text(t)) if in_text => {
@@ -381,7 +395,9 @@ pub fn import_pptx_bytes(title: &str, pptx_bytes: &[u8]) -> Result<PresentationI
                         texts.push(s);
                     }
                 }
-                Ok(Event::End(e)) if e.name().as_ref().ends_with(b":t") || e.name().as_ref() == b"t" => {
+                Ok(Event::End(e))
+                    if e.name().as_ref().ends_with(b":t") || e.name().as_ref() == b"t" =>
+                {
                     in_text = false;
                 }
                 Ok(Event::Eof) => break,
@@ -642,8 +658,9 @@ pub fn import_images_as_presentation(
             .and_then(|n| n.to_str())
             .unwrap_or("slide.png");
         let bytes = std::fs::read(img_path)?;
-        let staged = crate::pco::stage_imported_media_bytes(staged_dir, clean_title, orig_name, &bytes)
-            .map_err(|e| ImporterError::InvalidInput(e.to_string()))?;
+        let staged =
+            crate::pco::stage_imported_media_bytes(staged_dir, clean_title, orig_name, &bytes)
+                .map_err(|e| ImporterError::InvalidInput(e.to_string()))?;
 
         let mut slide = core_library::slide_from_text(
             &format!("{clean_title} — Slide {}", idx + 1),
@@ -680,7 +697,12 @@ fn is_supported_image_ext(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
         .map(|s| s.to_ascii_lowercase())
-        .is_some_and(|ext| matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "bmp" | "webp" | "gif"))
+        .is_some_and(|ext| {
+            matches!(
+                ext.as_str(),
+                "png" | "jpg" | "jpeg" | "bmp" | "webp" | "gif"
+            )
+        })
 }
 
 /// Clean-room Apple Keynote (`.key`) ZIP archive importer.
@@ -729,9 +751,8 @@ pub fn import_keynote_bytes(
         .filter_map(|i| {
             let name = archive.by_index(i).ok()?.name().to_string();
             let lower = name.to_ascii_lowercase();
-            let is_img = lower.ends_with(".png")
-                || lower.ends_with(".jpg")
-                || lower.ends_with(".jpeg");
+            let is_img =
+                lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg");
             let is_thumb = lower.contains("preview-micro") || lower.contains("thumbnail");
             if is_img && !is_thumb {
                 Some(name)
@@ -755,13 +776,9 @@ pub fn import_keynote_bytes(
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("keynote-slide.jpg");
-            let staged = crate::pco::stage_imported_media_bytes(
-                staged_dir,
-                clean_title,
-                base_name,
-                &bytes,
-            )
-            .map_err(|e| ImporterError::InvalidInput(e.to_string()))?;
+            let staged =
+                crate::pco::stage_imported_media_bytes(staged_dir, clean_title, base_name, &bytes)
+                    .map_err(|e| ImporterError::InvalidInput(e.to_string()))?;
 
             let mut slide = core_library::slide_from_text(
                 &format!("{clean_title} — Slide {}", idx + 1),
@@ -855,10 +872,17 @@ fn parse_keynote_apxl_slides(title: &str, xml: &str) -> Result<Vec<Slide>, Impor
 }
 
 /// Builds headless LibreOffice conversion arguments with isolated user profile for visual `.pptx` PDF/SVG export.
-pub fn build_libreoffice_pdf_args(input_pptx: &Path, output_dir: &Path, profile_dir: &Path) -> Vec<String> {
+pub fn build_libreoffice_pdf_args(
+    input_pptx: &Path,
+    output_dir: &Path,
+    profile_dir: &Path,
+) -> Vec<String> {
     vec![
         "--headless".to_string(),
-        format!("-env:UserInstallation=file:///{}", profile_dir.to_string_lossy().replace('\\', "/")),
+        format!(
+            "-env:UserInstallation=file:///{}",
+            profile_dir.to_string_lossy().replace('\\', "/")
+        ),
         "--convert-to".to_string(),
         "pdf".to_string(),
         "--outdir".to_string(),
@@ -949,7 +973,8 @@ mod tests {
         assert!(import_pptx_bytes("Corrupt", b"not-a-zip").is_err());
 
         // LibreOffice & Keynote bridges
-        let lo_args = build_libreoffice_pdf_args(Path::new("a.pptx"), Path::new("out"), Path::new("prof"));
+        let lo_args =
+            build_libreoffice_pdf_args(Path::new("a.pptx"), Path::new("out"), Path::new("prof"));
         assert!(lo_args.contains(&"--headless".to_string()));
         let as_src = build_keynote_applescript(Path::new("/tmp/a.key"), Path::new("/tmp/a.pdf"));
         assert!(as_src.contains("tell application \"Keynote\""));
@@ -972,7 +997,13 @@ mod tests {
         assert!(rfs.slides[0].plain_text().contains("miracle worker"));
 
         let freeshow_obj = r#"{ "name": "Direct Show", "slides": { "s1": { "group": "Verse 1", "items": [{ "lines": [{ "text": [{ "value": "Hello sanctuary" }] }] }] } } }"#;
-        assert_eq!(import_freeshow_json(freeshow_obj).expect("freeshow obj").slides.len(), 1);
+        assert_eq!(
+            import_freeshow_json(freeshow_obj)
+                .expect("freeshow obj")
+                .slides
+                .len(),
+            1
+        );
         assert!(import_freeshow_json("not-json").is_err());
         assert!(import_freeshow_json(r#"{"name":"Empty","slides":{}}"#).is_err());
 
@@ -1005,8 +1036,12 @@ mod tests {
         std::fs::create_dir_all(&img_dir).expect("mkdir");
         std::fs::write(img_dir.join("01_welcome.png"), b"\x89PNG\r\n\x1a\nfake1").expect("w1");
         std::fs::write(img_dir.join("02_sermon.jpg"), b"\xFF\xD8\xFFfake2").expect("w2");
-        let rimg = import_images_as_presentation("Sunday Slides", std::slice::from_ref(&img_dir), &stage_dir)
-            .expect("image deck");
+        let rimg = import_images_as_presentation(
+            "Sunday Slides",
+            std::slice::from_ref(&img_dir),
+            &stage_dir,
+        )
+        .expect("image deck");
         assert_eq!(rimg.slides.len(), 2);
         assert!(rimg.slides[0].media_cue.is_some());
         assert!(import_images_as_presentation("Empty", &[], &stage_dir).is_err());
@@ -1015,11 +1050,13 @@ mod tests {
         let mut key_xml_buf = Cursor::new(Vec::new());
         {
             let mut zw = zip::ZipWriter::new(&mut key_xml_buf);
-            zw.start_file("index.apxl", SimpleFileOptions::default()).expect("start");
+            zw.start_file("index.apxl", SimpleFileOptions::default())
+                .expect("start");
             zw.write_all(b"<key:presentation xmlns:key=\"k\" xmlns:sf=\"s\"><key:slide><sf:p>Keynote Slide One</sf:p></key:slide></key:presentation>").expect("write");
             zw.finish().expect("finish");
         }
-        let rkey1 = import_keynote_bytes("Sermon Key", key_xml_buf.get_ref(), &stage_dir).expect("keynote xml");
+        let rkey1 = import_keynote_bytes("Sermon Key", key_xml_buf.get_ref(), &stage_dir)
+            .expect("keynote xml");
         assert_eq!(rkey1.slides.len(), 1);
         assert!(rkey1.slides[0].plain_text().contains("Keynote Slide One"));
 
@@ -1027,11 +1064,13 @@ mod tests {
         let mut key_img_buf = Cursor::new(Vec::new());
         {
             let mut zw = zip::ZipWriter::new(&mut key_img_buf);
-            zw.start_file("Data/slide1.png", SimpleFileOptions::default()).expect("start");
+            zw.start_file("Data/slide1.png", SimpleFileOptions::default())
+                .expect("start");
             zw.write_all(b"\x89PNG\r\n\x1a\nkeyslide").expect("write");
             zw.finish().expect("finish");
         }
-        let rkey2 = import_keynote_bytes("Visual Key", key_img_buf.get_ref(), &stage_dir).expect("keynote img");
+        let rkey2 = import_keynote_bytes("Visual Key", key_img_buf.get_ref(), &stage_dir)
+            .expect("keynote img");
         assert_eq!(rkey2.slides.len(), 1);
         assert!(rkey2.slides[0].media_cue.is_some());
         assert!(import_keynote_bytes("Bad", b"not-a-zip", &stage_dir).is_err());

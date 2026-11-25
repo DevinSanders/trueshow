@@ -9,7 +9,9 @@ pub mod ffmpeg_dyn;
 pub mod looper;
 pub mod video;
 
-pub use audio::{AudioBusId, AudioDeviceInfo, AudioEngineError, PlanarAudioRouter, decode_audio_bytes};
+pub use audio::{
+    AudioBusId, AudioDeviceInfo, AudioEngineError, PlanarAudioRouter, decode_audio_bytes,
+};
 pub use ffmpeg_dyn::{FfmpegLibraryInfo, FfmpegProbeStatus, probe_dynamic_lgpl_ffmpeg};
 pub use looper::{LoopTransitionReport, SeamlessLooper};
 pub use video::{

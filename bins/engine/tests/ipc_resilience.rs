@@ -96,5 +96,8 @@ async fn engine_survives_abrupt_client_disconnect_and_preserves_scene_state() {
     assert_eq!(evt_bye, EngineEvent::ShuttingDown);
 
     let status = child.wait().expect("wait for engine exit");
-    assert!(status.success(), "engine should exit 0 on explicit Shutdown");
+    assert!(
+        status.success(),
+        "engine should exit 0 on explicit Shutdown"
+    );
 }
