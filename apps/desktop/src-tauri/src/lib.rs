@@ -3712,6 +3712,21 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(bridge)
+        .setup(|app| {
+            if let Some(icon) = app.default_window_icon().cloned() {
+                for window in app.webview_windows().values() {
+                    let _ = window.set_icon(icon.clone());
+                }
+            }
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::Focused(true))
+                && let Some(icon) = window.app_handle().default_window_icon().cloned()
+            {
+                let _ = window.set_icon(icon);
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             connect_engine,
             get_telemetry,

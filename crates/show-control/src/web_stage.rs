@@ -266,11 +266,19 @@ pub fn build_stage_router_with_hub(hub: StageHub) -> Router {
         .route("/stage", get(stage_html))
         .route("/musician", get(musician_html))
         .route("/remote", get(remote_html))
+        .route("/favicon.svg", get(favicon_svg))
         .route("/api/stage/state", get(stage_json))
         .route("/api/stage/sheet-page/{page}", get(sheet_page_image))
         .route("/api/remote/command", post(remote_command))
         .route("/ws/stage", get(stage_ws))
         .with_state(hub)
+}
+
+async fn favicon_svg() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "image/svg+xml")],
+        include_str!("../../../docs/images/logo.svg"),
+    )
 }
 
 async fn stage_html() -> Html<&'static str> {
@@ -358,6 +366,7 @@ const STAGE_DISPLAY_HTML: &str = r#"<!doctype html>
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
+<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
 <title>TrueShow — LAN Stage Display</title>
 <style>
   body { margin:0; background:#07090f; color:#f4f7fc; font-family:system-ui,sans-serif; display:flex; flex-direction:column; height:100vh; }
@@ -397,6 +406,7 @@ const REMOTE_CONTROL_HTML: &str = r#"<!doctype html>
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
+<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
 <title>TrueShow — Mobile Remote Controller</title>
 <style>
   body { margin:0; background:#0b0f17; color:#f4f7fc; font-family:system-ui,sans-serif; padding:12px; display:flex; flex-direction:column; gap:10px; }
@@ -455,6 +465,7 @@ const MUSICIAN_STAGE_HTML: &str = r#"<!doctype html>
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
+<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
 <title>TrueShow — Musician Chord Chart & Sheet Music Stage</title>
 <style>
   body { margin:0; background:#060911; color:#f1f5f9; font-family:system-ui,sans-serif; display:flex; flex-direction:column; height:100vh; }
@@ -706,6 +717,17 @@ mod tests {
             .await
             .expect("musician html");
         assert_eq!(m_html.status(), StatusCode::OK);
+
+        let fav = m_app
+            .clone()
+            .oneshot(Request::builder().uri("/favicon.svg").body(axum::body::Body::empty()).expect("req"))
+            .await
+            .expect("favicon");
+        assert_eq!(fav.status(), StatusCode::OK);
+        assert_eq!(
+            fav.headers().get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()),
+            Some("image/svg+xml")
+        );
 
         let p1 = m_app
             .clone()

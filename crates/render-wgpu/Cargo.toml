@@ -13,6 +13,7 @@ core-ipc.workspace = true
 core-scene.workspace = true
 pollster.workspace = true
 render-text.workspace = true
+tiny-skia.workspace = true
 tracing.workspace = true
 wgpu.workspace = true
 winit.workspace = true

@@ -26,9 +26,54 @@ use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::window::{Fullscreen, Window, WindowAttributes, WindowId, WindowLevel};
+#[cfg(target_os = "windows")]
+use winit::platform::windows::{WindowAttributesExtWindows, WindowExtWindows};
+use winit::window::{Fullscreen, Icon, Window, WindowAttributes, WindowId, WindowLevel};
 
 pub use winit::event_loop::EventLoopProxy;
+
+const TRUESHOW_WINDOW_ICON_PNG: &[u8] =
+    include_bytes!("../../../apps/desktop/src-tauri/icons/64x64.png");
+const TRUESHOW_TASKBAR_ICON_PNG: &[u8] =
+    include_bytes!("../../../apps/desktop/src-tauri/icons/128x128.png");
+
+fn decode_png_to_straight_rgba(png_bytes: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
+    let pixmap = tiny_skia::Pixmap::decode_png(png_bytes).ok()?;
+    let width = pixmap.width();
+    let height = pixmap.height();
+    let premul = pixmap.data();
+    let mut straight = vec![0u8; premul.len()];
+    for (src, dst) in premul
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(straight.as_chunks_mut::<4>().0.iter_mut())
+    {
+        let a = src[3];
+        if a == 0 {
+            *dst = [0, 0, 0, 0];
+        } else if a == 255 {
+            *dst = *src;
+        } else {
+            let a_u16 = u16::from(a);
+            dst[0] = ((u16::from(src[0]) * 255 + a_u16 / 2) / a_u16).min(255) as u8;
+            dst[1] = ((u16::from(src[1]) * 255 + a_u16 / 2) / a_u16).min(255) as u8;
+            dst[2] = ((u16::from(src[2]) * 255 + a_u16 / 2) / a_u16).min(255) as u8;
+            dst[3] = a;
+        }
+    }
+    Some((straight, width, height))
+}
+
+fn load_trueshow_window_icon() -> Option<Icon> {
+    let (rgba, width, height) = decode_png_to_straight_rgba(TRUESHOW_WINDOW_ICON_PNG)?;
+    Icon::from_rgba(rgba, width, height).ok()
+}
+
+fn load_trueshow_taskbar_icon() -> Option<Icon> {
+    let (rgba, width, height) = decode_png_to_straight_rgba(TRUESHOW_TASKBAR_ICON_PNG)?;
+    Icon::from_rgba(rgba, width, height).ok()
+}
 
 pub const PREVIEW_WIDTH: u32 = 640;
 pub const PREVIEW_HEIGHT: u32 = 360;
@@ -1029,7 +1074,13 @@ impl CompositorApp {
         stagger_idx: usize,
     ) -> WindowAttributes {
         let mut attrs = WindowAttributes::default()
-            .with_title(format!("TrueShow Output — {}", cfg.name));
+            .with_title(format!("TrueShow Output — {}", cfg.name))
+            .with_window_icon(load_trueshow_window_icon());
+
+        #[cfg(target_os = "windows")]
+        {
+            attrs = attrs.with_taskbar_icon(load_trueshow_taskbar_icon());
+        }
 
         match cfg.effective_placement() {
             OutputPlacement::Fullscreen => {
@@ -1090,6 +1141,11 @@ impl CompositorApp {
         cfg: &OutputConfig,
     ) {
         window.set_title(&format!("TrueShow Output — {}", cfg.name));
+        window.set_window_icon(load_trueshow_window_icon());
+        #[cfg(target_os = "windows")]
+        {
+            window.set_taskbar_icon(load_trueshow_taskbar_icon());
+        }
         match cfg.effective_placement() {
             OutputPlacement::Fullscreen => {
                 let target_mon = cfg
@@ -1749,5 +1805,20 @@ mod tests {
         assert_eq!(undone.mask_style, MaskStyle::None);
         let redone = state.apply_diff(SceneDiff::Redo).expect("redo mask");
         assert_eq!(redone.mask_style, MaskStyle::SoftVignette);
+    }
+
+    #[test]
+    fn trueshow_window_and_taskbar_icons_decode_cleanly() {
+        let (win_rgba, w, h) =
+            decode_png_to_straight_rgba(TRUESHOW_WINDOW_ICON_PNG).expect("window icon png");
+        assert_eq!((w, h), (64, 64));
+        assert_eq!(win_rgba.len(), (64 * 64 * 4) as usize);
+        assert!(load_trueshow_window_icon().is_some());
+
+        let (tb_rgba, tw, th) =
+            decode_png_to_straight_rgba(TRUESHOW_TASKBAR_ICON_PNG).expect("taskbar icon png");
+        assert_eq!((tw, th), (128, 128));
+        assert_eq!(tb_rgba.len(), (128 * 128 * 4) as usize);
+        assert!(load_trueshow_taskbar_icon().is_some());
     }
 }
