@@ -27,7 +27,7 @@ repository = "https://github.com/DevinSanders/trueshow"
 
 [workspace.dependencies]
 axum = { version = "0.8", features = ["ws"] }
-base64 = "0.22"
+base64 = "0.23"
 blake3 = "1.8"
 bytemuck = { version = "1.22", features = ["derive"] }
 chrono = { version = "0.4", features = ["serde"] }
@@ -36,32 +36,32 @@ cosmic-text = "0.14"
 cpal = "0.17"
 flate2 = "1.1"
 interprocess = { version = "2.2", features = ["tokio"] }
-libloading = "0.8"
+libloading = "0.9"
 loro = "1.10"
 memmap2 = "0.9"
-midir = "0.10"
-pollster = "0.4"
+midir = "0.11"
+pollster = "1.0"
 postcard = { version = "1.1", features = ["alloc"] }
-prost = "0.13"
-quick-xml = "0.37"
+prost = "0.14"
+quick-xml = "0.41"
 rosc = "0.11"
-rtrb = "0.3"
-rusqlite = { version = "0.34", features = ["bundled"] }
+rtrb = "0.4"
+rusqlite = { version = "0.43", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-sha2 = "0.10"
-symphonia = { version = "0.5", features = ["aac", "flac", "isomp4", "mp3", "ogg", "pcm", "vorbis", "wav"] }
+sha2 = "0.11"
+symphonia = { version = "0.6", features = ["aac", "flac", "isomp4", "mp3", "ogg", "pcm", "vorbis", "wav"] }
 thiserror = "2.0"
-tiny-skia = "0.11"
+tiny-skia = "0.12"
 tokio = { version = "1.44", features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal"] }
-toml = "0.8"
+toml = "1.2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1.16", features = ["v4", "serde"] }
-wasmtime = { version = "32", default-features = false, features = ["runtime", "cranelift", "wat"] }
+wasmtime = { version = "51", default-features = false, features = ["runtime", "cranelift", "wat"] }
 wgpu = "30.0"
 winit = "0.30"
-zip = { version = "2.2", default-features = false, features = ["deflate"] }
+zip = { version = "9.8", default-features = false, features = ["deflate"] }
 
 core-diagnostics = { path = "crates/core-diagnostics" }
 core-scene = { path = "crates/core-scene" }
