@@ -49,23 +49,23 @@ pub fn parse_bible_xml(
     loop {
         match reader.read_event() {
             Ok(Event::Start(e)) => {
-                let name = String::from_utf8_lossy(e.name().as_ref()).to_ascii_lowercase();
+                let name = e.name().as_ref().to_ascii_lowercase();
                 match (format, name.as_str()) {
                     (BibleXmlFormat::Zefania, "biblebook")
                     | (BibleXmlFormat::Beblia, "book")
                     | (BibleXmlFormat::Usfx, "book") => {
                         for attr in e.attributes().flatten() {
-                            let k = String::from_utf8_lossy(attr.key.as_ref()).to_ascii_lowercase();
+                            let k = attr.key.as_ref().to_ascii_lowercase();
                             if matches!(k.as_str(), "bname" | "name" | "id" | "number") {
-                                current_book = String::from_utf8_lossy(&attr.value).into_owned();
+                                current_book = attr.value.into_owned();
                             }
                         }
                     }
                     (BibleXmlFormat::Zefania, "chapter") | (BibleXmlFormat::Beblia, "chapter") => {
                         for attr in e.attributes().flatten() {
-                            let k = String::from_utf8_lossy(attr.key.as_ref()).to_ascii_lowercase();
+                            let k = attr.key.as_ref().to_ascii_lowercase();
                             if matches!(k.as_str(), "cnumber" | "number")
-                                && let Ok(c) = String::from_utf8_lossy(&attr.value).parse::<u32>()
+                                && let Ok(c) = attr.value.parse::<u32>()
                             {
                                 current_chapter = c;
                             }
@@ -73,10 +73,9 @@ pub fn parse_bible_xml(
                     }
                     (BibleXmlFormat::Osis, "verse") => {
                         for attr in e.attributes().flatten() {
-                            let k = String::from_utf8_lossy(attr.key.as_ref()).to_ascii_lowercase();
+                            let k = attr.key.as_ref().to_ascii_lowercase();
                             if k == "osisid" {
-                                let id = String::from_utf8_lossy(&attr.value);
-                                let parts: Vec<&str> = id.split('.').collect();
+                                let parts: Vec<&str> = attr.value.split('.').collect();
                                 if parts.len() == 3 {
                                     current_book = parts[0].to_string();
                                     current_chapter = parts[1].parse().unwrap_or(1);
@@ -88,18 +87,18 @@ pub fn parse_bible_xml(
                     }
                     (BibleXmlFormat::Zefania, "vers") | (BibleXmlFormat::Beblia, "verse") => {
                         for attr in e.attributes().flatten() {
-                            let k = String::from_utf8_lossy(attr.key.as_ref()).to_ascii_lowercase();
+                            let k = attr.key.as_ref().to_ascii_lowercase();
                             if matches!(k.as_str(), "vnumber" | "number") {
-                                current_verse = String::from_utf8_lossy(&attr.value).parse().ok();
+                                current_verse = attr.value.parse().ok();
                                 verse_text.clear();
                             }
                         }
                     }
                     (BibleXmlFormat::Usfx, "v") => {
                         for attr in e.attributes().flatten() {
-                            let k = String::from_utf8_lossy(attr.key.as_ref()).to_ascii_lowercase();
+                            let k = attr.key.as_ref().to_ascii_lowercase();
                             if k == "id" {
-                                current_verse = String::from_utf8_lossy(&attr.value).parse().ok();
+                                current_verse = attr.value.parse().ok();
                                 verse_text.clear();
                             }
                         }
@@ -108,12 +107,12 @@ pub fn parse_bible_xml(
                 }
             }
             Ok(Event::Empty(e)) => {
-                let name = String::from_utf8_lossy(e.name().as_ref()).to_ascii_lowercase();
+                let name = e.name().as_ref().to_ascii_lowercase();
                 if format == BibleXmlFormat::Usfx && name == "c" {
                     for attr in e.attributes().flatten() {
-                        let k = String::from_utf8_lossy(attr.key.as_ref()).to_ascii_lowercase();
+                        let k = attr.key.as_ref().to_ascii_lowercase();
                         if k == "id"
-                            && let Ok(c) = String::from_utf8_lossy(&attr.value).parse::<u32>()
+                            && let Ok(c) = attr.value.parse::<u32>()
                         {
                             current_chapter = c;
                         }
@@ -122,7 +121,7 @@ pub fn parse_bible_xml(
             }
             Ok(Event::Text(t)) => {
                 if current_verse.is_some() {
-                    let s = t.unescape().map_err(|e| BibleError::Xml(e.to_string()))?;
+                    let s = t.xml10_content();
                     if !verse_text.is_empty() {
                         verse_text.push(' ');
                     }
@@ -130,7 +129,7 @@ pub fn parse_bible_xml(
                 }
             }
             Ok(Event::End(e)) => {
-                let name = String::from_utf8_lossy(e.name().as_ref()).to_ascii_lowercase();
+                let name = e.name().as_ref().to_ascii_lowercase();
                 let is_verse_end = matches!(
                     (format, name.as_str()),
                     (BibleXmlFormat::Osis, "verse")

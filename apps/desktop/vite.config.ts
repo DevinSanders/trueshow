@@ -9,7 +9,7 @@ export default defineConfig({
     port: 1420,
     strictPort: true,
     fs: {
-      allow: [path.resolve(__dirname, "../..")],
+      allow: [path.resolve(import.meta.dirname, "../..")],
     },
     watch: {
       ignored: ["**/src-tauri/**"],

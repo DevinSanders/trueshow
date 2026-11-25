@@ -885,7 +885,7 @@ impl LibraryStore {
                 asset.kind,
                 asset.width,
                 asset.height,
-                asset.duration_ms,
+                asset.duration_ms.map(|v| v as i64),
                 i32::from(asset.has_alpha),
                 asset.size_bytes as i64,
             ],
@@ -939,7 +939,7 @@ impl LibraryStore {
                 kind: row.get(4)?,
                 width: row.get(5)?,
                 height: row.get(6)?,
-                duration_ms: row.get(7)?,
+                duration_ms: row.get::<_, Option<i64>>(7)?.map(|v| v as u64),
                 has_alpha: row.get::<_, i32>(8)? != 0,
                 size_bytes: row.get::<_, i64>(9)? as u64,
             })

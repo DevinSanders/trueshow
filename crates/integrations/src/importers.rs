@@ -56,45 +56,38 @@ pub fn import_pro6_xml(xml: &str) -> Result<PresentationImportResult, ImporterEr
 
     loop {
         match reader.read_event() {
-            Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
-                let tag = String::from_utf8_lossy(e.name().as_ref()).into_owned();
-                match tag.as_str() {
-                    "RVPresentationDocument" => {
-                        for a in e.attributes().flatten() {
-                            let k = String::from_utf8_lossy(a.key.as_ref());
-                            let v = String::from_utf8_lossy(&a.value).into_owned();
-                            if k == "CCLISongTitle" && !v.is_empty() {
-                                title = v;
-                            } else if k == "CCLISongNumber" && !v.is_empty() {
-                                ccli_number = Some(v);
-                            }
+            Ok(Event::Start(e)) | Ok(Event::Empty(e)) => match e.name().as_ref() {
+                "RVPresentationDocument" => {
+                    for a in e.attributes().flatten() {
+                        let k = a.key.as_ref();
+                        let v = a.value.as_ref();
+                        if k == "CCLISongTitle" && !v.is_empty() {
+                            title = v.to_string();
+                        } else if k == "CCLISongNumber" && !v.is_empty() {
+                            ccli_number = Some(v.to_string());
                         }
                     }
-                    "RVSlideGrouping" => {
-                        for a in e.attributes().flatten() {
-                            if a.key.as_ref() == b"name" {
-                                current_group = String::from_utf8_lossy(&a.value).into_owned();
-                            }
-                        }
-                    }
-                    "NSString" => {
-                        for a in e.attributes().flatten() {
-                            if a.key.as_ref() == b"rvXMLIvarName"
-                                && (a.value.as_ref() == b"PlainText" || a.value.as_ref() == b"text")
-                            {
-                                in_text_node = true;
-                            }
-                        }
-                    }
-                    _ => {}
                 }
-            }
+                "RVSlideGrouping" => {
+                    for a in e.attributes().flatten() {
+                        if a.key.as_ref() == "name" {
+                            current_group = a.value.into_owned();
+                        }
+                    }
+                }
+                "NSString" => {
+                    for a in e.attributes().flatten() {
+                        if a.key.as_ref() == "rvXMLIvarName"
+                            && (a.value.as_ref() == "PlainText" || a.value.as_ref() == "text")
+                        {
+                            in_text_node = true;
+                        }
+                    }
+                }
+                _ => {}
+            },
             Ok(Event::Text(t)) if in_text_node => {
-                let text = t
-                    .unescape()
-                    .map_err(|e| ImporterError::Xml(e.to_string()))?
-                    .trim()
-                    .to_string();
+                let text = t.xml10_content().trim().to_string();
                 if !text.is_empty() {
                     slides.push(core_library::slide_from_text(
                         &format!("{title} — {current_group}"),
@@ -105,7 +98,7 @@ pub fn import_pro6_xml(xml: &str) -> Result<PresentationImportResult, ImporterEr
                 }
                 in_text_node = false;
             }
-            Ok(Event::End(e)) if e.name().as_ref() == b"NSString" => {
+            Ok(Event::End(e)) if e.name().as_ref() == "NSString" => {
                 in_text_node = false;
             }
             Ok(Event::Eof) => break,
@@ -223,27 +216,23 @@ pub fn import_openlyrics_xml(xml: &str) -> Result<PresentationImportResult, Impo
     loop {
         match reader.read_event() {
             Ok(Event::Start(e)) => match e.name().as_ref() {
-                b"title" => in_title = true,
-                b"ccliNo" => in_ccli = true,
-                b"verse" => {
+                "title" => in_title = true,
+                "ccliNo" => in_ccli = true,
+                "verse" => {
                     for a in e.attributes().flatten() {
-                        if a.key.as_ref() == b"name" {
-                            current_verse = String::from_utf8_lossy(&a.value).into_owned();
+                        if a.key.as_ref() == "name" {
+                            current_verse = a.value.into_owned();
                         }
                     }
                 }
-                b"lines" => {
+                "lines" => {
                     in_lines = true;
                     lines_buf.clear();
                 }
                 _ => {}
             },
             Ok(Event::Text(t)) => {
-                let txt = t
-                    .unescape()
-                    .map_err(|e| ImporterError::Xml(e.to_string()))?
-                    .trim()
-                    .to_string();
+                let txt = t.xml10_content().trim().to_string();
                 if txt.is_empty() {
                     continue;
                 }
@@ -256,9 +245,9 @@ pub fn import_openlyrics_xml(xml: &str) -> Result<PresentationImportResult, Impo
                 }
             }
             Ok(Event::End(e)) => match e.name().as_ref() {
-                b"title" => in_title = false,
-                b"ccliNo" => in_ccli = false,
-                b"lines" => {
+                "title" => in_title = false,
+                "ccliNo" => in_ccli = false,
+                "lines" => {
                     in_lines = false;
                     if !lines_buf.is_empty() {
                         slides.push(core_library::slide_from_text(
@@ -353,7 +342,7 @@ pub fn import_pptx_bytes(
     let mut archive = ZipArchive::new(Cursor::new(pptx_bytes))?;
     let mut slide_paths: Vec<String> = (0..archive.len())
         .filter_map(|i| {
-            let name = archive.by_index(i).ok()?.name().to_string();
+            let name = archive.by_index(i).ok()?.name().ok()?.into_owned();
             if name.starts_with("ppt/slides/slide") && name.ends_with(".xml") {
                 Some(name)
             } else {
@@ -381,22 +370,18 @@ pub fn import_pptx_bytes(
         loop {
             match reader.read_event() {
                 Ok(Event::Start(e))
-                    if e.name().as_ref().ends_with(b":t") || e.name().as_ref() == b"t" =>
+                    if e.name().as_ref().ends_with(":t") || e.name().as_ref() == "t" =>
                 {
                     in_text = true;
                 }
                 Ok(Event::Text(t)) if in_text => {
-                    let s = t
-                        .unescape()
-                        .map_err(|e| ImporterError::Xml(e.to_string()))?
-                        .trim()
-                        .to_string();
+                    let s = t.xml10_content().trim().to_string();
                     if !s.is_empty() {
                         texts.push(s);
                     }
                 }
                 Ok(Event::End(e))
-                    if e.name().as_ref().ends_with(b":t") || e.name().as_ref() == b"t" =>
+                    if e.name().as_ref().ends_with(":t") || e.name().as_ref() == "t" =>
                 {
                     in_text = false;
                 }
@@ -527,17 +512,14 @@ pub fn import_opensong_xml(xml: &str) -> Result<PresentationImportResult, Import
     loop {
         match reader.read_event() {
             Ok(Event::Start(e)) => match e.name().as_ref() {
-                b"song" => found_song = true,
-                b"title" => in_title = true,
-                b"ccli" => in_ccli = true,
-                b"lyrics" => in_lyrics = true,
+                "song" => found_song = true,
+                "title" => in_title = true,
+                "ccli" => in_ccli = true,
+                "lyrics" => in_lyrics = true,
                 _ => {}
             },
             Ok(Event::Text(t)) => {
-                let txt = t
-                    .unescape()
-                    .map_err(|err| ImporterError::Xml(err.to_string()))?
-                    .to_string();
+                let txt = t.xml10_content().into_owned();
                 if in_title {
                     title.push_str(txt.trim());
                 } else if in_ccli && !txt.trim().is_empty() {
@@ -547,9 +529,9 @@ pub fn import_opensong_xml(xml: &str) -> Result<PresentationImportResult, Import
                 }
             }
             Ok(Event::End(e)) => match e.name().as_ref() {
-                b"title" => in_title = false,
-                b"ccli" => in_ccli = false,
-                b"lyrics" => in_lyrics = false,
+                "title" => in_title = false,
+                "ccli" => in_ccli = false,
+                "lyrics" => in_lyrics = false,
                 _ => {}
             },
             Ok(Event::Eof) => break,
@@ -723,7 +705,7 @@ pub fn import_keynote_bytes(
 
     // 1. Check for Keynote `index.apxl` XML containing editable slide text runs.
     let apxl_name = (0..archive.len()).find_map(|i| {
-        let name = archive.by_index(i).ok()?.name().to_string();
+        let name = archive.by_index(i).ok()?.name().ok()?.into_owned();
         if name.eq_ignore_ascii_case("index.apxl") || name.ends_with("/index.apxl") {
             Some(name)
         } else {
@@ -749,7 +731,7 @@ pub fn import_keynote_bytes(
     // 2. Fall back to embedded slide media/preview images inside modern `.key` ZIP archives.
     let mut image_entries: Vec<String> = (0..archive.len())
         .filter_map(|i| {
-            let name = archive.by_index(i).ok()?.name().to_string();
+            let name = archive.by_index(i).ok()?.name().ok()?.into_owned();
             let lower = name.to_ascii_lowercase();
             let is_img =
                 lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg");
@@ -829,19 +811,15 @@ fn parse_keynote_apxl_slides(title: &str, xml: &str) -> Result<Vec<Slide>, Impor
             Ok(Event::Start(e)) => {
                 let name = e.name();
                 let n = name.as_ref();
-                if n.ends_with(b":slide") || n == b"slide" {
+                if n.ends_with(":slide") || n == "slide" {
                     in_slide = true;
                     current_lines.clear();
-                } else if in_slide && (n.ends_with(b":p") || n == b"p") {
+                } else if in_slide && (n.ends_with(":p") || n == "p") {
                     in_p = true;
                 }
             }
             Ok(Event::Text(t)) if in_slide && in_p => {
-                let txt = t
-                    .unescape()
-                    .map_err(|e| ImporterError::Xml(e.to_string()))?
-                    .trim()
-                    .to_string();
+                let txt = t.xml10_content().trim().to_string();
                 if !txt.is_empty() {
                     current_lines.push(txt);
                 }
@@ -849,9 +827,9 @@ fn parse_keynote_apxl_slides(title: &str, xml: &str) -> Result<Vec<Slide>, Impor
             Ok(Event::End(e)) => {
                 let name = e.name();
                 let n = name.as_ref();
-                if n.ends_with(b":p") || n == b"p" {
+                if n.ends_with(":p") || n == "p" {
                     in_p = false;
-                } else if n.ends_with(b":slide") || n == b"slide" {
+                } else if n.ends_with(":slide") || n == "slide" {
                     in_slide = false;
                     if !current_lines.is_empty() {
                         slides.push(core_library::slide_from_text(
