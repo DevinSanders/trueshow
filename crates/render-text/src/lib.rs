@@ -1351,9 +1351,9 @@ impl BroadcastRasterizer {
         let max_attempts = if style.auto_shrink { 6 } else { 1 };
         for _ in 0..max_attempts {
             let line_h = (font_size * style.line_height).max(font_size + 2.0);
-            buffer.set_metrics(&mut self.font_system, Metrics::new(font_size, line_h));
-            buffer.set_size(&mut self.font_system, Some(inner_w), Some(inner_h * 2.0));
-            buffer.set_text(&mut self.font_system, text, &attrs, Shaping::Advanced);
+            buffer.set_metrics(Metrics::new(font_size, line_h));
+            buffer.set_size(Some(inner_w), Some(inner_h * 2.0));
+            buffer.set_text(text, &attrs, Shaping::Advanced, Some(cosmic_align));
             for line in buffer.lines.iter_mut() {
                 line.set_align(Some(cosmic_align));
             }
@@ -1938,13 +1938,8 @@ impl Vector2DRasterizer for BroadcastRasterizer {
         let line_h = (style.font_size * style.line_height).max(16.0);
 
         let mut buffer = Buffer::new(&mut self.font_system, Metrics::new(style.font_size, line_h));
-        buffer.set_size(&mut self.font_system, Some(b.width), Some(b.height));
-        buffer.set_text(
-            &mut self.font_system,
-            text,
-            &Attrs::new(),
-            Shaping::Advanced,
-        );
+        buffer.set_size(Some(b.width), Some(b.height));
+        buffer.set_text(text, &Attrs::new(), Shaping::Advanced, None);
         buffer.shape_until_scroll(&mut self.font_system, false);
 
         if let Some(cursor) = buffer.hit(rel_x, rel_y) {

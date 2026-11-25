@@ -8,13 +8,13 @@ use cpal::traits::{DeviceTrait, HostTrait};
 use rtrb::{Consumer, Producer, RingBuffer};
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;
-use symphonia::core::audio::SampleBuffer;
-use symphonia::core::codecs::{CODEC_TYPE_NULL, DecoderOptions};
+use symphonia::core::audio::sample::Sample;
+use symphonia::core::codecs::audio::AudioDecoderOptions;
 use symphonia::core::errors::Error as SymphoniaError;
-use symphonia::core::formats::FormatOptions;
+use symphonia::core::formats::probe::Hint;
+use symphonia::core::formats::{FormatOptions, TrackType};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
-use symphonia::core::probe::Hint;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -88,33 +88,41 @@ pub fn decode_audio_bytes(
         hint.with_extension(ext);
     }
 
-    let probed = symphonia::default::get_probe()
-        .format(
+    let mut format = symphonia::default::get_probe()
+        .probe(
             &hint,
             mss,
-            &FormatOptions::default(),
-            &MetadataOptions::default(),
+            FormatOptions::default(),
+            MetadataOptions::default(),
         )
         .map_err(|e| AudioEngineError::Decode(e.to_string()))?;
 
-    let mut format = probed.format;
     let track = format
-        .tracks()
-        .iter()
-        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+        .default_track(TrackType::Audio)
         .ok_or(AudioEngineError::NoAudioTrack)?;
     let track_id = track.id;
-    let sample_rate = track.codec_params.sample_rate.unwrap_or(48_000);
-    let channels = track.codec_params.channels.map(|c| c.count()).unwrap_or(2);
+    let audio_params = track
+        .codec_params
+        .as_ref()
+        .and_then(|p| p.audio())
+        .ok_or(AudioEngineError::NoAudioTrack)?;
+    let sample_rate = audio_params.sample_rate.unwrap_or(48_000);
+    let channels = audio_params
+        .channels
+        .as_ref()
+        .map(|c| c.count())
+        .unwrap_or(2);
 
     let mut decoder = symphonia::default::get_codecs()
-        .make(&track.codec_params, &DecoderOptions::default())
+        .make_audio_decoder(audio_params, &AudioDecoderOptions::default())
         .map_err(|e| AudioEngineError::Decode(e.to_string()))?;
 
     let mut interleaved_f32 = Vec::new();
+    let mut frame_samples = Vec::new();
     loop {
         let packet = match format.next_packet() {
-            Ok(p) => p,
+            Ok(Some(p)) => p,
+            Ok(None) => break,
             Err(SymphoniaError::IoError(err))
                 if err.kind() == std::io::ErrorKind::UnexpectedEof =>
             {
@@ -123,16 +131,15 @@ pub fn decode_audio_bytes(
             Err(SymphoniaError::ResetRequired) => continue,
             Err(e) => return Err(AudioEngineError::Decode(e.to_string())),
         };
-        if packet.track_id() != track_id {
+        if packet.track_id != track_id {
             continue;
         }
         let decoded = decoder
             .decode(&packet)
             .map_err(|e| AudioEngineError::Decode(e.to_string()))?;
-        let spec = *decoded.spec();
-        let mut buf = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
-        buf.copy_interleaved_ref(decoded);
-        interleaved_f32.extend_from_slice(buf.samples());
+        frame_samples.resize(decoded.samples_interleaved(), f32::MID);
+        decoded.copy_to_slice_interleaved(&mut frame_samples);
+        interleaved_f32.extend_from_slice(&frame_samples);
     }
 
     Ok(DecodedAudio {
