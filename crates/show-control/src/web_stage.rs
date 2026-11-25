@@ -358,7 +358,7 @@ const STAGE_DISPLAY_HTML: &str = r#"<!doctype html>
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>OpenPresenter — LAN Stage Display</title>
+<title>TrueShow — LAN Stage Display</title>
 <style>
   body { margin:0; background:#07090f; color:#f4f7fc; font-family:system-ui,sans-serif; display:flex; flex-direction:column; height:100vh; }
   header { display:flex; justify-content:space-between; padding:14px 24px; background:#101521; border-bottom:2px solid #2563eb; font-size:20px; }
@@ -371,13 +371,13 @@ const STAGE_DISPLAY_HTML: &str = r#"<!doctype html>
 </style>
 </head>
 <body>
-  <header><span id="label">OpenPresenter Stage</span><span id="timer">--:--</span></header>
+  <header><span id="label">TrueShow Stage</span><span id="timer">--:--</span></header>
   <main><div id="chords"></div><div id="curr">Waiting for cue...</div></main>
   <div id="alert"></div>
   <footer>Next: <span id="next">—</span></footer>
   <script>
     function apply(d) {
-      document.getElementById('label').textContent = d.current_label || 'OpenPresenter Stage';
+      document.getElementById('label').textContent = d.current_label || 'TrueShow Stage';
       document.getElementById('timer').textContent = d.timer_readout || '--:--';
       document.getElementById('chords').textContent = d.chords_line || '';
       document.getElementById('curr').textContent = d.blackout ? '(BLACKOUT)' : (d.current_text || '');
@@ -397,7 +397,7 @@ const REMOTE_CONTROL_HTML: &str = r#"<!doctype html>
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>OpenPresenter — Mobile Remote Controller</title>
+<title>TrueShow — Mobile Remote Controller</title>
 <style>
   body { margin:0; background:#0b0f17; color:#f4f7fc; font-family:system-ui,sans-serif; padding:12px; display:flex; flex-direction:column; gap:10px; }
   .bar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
@@ -412,7 +412,7 @@ const REMOTE_CONTROL_HTML: &str = r#"<!doctype html>
 </head>
 <body>
   <div class="bar">
-    <strong>OpenPresenter Remote</strong>
+    <strong>TrueShow Remote</strong>
     <input id="pin" placeholder="PIN (2026)" value="2026" style="width:110px" />
     <button class="primary" onclick="send({action:'prev_slide'})">◀ Prev</button>
     <button class="primary" onclick="send({action:'next_slide'})">Next ▶</button>
@@ -455,7 +455,7 @@ const MUSICIAN_STAGE_HTML: &str = r#"<!doctype html>
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>OpenPresenter — Musician Chord Chart & Sheet Music Stage</title>
+<title>TrueShow — Musician Chord Chart & Sheet Music Stage</title>
 <style>
   body { margin:0; background:#060911; color:#f1f5f9; font-family:system-ui,sans-serif; display:flex; flex-direction:column; height:100vh; }
   header { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px; padding:10px 18px; background:#0f172a; border-bottom:2px solid #0284c7; }
@@ -483,7 +483,7 @@ const MUSICIAN_STAGE_HTML: &str = r#"<!doctype html>
 </head>
 <body>
   <header>
-    <div class="meta" id="title">OpenPresenter Musician Stage</div>
+    <div class="meta" id="title">TrueShow Musician Stage</div>
     <div class="controls">
       <button id="btn-chords" class="active" onclick="setMode('chords')">Chord Chart</button>
       <button id="btn-sheet" onclick="setMode('sheet')">Sheet Music</button>
@@ -601,7 +601,7 @@ mod tests {
         assert_eq!(res1.status(), StatusCode::OK);
         let body1 = res1.into_body().collect().await.expect("body 1").to_bytes();
         let html = String::from_utf8_lossy(&body1);
-        assert!(html.contains("OpenPresenter — LAN Stage Display"));
+        assert!(html.contains("TrueShow — LAN Stage Display"));
 
         // Happy path 2: GET /api/stage/state returns live JSON payload with stage message
         let res2 = app

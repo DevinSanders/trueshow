@@ -72,7 +72,7 @@ describe("markdown parser & offline UserGuidePanel", () => {
     });
 
     const panel = screen.getByTestId("user-guide-panel");
-    expect(panel.textContent).toContain("OpenPresenter — Complete User Guide");
+    expect(panel.textContent).toContain("TrueShow — Complete User Guide");
     expect(panel.textContent).toContain("Complete Keyboard Shortcuts Reference");
 
     // Verify real bundled screenshot images rendered inside the guide

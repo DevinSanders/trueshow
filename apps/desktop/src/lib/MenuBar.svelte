@@ -97,7 +97,7 @@
     automation: "Macros & Schedule",
     import: "Import & Planning Center",
     ccli: "CCLI Attribution & Reports",
-    backup: "Library Backup (.opbundle)",
+    backup: "Library Backup (.tsbundle)",
   };
 
   const activeViewTitle = $derived(
@@ -113,7 +113,7 @@
         { id: "tab:scripture", label: "Scripture Lookup", checked: activeTab === "scripture" },
         { id: "tab:lyrics", label: "Quick Lyrics & Arrangements", checked: activeTab === "lyrics" },
         { id: "tool:import", label: "Import Files & Planning Center...", separator: true },
-        { id: "tool:backup", label: "Backup & Restore (.opbundle)..." },
+        { id: "tool:backup", label: "Backup & Restore (.tsbundle)..." },
         { id: "reconnect", label: "Reconnect Engine", separator: true },
         { id: "reload", label: "Reload UI (Keep Live)" },
         { id: "stop-engine", label: "Stop Engine", disabled: !connected, danger: true, separator: true },
@@ -160,7 +160,7 @@
         { id: "tool:automation", label: "Macros, Calendar & OSC", checked: activeTab === "ecosystem" && activeControlSection === "automation" },
         { id: "tool:import", label: "Import & Planning Center", checked: activeTab === "ecosystem" && activeControlSection === "import", separator: true },
         { id: "tool:ccli", label: "CCLI Attribution & Reports", checked: activeTab === "ecosystem" && activeControlSection === "ccli" },
-        { id: "tool:backup", label: "Backup & Restore (.opbundle)", checked: activeTab === "ecosystem" && activeControlSection === "backup" },
+        { id: "tool:backup", label: "Backup & Restore (.tsbundle)", checked: activeTab === "ecosystem" && activeControlSection === "backup" },
         {
           id: "tab:diagnostics",
           label: crashCount > 0 ? `Diagnostics (${crashCount})` : "Diagnostics & Logs",
@@ -242,7 +242,7 @@
 
 <header class="menubar" data-testid="menu-bar">
   <div class="menubar-left">
-    <strong class="brand-name">OpenPresenter</strong>
+    <strong class="brand-name">TrueShow</strong>
 
     <div class="menubar-menus" aria-label="Application menu" role="menubar">
       {#each menus as group (group.id)}

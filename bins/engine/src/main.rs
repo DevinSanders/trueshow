@@ -1,4 +1,4 @@
-//! `openpresenter-engine` — decoupled sidecar rendering & compositing process.
+//! `trueshow-engine` — decoupled sidecar rendering & compositing process.
 //!
 //! Owns the OS main thread (`winit` + `wgpu`) so physical sanctuary displays remain live at
 //! 60 fps even if the Tauri 2 operator UI crashes, reloads, or restarts.
@@ -26,8 +26,8 @@ use tracing::{error, info, warn};
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "openpresenter-engine",
-    about = "OpenPresenter decoupled real-time GPU compositing sidecar engine"
+    name = "trueshow-engine",
+    about = "TrueShow decoupled real-time GPU compositing sidecar engine"
 )]
 struct Cli {
     /// Local socket name (Named Pipe on Windows, Unix socket filename on macOS/Linux).
@@ -56,7 +56,7 @@ fn main() {
     let diag_paths = DiagnosticsPaths::default_system();
     let initial_level = LogLevel::parse(&cli.log_level).unwrap_or(LogLevel::Info);
     install_crash_hook(
-        "openpresenter-engine",
+        "trueshow-engine",
         env!("CARGO_PKG_VERSION"),
         diag_paths.clone(),
     );
@@ -81,7 +81,7 @@ fn main() {
     if cli.headless {
         shared.mark_headless_ready();
         info!(
-            "starting openpresenter-engine in headless IPC mode on socket '{}'",
+            "starting trueshow-engine in headless IPC mode on socket '{}'",
             cli.socket
         );
         let rt = tokio::runtime::Builder::new_multi_thread()
@@ -126,7 +126,7 @@ fn main() {
         .expect("spawn IPC server thread");
 
     info!(
-        "starting openpresenter-engine GPU compositor (pid={}, outputs={}, socket='{}')",
+        "starting trueshow-engine GPU compositor (pid={}, outputs={}, socket='{}')",
         std::process::id(),
         cli.outputs.clamp(1, 2),
         cli.socket
@@ -136,7 +136,7 @@ fn main() {
         error!("compositor exited with error: {err}");
         let _ = core_diagnostics::record_runtime_error(
             &diag_paths,
-            "openpresenter-engine",
+            "trueshow-engine",
             "compositor-fatal-error",
             env!("CARGO_PKG_VERSION"),
             &err,
@@ -267,7 +267,7 @@ async fn run_ipc_server(
     };
     let stage_server = match stage_bind {
         Ok(srv) => {
-            let port_dir = std::env::temp_dir().join("openpresenter-data");
+            let port_dir = std::env::temp_dir().join("trueshow-data");
             let _ = std::fs::create_dir_all(&port_dir);
             let _ = std::fs::write(
                 port_dir.join("web_stage_port.txt"),

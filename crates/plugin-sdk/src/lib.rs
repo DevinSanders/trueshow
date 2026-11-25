@@ -1,4 +1,4 @@
-//! Permissively licensed (`MIT OR Apache-2.0`) SDK contract for OpenPresenter plugins.
+//! Permissively licensed (`MIT OR Apache-2.0`) SDK contract for TrueShow plugins.
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -134,7 +134,7 @@ mod tests {
     #[test]
     fn parses_valid_manifests_and_rejects_invalid_ids_and_rpc_roundtrip() {
         let toml_src = r#"
-            id = "org.openpresenter.whisper-stt"
+            id = "org.trueshow.whisper-stt"
             name = "Local Whisper Auto-Scripture"
             version = "0.1.0"
             tier = "sidecar_process"

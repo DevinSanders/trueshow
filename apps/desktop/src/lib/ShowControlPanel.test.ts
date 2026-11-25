@@ -55,10 +55,10 @@ describe("ShowControlPanel M3 UI (Happy & Failure Paths)", () => {
         };
       }
       if (cmd === "export_library_backup") {
-        return { bundle_path: "C:/backups/openpresenter.opbundle", item_count: 18 };
+        return { bundle_path: "C:/backups/trueshow.tsbundle", item_count: 18 };
       }
       if (cmd === "import_library_backup") {
-        return { bundle_path: "C:/backups/openpresenter.opbundle", item_count: 18 };
+        return { bundle_path: "C:/backups/trueshow.tsbundle", item_count: 18 };
       }
       if (cmd === "export_ccli_csv_report") {
         return "ProjectedAt,ServiceProfile,SongTitle,CCLINumber,Author,DisplaySeconds\n2026-11-24,Sunday,Amazing Grace,22025,John Newton,180\n";
@@ -102,7 +102,7 @@ describe("ShowControlPanel M3 UI (Happy & Failure Paths)", () => {
 
     // 4. Backup tab
     await fireEvent.click(screen.getByRole("tab", { name: "Backup" }));
-    await fireEvent.click(screen.getByRole("button", { name: "Export .opbundle Backup" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Export .tsbundle Backup" }));
     await waitFor(() =>
       expect(screen.getAllByRole("status").some((el) => el.textContent?.includes("Exported 18 library items"))).toBe(true),
     );

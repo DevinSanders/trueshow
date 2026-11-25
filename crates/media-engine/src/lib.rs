@@ -1,4 +1,4 @@
-//! OpenPresenter Media Engine:
+//! TrueShow Media Engine:
 //! - Hardware video decode & zero-copy GPU import descriptors (`VideoToolbox`, `D3D12VA`, `D3D11VA`, `VA-API`)
 //! - Dynamic LGPL-2.1+ FFmpeg runtime discovery (zero static GPL taint)
 //! - Dual-reader pre-roll seamless looping for motion backgrounds (`SeamlessLooper`)

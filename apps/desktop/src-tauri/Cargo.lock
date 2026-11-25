@@ -3411,31 +3411,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
-name = "openpresenter-desktop"
-version = "0.1.0-m1"
-dependencies = [
- "broadcast-io",
- "chrono",
- "core-diagnostics",
- "core-ipc",
- "core-library",
- "core-scene",
- "integrations",
- "interprocess",
- "plugin-host",
- "plugin-sdk",
- "serde",
- "serde_json",
- "show-control",
- "tauri",
- "tauri-build",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
 name = "option-ext"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5472,6 +5447,31 @@ dependencies = [
  "serde",
  "thiserror 2.0.21",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "trueshow-desktop"
+version = "0.1.0-m1"
+dependencies = [
+ "broadcast-io",
+ "chrono",
+ "core-diagnostics",
+ "core-ipc",
+ "core-library",
+ "core-scene",
+ "integrations",
+ "interprocess",
+ "plugin-host",
+ "plugin-sdk",
+ "serde",
+ "serde_json",
+ "show-control",
+ "tauri",
+ "tauri-build",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

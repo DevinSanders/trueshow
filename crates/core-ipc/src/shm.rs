@@ -58,7 +58,7 @@ pub enum ShmError {
     BufferSizeMismatch { expected: usize, actual: usize },
 }
 
-/// Single-producer shared-memory preview writer owned by `openpresenter-engine`.
+/// Single-producer shared-memory preview writer owned by `trueshow-engine`.
 pub struct ShmPreviewWriter {
     path: PathBuf,
     _file: File,
@@ -174,7 +174,7 @@ pub struct ShmPreviewReader {
 }
 
 impl ShmPreviewReader {
-    /// Opens an existing preview ring created by `openpresenter-engine`.
+    /// Opens an existing preview ring created by `trueshow-engine`.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, ShmError> {
         let file = OpenOptions::new().read(true).open(path)?;
         #[allow(unsafe_code)]
@@ -275,7 +275,7 @@ mod tests {
     #[test]
     fn publishes_and_reads_frames_without_tearing() {
         let path = std::env::temp_dir().join(format!(
-            "openpresenter-test-{}.op_shm",
+            "trueshow-test-{}.op_shm",
             std::process::id()
         ));
         let mut writer = ShmPreviewWriter::create(&path, 16, 16).expect("create writer");
@@ -308,7 +308,7 @@ mod tests {
     #[test]
     fn rejects_invalid_buffer_size_header_and_truncated_files() {
         let base = std::env::temp_dir().join(format!(
-            "openpresenter-shm-err-{}.op_shm",
+            "trueshow-shm-err-{}.op_shm",
             std::process::id()
         ));
         let mut writer = ShmPreviewWriter::create(&base, 8, 8).expect("create");
@@ -326,11 +326,11 @@ mod tests {
         let _ = std::fs::remove_file(&base);
 
         // Missing file -> Io error
-        let missing = std::env::temp_dir().join("openpresenter-definitely-missing.op_shm");
+        let missing = std::env::temp_dir().join("trueshow-definitely-missing.op_shm");
         assert!(matches!(ShmPreviewReader::open(&missing), Err(ShmError::Io(_))));
 
         // Truncated file (< 64 bytes)
-        let trunc = std::env::temp_dir().join(format!("openpresenter-trunc-{}.op_shm", std::process::id()));
+        let trunc = std::env::temp_dir().join(format!("trueshow-trunc-{}.op_shm", std::process::id()));
         std::fs::write(&trunc, b"tiny").expect("write trunc");
         assert!(matches!(
             ShmPreviewReader::open(&trunc),
@@ -339,7 +339,7 @@ mod tests {
         let _ = std::fs::remove_file(&trunc);
 
         // Invalid magic header
-        let bad_hdr = std::env::temp_dir().join(format!("openpresenter-badhdr-{}.op_shm", std::process::id()));
+        let bad_hdr = std::env::temp_dir().join(format!("trueshow-badhdr-{}.op_shm", std::process::id()));
         std::fs::write(&bad_hdr, vec![0x11u8; 128]).expect("write bad hdr");
         assert!(matches!(
             ShmPreviewReader::open(&bad_hdr),

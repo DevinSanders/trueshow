@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// WebAssembly Component Model interface contract for OpenPresenter Tier 2 plugins.
+// WebAssembly Component Model interface contract for TrueShow Tier 2 plugins.
 
-package openpresenter:plugin@0.1.0;
+package trueshow:plugin@0.1.0;
 
 interface host-events {
     record cue-event {
@@ -29,7 +29,7 @@ interface importer {
     import-document: func(file-name: string, bytes: list<u8>) -> result<imported-deck, string>;
 }
 
-world openpresenter-plugin {
+world trueshow-plugin {
     export host-events;
     export importer;
 }

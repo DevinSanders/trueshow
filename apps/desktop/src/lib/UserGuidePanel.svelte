@@ -71,7 +71,7 @@
     const imgEl = target.closest<HTMLElement>("[data-lightbox-src]");
     if (imgEl) {
       const src = imgEl.getAttribute("data-lightbox-src");
-      const alt = imgEl.getAttribute("data-lightbox-alt") ?? "OpenPresenter Screenshot";
+      const alt = imgEl.getAttribute("data-lightbox-alt") ?? "TrueShow Screenshot";
       if (src) lightbox = { src, alt };
     }
   }

@@ -13,19 +13,19 @@ use std::path::PathBuf;
 /// Bumped whenever breaking changes are made to control-plane or SHM layouts.
 pub const PROTOCOL_VERSION: u32 = 1;
 
-/// Default local socket identifier shared by `openpresenter-engine` and `apps/desktop`.
+/// Default local socket identifier shared by `trueshow-engine` and `apps/desktop`.
 pub fn default_socket_name() -> String {
-    "openpresenter-engine-v1.sock".to_string()
+    "trueshow-engine-v1.sock".to_string()
 }
 
 /// Default directory for memory-mapped preview ring files.
 pub fn default_preview_dir() -> PathBuf {
-    std::env::temp_dir().join("openpresenter-preview-v1")
+    std::env::temp_dir().join("trueshow-preview-v1")
 }
 
 /// Converts a logical socket identifier into a platform-appropriate `interprocess` socket `Name`.
 ///
-/// - On Windows: Named Pipe (`GenericNamespaced`, e.g., `\\.\pipe\openpresenter-engine-v1.sock`).
+/// - On Windows: Named Pipe (`GenericNamespaced`, e.g., `\\.\pipe\trueshow-engine-v1.sock`).
 /// - On macOS / Linux: Unix Domain Socket path inside `std::env::temp_dir()`.
 pub fn to_local_socket_name(socket_id: &str) -> io::Result<Name<'static>> {
     #[cfg(windows)]
@@ -124,7 +124,7 @@ pub struct EngineSnapshot {
     pub telemetry: EngineTelemetry,
 }
 
-/// Commands sent from the operator control surface to `openpresenter-engine`.
+/// Commands sent from the operator control surface to `trueshow-engine`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum EngineCommand {
     GetSnapshot,
@@ -136,7 +136,7 @@ pub enum EngineCommand {
     Shutdown,
 }
 
-/// Responses and unsolicited events sent from `openpresenter-engine` to the control surface.
+/// Responses and unsolicited events sent from `trueshow-engine` to the control surface.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum EngineEvent {
     Snapshot(Box<EngineSnapshot>),
@@ -156,12 +156,12 @@ mod tests {
     #[test]
     fn socket_names_and_defaults_are_valid() {
         let sock = default_socket_name();
-        assert!(sock.contains("openpresenter"));
+        assert!(sock.contains("trueshow"));
         assert!(to_local_socket_name(&sock).is_ok());
         cleanup_stale_socket(&sock);
 
         let dir = default_preview_dir();
-        assert!(dir.to_string_lossy().contains("openpresenter-preview"));
+        assert!(dir.to_string_lossy().contains("trueshow-preview"));
 
         let tel = EngineTelemetry::default();
         assert_eq!(tel.total_frames, 0);

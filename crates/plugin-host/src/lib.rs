@@ -1,4 +1,4 @@
-//! Two-Tier Plugin Host for OpenPresenter:
+//! Two-Tier Plugin Host for TrueShow:
 //! - **Tier 1 (`SidecarSupervisor`):** Capability-enforced registry & crash-restart governor for
 //!   out-of-process native/ML sidecars (Whisper STT, Art-Net/sACN lighting, custom hardware).
 //! - **Tier 2 (`WasmSandboxHost`):** Embedded `wasmtime` sandbox with strict **fuel metering**
@@ -202,7 +202,7 @@ mod tests {
     fn sidecar_supervisor_enforces_capability_intersection_and_crash_budget() {
         let mut sup = SidecarSupervisor::new(2);
         let manifest = PluginManifest {
-            id: "org.openpresenter.whisper".into(),
+            id: "org.trueshow.whisper".into(),
             name: "Local Whisper STT".into(),
             version: "0.1.0".into(),
             tier: PluginTier::SidecarProcess,
@@ -226,11 +226,11 @@ mod tests {
         .expect("register");
 
         assert!(
-            sup.require_capability("org.openpresenter.whisper", PluginCapability::AudioTap)
+            sup.require_capability("org.trueshow.whisper", PluginCapability::AudioTap)
                 .is_ok()
         );
         assert!(matches!(
-            sup.require_capability("org.openpresenter.whisper", PluginCapability::CueTrigger),
+            sup.require_capability("org.trueshow.whisper", PluginCapability::CueTrigger),
             Err(PluginHostError::PermissionDenied { .. })
         ));
         assert!(matches!(
@@ -238,10 +238,10 @@ mod tests {
             Err(PluginHostError::NotFound(_))
         ));
 
-        assert_eq!(sup.record_crash("org.openpresenter.whisper").expect("c1"), 1);
-        assert_eq!(sup.record_crash("org.openpresenter.whisper").expect("c2"), 2);
+        assert_eq!(sup.record_crash("org.trueshow.whisper").expect("c1"), 1);
+        assert_eq!(sup.record_crash("org.trueshow.whisper").expect("c2"), 2);
         assert!(matches!(
-            sup.record_crash("org.openpresenter.whisper"),
+            sup.record_crash("org.trueshow.whisper"),
             Err(PluginHostError::CrashBudgetExhausted(_, 2))
         ));
 

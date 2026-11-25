@@ -1,4 +1,4 @@
-//! Local-first SQLite storage engine (WAL + FTS5) for OpenPresenter.
+//! Local-first SQLite storage engine (WAL + FTS5) for TrueShow.
 //!
 //! Guarantees 100% offline Sunday-morning operation across songs, slide presentations,
 //! service playlists, Bible verses, BLAKE3 content-addressed media assets, CCLI usage
@@ -153,7 +153,7 @@ pub struct ScheduledEventRecord {
     pub updated_at: DateTime<Utc>,
 }
 
-/// Portable full-library `.opbundle` archive format for backup, restore, and computer migration.
+/// Portable full-library `.tsbundle` archive format for backup, restore, and computer migration.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LibraryBackupBundle {
     pub format_version: u32,
@@ -1526,7 +1526,7 @@ impl LibraryStore {
 
     /// Exports the complete local library (libraries, songs, playlists, media bins,
     /// looks, templates, presets, overlays, message templates, macros, and scheduled events)
-    /// into a single portable `.opbundle` JSON archive file.
+    /// into a single portable `.tsbundle` JSON archive file.
     pub fn export_backup_bundle(&self, dest_path: &Path) -> Result<usize, LibraryError> {
         if let Some(parent) = dest_path.parent()
             && !parent.as_os_str().is_empty()
@@ -1564,7 +1564,7 @@ impl LibraryStore {
         Ok(total)
     }
 
-    /// Restores a portable `.opbundle` JSON archive into the local SQLite database (upsert merge).
+    /// Restores a portable `.tsbundle` JSON archive into the local SQLite database (upsert merge).
     pub fn import_backup_bundle(&self, src_path: &Path) -> Result<usize, LibraryError> {
         let bytes = std::fs::read(src_path)?;
         let bundle: LibraryBackupBundle = serde_json::from_slice(&bytes)?;
@@ -2676,9 +2676,9 @@ mod tests {
             .expect("upsert sched");
         assert!(store.delete_scheduled_event("ev-test").expect("del sched"));
 
-        // Portable .opbundle backup export & import round-trip
+        // Portable .tsbundle backup export & import round-trip
         let bundle_path = std::env::temp_dir()
-            .join(format!("op-backup-test-{}.opbundle", Uuid::new_v4()));
+            .join(format!("op-backup-test-{}.tsbundle", Uuid::new_v4()));
         let exported = store
             .export_backup_bundle(&bundle_path)
             .expect("export bundle");

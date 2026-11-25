@@ -1,4 +1,4 @@
-//! End-to-end M0 resilience test: verifies `openpresenter-engine` survives abrupt UI disconnects
+//! End-to-end M0 resilience test: verifies `trueshow-engine` survives abrupt UI disconnects
 //! over OS local sockets (Windows Named Pipes / Unix Domain Sockets) and preserves live state
 //! across client re-attachments.
 
@@ -10,8 +10,8 @@ use std::time::Duration;
 
 #[tokio::test]
 async fn engine_survives_abrupt_client_disconnect_and_preserves_scene_state() {
-    let bin = env!("CARGO_BIN_EXE_openpresenter-engine");
-    let socket_id = format!("openpresenter-test-resilience-{}.sock", std::process::id());
+    let bin = env!("CARGO_BIN_EXE_trueshow-engine");
+    let socket_id = format!("trueshow-test-resilience-{}.sock", std::process::id());
 
     let mut child = Command::new(bin)
         .arg("--headless")
@@ -23,7 +23,7 @@ async fn engine_survives_abrupt_client_disconnect_and_preserves_scene_state() {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .expect("spawn openpresenter-engine --headless");
+        .expect("spawn trueshow-engine --headless");
 
     // Wait for engine IPC listener to bind.
     let mut client1 = None;

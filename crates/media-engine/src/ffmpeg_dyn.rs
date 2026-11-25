@@ -2,7 +2,7 @@
 //!
 //! Never statically links FFmpeg (preventing accidental GPL taint). Inspects `avcodec_license()`
 //! at runtime when FFmpeg shared libraries are present and flags any `--enable-gpl` / `--enable-nonfree`
-//! builds so OpenPresenter stays cleanly LGPL-2.1+ hygienic.
+//! builds so TrueShow stays cleanly LGPL-2.1+ hygienic.
 
 use serde::{Deserialize, Serialize};
 use std::ffi::CStr;

@@ -1,4 +1,4 @@
-//! Broadcast video I/O subsystem for OpenPresenter (M2).
+//! Broadcast video I/O subsystem for TrueShow (M2).
 //!
 //! - **Alpha / Key & Fill (`alpha`):** Premultiplied RGBA -> straight BGRA conversion and
 //!   dual-stream Fill + Luma-Key extraction for SDI external keyers.

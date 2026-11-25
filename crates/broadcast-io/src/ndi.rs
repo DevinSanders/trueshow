@@ -1,6 +1,6 @@
 //! Dynamic NDI 6.x runtime loader and sender/receiver management (zero bundled proprietary DLLs).
 //!
-//! Strictly adheres to OpenPresenter's proprietary SDK hygiene mandate: loads only the
+//! Strictly adheres to TrueShow's proprietary SDK hygiene mandate: loads only the
 //! user-installed NDI Runtime via `NDI_RUNTIME_DIR_V6` / standard system paths at runtime.
 
 use crate::alpha::{AlphaMode, BroadcastFrame, premul_rgba_to_straight_bgra};
@@ -18,7 +18,7 @@ pub struct NdiConfig {
 impl Default for NdiConfig {
     fn default() -> Self {
         Self {
-            source_name: "OpenPresenter — Main Output".to_string(),
+            source_name: "TrueShow — Main Output".to_string(),
             groups: None,
             clock_video: true,
             alpha_mode: AlphaMode::StraightBgra,

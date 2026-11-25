@@ -5,7 +5,7 @@ edition.workspace = true
 # Intentionally dual-licensed permissively so third-party plugin authors may choose any license.
 license = "MIT OR Apache-2.0"
 repository.workspace = true
-description = "Permissively licensed plugin manifest, capability model, and JSON-RPC 2.0 contract for OpenPresenter Tier 1 sidecars and Tier 2 Wasm plugins."
+description = "Permissively licensed plugin manifest, capability model, and JSON-RPC 2.0 contract for TrueShow Tier 1 sidecars and Tier 2 Wasm plugins."
 
 [dependencies]
 serde.workspace = true

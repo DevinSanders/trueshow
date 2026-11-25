@@ -17,10 +17,10 @@ fn checksum(bytes: &[u8]) -> u64 {
 #[tokio::test]
 #[ignore = "requires an active desktop GPU display session"]
 async fn live_gpu_engine_renders_both_audience_and_stage_across_slide_switches() {
-    let bin = env!("CARGO_BIN_EXE_openpresenter-engine");
-    let socket_id = format!("openpresenter-live-gpu-{}.sock", std::process::id());
+    let bin = env!("CARGO_BIN_EXE_trueshow-engine");
+    let socket_id = format!("trueshow-live-gpu-{}.sock", std::process::id());
     let preview_dir =
-        std::env::temp_dir().join(format!("openpresenter-live-gpu-shm-{}", std::process::id()));
+        std::env::temp_dir().join(format!("trueshow-live-gpu-shm-{}", std::process::id()));
 
     let mut child = Command::new(bin)
         .env("RUST_BACKTRACE", "1")
@@ -35,7 +35,7 @@ async fn live_gpu_engine_renders_both_audience_and_stage_across_slide_switches()
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .spawn()
-        .expect("spawn live openpresenter-engine");
+        .expect("spawn live trueshow-engine");
 
     let mut client = None;
     for _ in 0..40 {

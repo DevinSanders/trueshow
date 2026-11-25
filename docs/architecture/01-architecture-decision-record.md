@@ -1,4 +1,4 @@
-# Architecture Decision Record (ADR) — OpenPresenter
+# Architecture Decision Record (ADR) — TrueShow
 
 > **Status:** Accepted (Phase 1 Decisions Locked)  
 > **Date:** November 2026  
@@ -8,11 +8,11 @@
 
 ## Executive Summary
 
-OpenPresenter separates the **real-time GPU compositing & broadcast engine** from the **operator control surface** at the OS process boundary, while keeping a single canonical scene graph so the operator editor matches physical outputs pixel-for-pixel.
+TrueShow separates the **real-time GPU compositing & broadcast engine** from the **operator control surface** at the OS process boundary, while keeping a single canonical scene graph so the operator editor matches physical outputs pixel-for-pixel.
 
 | Architectural Axis | Recommendation | Primary Rationale |
 | :--- | :--- | :--- |
-| **Process Topology** | **Decoupled Sidecar Engine (`openpresenter-engine`)** + Tauri 2 Control Shell | Eliminates macOS `NSApplication`/`winit` vs `tao` main-thread conflicts; guarantees a WebView crash or UI reload never drops live sanctuary screens to black. |
+| **Process Topology** | **Decoupled Sidecar Engine (`trueshow-engine`)** + Tauri 2 Control Shell | Eliminates macOS `NSApplication`/`winit` vs `tao` main-thread conflicts; guarantees a WebView crash or UI reload never drops live sanctuary screens to black. |
 | **Frontend Framework** | **Svelte 5 (TypeScript + Runes)** inside Tauri 2 (`v2.12+`) | Fine-grained signal reactivity with zero VDOM overhead for high-frequency live telemetry (timers, VU meters, scrubbers, live canvas feeds) and minimal memory footprint. |
 | **Preview & Editor Pipeline** | **GPU-Rendered Native Frames -> Shared-Memory Ring -> Tauri Binary Channel (`ArrayBuffer`) + Thin Interactive Gizmo Overlay** | Pixel-for-pixel WYSIWYG parity with live outputs (zero HTML/CSS vs. GPU text drift) without fragile OS child-window z-ordering bugs. |
 | **Typography & 2D Vectors** | **`skia-safe` (CPU-rasterized, GPU-cached layer textures)** behind an internal `Vector2DRasterizer` trait | Broadcast-ready strokes, Gaussian drop shadows, RTL/CJK shaping (`SkParagraph` + HarfBuzz/ICU), and exact caret hit-testing on Day 1, with zero GPU context conflicts against `wgpu`. |
@@ -37,7 +37,7 @@ flowchart LR
         Shm["Preview Data Plane<br/>(Lock-Free Triple-Buffered Shared Memory<br/>Downscaled BGRA Preview & Editor Frames)"]
     end
 
-    subgraph Engine["openpresenter-engine Sidecar (Process B)"]
+    subgraph Engine["trueshow-engine Sidecar (Process B)"]
         Winit["winit 0.30 Event Loop<br/>(Uncontested Main Thread)"]
         Compositor["wgpu 30 Multi-Surface Compositor<br/>(Metal / D3D12 / Vulkan @ 60 fps)"]
         Skia["skia-safe Rasterizer<br/>(Cached Slide/Text/Overlay Textures)"]
@@ -66,19 +66,19 @@ The live compositing engine owns physical display windows (`winit` + `wgpu`), ha
 
 ### Options Evaluated
 
-| Criterion | Option A: Decoupled Sidecar Process (`openpresenter-engine`) | Option B: In-Process Rust Library inside Tauri 2 |
+| Criterion | Option A: Decoupled Sidecar Process (`trueshow-engine`) | Option B: In-Process Rust Library inside Tauri 2 |
 | :--- | :--- | :--- |
 | **Crash Isolation (Zero-Blackout)** | **Excellent.** A WebView crash, JS OOM, or UI restart leaves all physical screens, motion loops, timers, and NDI/SDI feeds running uninterrupted. UI reconnects and re-hydrates state. | **Poor.** A WebView abort, Rust panic in UI/importer code, or Tauri restart immediately kills all output windows and drops sanctuary screens to black. |
-| **macOS Main-Thread Ownership** | **Clean.** `openpresenter-engine` owns its own `NSApplication` / `winit` event loop; Tauri owns its own `tao` event loop. Zero conflict. | **Severe Risk.** macOS mandates all `NSWindow` / AppKit event handling on thread 0. Mixing `tao` (Tauri) and `winit` in one process is unsupported; forcing `wgpu` onto `tao` windows couples render-loop scheduling to WebView UI ticks. |
+| **macOS Main-Thread Ownership** | **Clean.** `trueshow-engine` owns its own `NSApplication` / `winit` event loop; Tauri owns its own `tao` event loop. Zero conflict. | **Severe Risk.** macOS mandates all `NSWindow` / AppKit event handling on thread 0. Mixing `tao` (Tauri) and `winit` in one process is unsupported; forcing `wgpu` onto `tao` windows couples render-loop scheduling to WebView UI ticks. |
 | **Native SDK Crash Blast Radius** | **Contained.** If a DeckLink driver update or malformed video file crashes the engine, SQLite/CRDT writes in the Tauri shell are unaffected and the watchdog auto-restarts the engine to the last committed cue in <500 ms. | **Global.** Any FFI segfault corrupts or terminates the entire application, risking dirty library state. |
 | **IPC & Preview Complexity** | **Moderate.** Requires a local control socket (`interprocess`) + shared-memory ring buffer for preview frames and Tauri `bundle.externalBin` packaging. | **Low.** Direct in-memory function calls and `Arc` sharing. |
 | **Future Headless / Remote Control** | **Native fit.** The engine is already controllable over a structured protocol, enabling multi-operator control or rack-mounted render nodes later. | **Requires rewrite** to decouple UI from renderer later. |
 
 ### Decision
-Adopt **Option A: Decoupled Sidecar Engine Process (`openpresenter-engine`)**.
+Adopt **Option A: Decoupled Sidecar Engine Process (`trueshow-engine`)**.
 
 ### Implementation Rules
-1. **Packaging:** Ship `openpresenter-engine` via Tauri 2's `bundle.externalBin` target-triple sidecar mechanism (`openpresenter-engine-x86_64-pc-windows-msvc.exe`, `openpresenter-engine-aarch64-apple-darwin`, etc.).
+1. **Packaging:** Ship `trueshow-engine` via Tauri 2's `bundle.externalBin` target-triple sidecar mechanism (`trueshow-engine-x86_64-pc-windows-msvc.exe`, `trueshow-engine-aarch64-apple-darwin`, etc.).
 2. **Lifecycle & Reconnection:**
    - The engine runs with a **session token** and local socket endpoint passed at launch (or discovered via a lockfile in the user runtime directory).
    - If the Tauri UI crashes or is reloaded by the operator, the engine **holds the current live scene indefinitely** (timers continue ticking, motion backgrounds continue looping) until the UI reconnects and receives a full `EngineSnapshot`.
@@ -177,7 +177,7 @@ Adopt **`skia-safe` in headless CPU-rasterized, GPU-cached layer mode** encapsul
 ## ADR-005: Hardware Video Decode & Zero-Copy GPU Texture Import — FFmpeg (`rsmpeg`) vs. GStreamer (`gstreamer-rs`)
 
 ### Context
-OpenPresenter must play simultaneous 1080p/4K60 H.264/H.265 looping motion backgrounds, alpha-channel motion overlays (**Apple ProRes 4444** and **WebM VP9+Alpha**), and foreground videos with frame-accurate looping and multi-channel audio, while honoring strict patent and open-source licensing hygiene.
+TrueShow must play simultaneous 1080p/4K60 H.264/H.265 looping motion backgrounds, alpha-channel motion overlays (**Apple ProRes 4444** and **WebM VP9+Alpha**), and foreground videos with frame-accurate looping and multi-channel audio, while honoring strict patent and open-source licensing hygiene.
 
 ### Options Evaluated
 

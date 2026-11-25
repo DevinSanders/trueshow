@@ -37,7 +37,7 @@
 
   let snapshot = $state<EngineSnapshot | null>(null);
   let telemetry = $state<EngineTelemetry | null>(null);
-  let statusMessage = $state("Connecting to openpresenter-engine sidecar...");
+  let statusMessage = $state("Connecting to trueshow-engine sidecar...");
   let errorText = $state<string | null>(null);
   let activeTab = $state<WorkspaceTab>("show");
   let activeControlSection = $state<ControlSection>("timers");
@@ -136,7 +136,7 @@
 
   async function attachEngine() {
     errorText = null;
-    statusMessage = "Attaching to openpresenter-engine...";
+    statusMessage = "Attaching to trueshow-engine...";
     try {
       const snap = await invoke<EngineSnapshot>("connect_engine");
       snapshot = snap;

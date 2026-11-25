@@ -1,4 +1,4 @@
-# Phased Engineering Roadmap — OpenPresenter
+# Phased Engineering Roadmap — TrueShow
 
 > **Status:** Accepted (Phase 1 Decisions Locked)  
 > **Date:** November 2026  
@@ -32,13 +32,13 @@ flowchart LR
 - `crates/core-scene` (minimal scene graph: solid colors, test patterns, crossfade transition, 2 logical outputs).
 - `crates/core-ipc` (`interprocess` local socket control protocol + lock-free triple-buffered shared-memory preview ring).
 - `crates/render-wgpu` (`winit 0.30` multi-monitor borderless fullscreen + `wgpu 30` multi-surface swapchain compositor + GPU preview downsampler + async `MAP_READ` staging ring).
-- `bins/engine` (`openpresenter-engine` standalone binary with heartbeat/reattach lifecycle).
-- `apps/desktop` (Tauri 2 + Svelte 5 shell spawning `openpresenter-engine` as `externalBin` sidecar, displaying live 30 fps Program preview via `tauri::ipc::Channel<Response>` -> WebGL2 `<canvas>`).
+- `bins/engine` (`trueshow-engine` standalone binary with heartbeat/reattach lifecycle).
+- `apps/desktop` (Tauri 2 + Svelte 5 shell spawning `trueshow-engine` as `externalBin` sidecar, displaying live 30 fps Program preview via `tauri::ipc::Channel<Response>` -> WebGL2 `<canvas>`).
 
 ### Key Technical Spikes (De-Risking Gates)
 1. **Monitor Identity & Hot-Plug:** Enumerate physical displays on Windows & macOS, persist display-to-output bindings across reboots (handling EDID / display index shifts when projectors sleep).
 2. **macOS Spaces / Fullscreen Behavior:** Verify `winit` borderless fullscreen windows stay pinned above the menu bar/dock on secondary displays without stealing keyboard focus from the Tauri operator window.
-3. **Preview Throughput:** Measure CPU/RAM overhead of streaming two `640×360` 30 fps preview buses from `openpresenter-engine` -> SHM -> Tauri `Channel<Response>` -> WebGL2 `<canvas>`.
+3. **Preview Throughput:** Measure CPU/RAM overhead of streaming two `640×360` 30 fps preview buses from `trueshow-engine` -> SHM -> Tauri `Channel<Response>` -> WebGL2 `<canvas>`.
 
 ### Binary Exit Criteria (Must Pass Before M1)
 - [ ] Two physical displays (or two native `wgpu` windows) sustain **locked 60 fps (p99 frame time < 16.6 ms)** with smooth animated GPU shaders on Windows (D3D12) and macOS (Metal).
@@ -94,7 +94,7 @@ flowchart LR
   - Embedded `axum` + WebSocket server delivering an optional low-latency **LAN Browser Stage Display** (for confidence iPads/tablets on church Wi-Fi) consuming live scene/timer JSON updates + optional low-bitrate MJPEG/JPEG preview snapshots.
 
 ### Key Technical Spikes (De-Risking Gates)
-1. **Alpha Integrity Verification:** Key a transparent OpenPresenter lower third over a live camera feed in **OBS (via NDI 6 & OMT & Syphon/Spout)** and on a **Blackmagic ATEM switcher (via DeckLink Duo 2 Key & Fill)**; verify clean anti-aliased edges with zero dark/white alpha fringing.
+1. **Alpha Integrity Verification:** Key a transparent TrueShow lower third over a live camera feed in **OBS (via NDI 6 & OMT & Syphon/Spout)** and on a **Blackmagic ATEM switcher (via DeckLink Duo 2 Key & Fill)**; verify clean anti-aliased edges with zero dark/white alpha fringing.
 2. **Async Readback Isolation:** Enable 1× 1080p60 physical Audience display + 1× 1080p60 physical Stage display + 1× 1080p60 NDI Alpha send + 1× 1080p60 OMT send + 1× NDI live camera input concurrently; verify render thread frame times remain < 16.6 ms with zero stalls when network receivers disconnect or stall.
 
 ### Binary Exit Criteria (Must Pass Before M3)
@@ -126,7 +126,7 @@ flowchart LR
   - **Pluggable S3 Media Sync (`object_store`):** Background BLAKE3 content-addressed upload/download to user-configured Cloudflare R2, AWS S3, or MinIO buckets.
 - `crates/plugin-sdk` + `crates/plugin-host`:
   - **Tier 1 Sidecar Supervisor** (local socket + optional audio/video SHM tap) with a reference example plugin (e.g., stub STT / lighting cue forwarder).
-  - **Tier 2 Wasmtime Component Host** (`wit/openpresenter-plugin.wit`) with a reference sample importer/widget `.wasm` plugin.
+  - **Tier 2 Wasmtime Component Host** (`wit/trueshow-plugin.wit`) with a reference sample importer/widget `.wasm` plugin.
 
 ### Binary Exit Criteria (v1.0 Feature-Complete Gate)
 - [ ] All 20 Target Capabilities verified against end-to-end automated & manual acceptance tests.

@@ -1,4 +1,4 @@
-# Measures real LLVM source-based line/function coverage for OpenPresenter Rust crates
+# Measures real LLVM source-based line/function coverage for TrueShow Rust crates
 # using built-in `rustc -C instrument-coverage`, `llvm-profdata`, and `llvm-cov`.
 param(
     [string[]]$Packages = @(

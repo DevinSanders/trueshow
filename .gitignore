@@ -1,4 +1,4 @@
-# OpenPresenter build artifacts & local workspace state
+# TrueShow build artifacts & local workspace state
 /target/
 **/target/
 apps/desktop/node_modules/

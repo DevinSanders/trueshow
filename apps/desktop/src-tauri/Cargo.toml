@@ -1,12 +1,12 @@
 [package]
-name = "openpresenter-desktop"
+name = "trueshow-desktop"
 version = "0.1.0-m1"
 edition = "2024"
 license = "MPL-2.0"
-description = "Tauri 2 operator control surface for OpenPresenter."
+description = "Tauri 2 operator control surface for TrueShow."
 
 [lib]
-name = "openpresenter_desktop_lib"
+name = "trueshow_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

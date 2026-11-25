@@ -41,8 +41,8 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Run unit tests
         run: cargo test --workspace
-      - name: Build openpresenter-engine
-        run: cargo build --bin openpresenter-engine
+      - name: Build trueshow-engine
+        run: cargo build --bin trueshow-engine
 
   desktop-frontend:
     name: Desktop UI Typecheck & Build (Svelte 5)

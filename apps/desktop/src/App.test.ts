@@ -151,7 +151,7 @@ const sampleSongs: SongRecord[] = [
   },
 ];
 
-describe("OpenPresenter Operator Control Surface UI (Happy & Failure Paths)", () => {
+describe("TrueShow Operator Control Surface UI (Happy & Failure Paths)", () => {
   beforeEach(() => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
       createImageData: (w: number, h: number) => ({
@@ -416,7 +416,7 @@ describe("OpenPresenter Operator Control Surface UI (Happy & Failure Paths)", ()
     await fireEvent.drop(bgLayerRow, {
       dataTransfer: {
         getData: (t: string) =>
-          t === "application/x-openpresenter-media"
+          t === "application/x-trueshow-media"
             ? JSON.stringify({ blake3_hash: "h-bg-1" })
             : "",
       },
@@ -427,7 +427,7 @@ describe("OpenPresenter Operator Control Surface UI (Happy & Failure Paths)", ()
     await fireEvent.drop(slideWrap, {
       dataTransfer: {
         getData: (t: string) =>
-          t === "application/x-openpresenter-media"
+          t === "application/x-trueshow-media"
             ? JSON.stringify({ blake3_hash: "h-bg-1" })
             : "",
       },

@@ -1,4 +1,4 @@
-//! Broadcast 2D typography and vector layer rasterizer for OpenPresenter.
+//! Broadcast 2D typography and vector layer rasterizer for TrueShow.
 //!
 //! All consumers interact exclusively through [`Vector2DRasterizer`], keeping the active
 //! rendering backend (`cosmic-text` + `tiny-skia` CPU rasterizer by default, with an optional

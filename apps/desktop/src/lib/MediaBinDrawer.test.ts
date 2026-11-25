@@ -119,7 +119,7 @@ describe("MediaBinDrawer (Backgrounds, Images, Video, Audio)", () => {
     await fireEvent.drop(audioBinRow, {
       dataTransfer: {
         getData: (t: string) =>
-          t === "application/x-openpresenter-media"
+          t === "application/x-trueshow-media"
             ? JSON.stringify({ blake3_hash: "h-aurora" })
             : "",
       },

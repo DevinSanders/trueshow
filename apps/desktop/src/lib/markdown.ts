@@ -201,7 +201,7 @@ export function parseGuideSections(
   const normalized = markdown.replace(/\r\n/g, "\n");
   const lines = normalized.split("\n");
 
-  let title = "OpenPresenter User Guide";
+  let title = "TrueShow User Guide";
   const introLines: string[] = [];
   const rawSections: { title: string; lines: string[] }[] = [];
   let current: { title: string; lines: string[] } | null = null;

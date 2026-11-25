@@ -557,7 +557,7 @@ mod tests {
     fn generates_pkce_oauth_url_and_tracks_pco_rate_limits() {
         assert!(PcoOAuthPkceSession::start("   ", 8900).is_err());
 
-        let sess = PcoOAuthPkceSession::start("openpresenter-byok-id", 8900).expect("pkce");
+        let sess = PcoOAuthPkceSession::start("trueshow-byok-id", 8900).expect("pkce");
         let url = sess.authorize_url();
         assert!(url.contains("code_challenge_method=S256"));
         assert!(url.contains("http://127.0.0.1:8900/pco/callback"));

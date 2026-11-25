@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Dual-plane local IPC (framed binary control socket + lock-free shared-memory preview ring) for OpenPresenter."
+description = "Dual-plane local IPC (framed binary control socket + lock-free shared-memory preview ring) for TrueShow."
 
 [dependencies]
 core-scene.workspace = true

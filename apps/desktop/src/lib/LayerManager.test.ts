@@ -107,7 +107,7 @@ describe("LayerManager (7-Layer Stack Inspection, Clearing & Drag-Drop)", () => 
     await fireEvent.drop(bgRow, {
       dataTransfer: {
         getData: (t: string) =>
-          t === "application/x-openpresenter-media"
+          t === "application/x-trueshow-media"
             ? JSON.stringify({ blake3_hash: "h-aurora" })
             : "",
       },

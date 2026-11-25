@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "OpenPresenter",
+  "productName": "TrueShow",
   "version": "0.1.0-m0",
-  "identifier": "org.openpresenter.desktop",
+  "identifier": "org.trueshow.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "OpenPresenter — Operator Control Surface",
+        "title": "TrueShow — Operator Control Surface",
         "width": 1340,
         "height": 840,
         "minWidth": 960,

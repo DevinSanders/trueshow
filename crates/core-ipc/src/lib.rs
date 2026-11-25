@@ -1,4 +1,4 @@
-//! Dual-plane local IPC between `openpresenter-engine` and the Tauri 2 operator UI.
+//! Dual-plane local IPC between `trueshow-engine` and the Tauri 2 operator UI.
 //!
 //! - **Control Plane:** Framed `postcard` binary messages over cross-platform local sockets
 //!   (Windows Named Pipes / Unix Domain Sockets via `interprocess`).

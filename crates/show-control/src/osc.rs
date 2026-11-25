@@ -21,7 +21,7 @@ pub enum OscControlEvent {
     RunMacro(Uuid),
 }
 
-/// Parses a text-line OSC command such as `"/openpresenter/blackout 1"` or `"/openpresenter/layer/clear slide"`,
+/// Parses a text-line OSC command such as `"/trueshow/blackout 1"` or `"/trueshow/layer/clear slide"`,
 /// round-trips it through `rosc` wire encoding + [`decode_osc_packet`], and returns the decoded event.
 pub fn parse_osc_text_command(line: &str) -> Result<OscControlEvent, OscError> {
     let mut parts = line.trim().splitn(2, char::is_whitespace);
@@ -52,7 +52,7 @@ pub fn parse_osc_text_command(line: &str) -> Result<OscControlEvent, OscError> {
         .ok_or_else(|| OscError::MalformedPacket("empty OSC packet".to_string()))
 }
 
-/// Decodes raw UDP OSC bytes into OpenPresenter show-control events.
+/// Decodes raw UDP OSC bytes into TrueShow show-control events.
 pub fn decode_osc_packet(bytes: &[u8]) -> Result<Vec<OscControlEvent>, OscError> {
     let (_, packet) = rosc::decoder::decode_udp(bytes)
         .map_err(|e| OscError::MalformedPacket(e.to_string()))?;
@@ -75,7 +75,7 @@ fn collect_packet(packet: OscPacket, out: &mut Vec<OscControlEvent>) -> Result<(
 
 fn route_message(msg: OscMessage) -> Result<OscControlEvent, OscError> {
     match msg.addr.as_str() {
-        "/openpresenter/slide/trigger" => {
+        "/trueshow/slide/trigger" => {
             let id_str = match msg.args.first() {
                 Some(OscType::String(s)) => s,
                 _ => return Err(OscError::InvalidArgument("expected slide UUID string".into())),
@@ -87,7 +87,7 @@ fn route_message(msg: OscMessage) -> Result<OscControlEvent, OscError> {
                 transition_override: None,
             })))
         }
-        "/openpresenter/blackout" => {
+        "/trueshow/blackout" => {
             let on = match msg.args.first() {
                 Some(OscType::Bool(b)) => *b,
                 Some(OscType::Int(i)) => *i != 0,
@@ -95,7 +95,7 @@ fn route_message(msg: OscMessage) -> Result<OscControlEvent, OscError> {
             };
             Ok(OscControlEvent::Scene(Box::new(SceneDiff::SetBlackout(on))))
         }
-        "/openpresenter/layer/clear" => {
+        "/trueshow/layer/clear" => {
             let layer_name = match msg.args.first() {
                 Some(OscType::String(s)) => s.as_str(),
                 _ => return Err(OscError::InvalidArgument("expected layer name string".into())),
@@ -114,7 +114,7 @@ fn route_message(msg: OscMessage) -> Result<OscControlEvent, OscError> {
                 layer,
             ))))
         }
-        "/openpresenter/stage/message" => {
+        "/trueshow/stage/message" => {
             let text = match msg.args.first() {
                 Some(OscType::String(s)) if !s.trim().is_empty() => Some(s.clone()),
                 _ => None,
@@ -123,7 +123,7 @@ fn route_message(msg: OscMessage) -> Result<OscControlEvent, OscError> {
                 text,
             ))))
         }
-        "/openpresenter/macro/run" => {
+        "/trueshow/macro/run" => {
             let id_str = match msg.args.first() {
                 Some(OscType::String(s)) => s,
                 _ => return Err(OscError::InvalidArgument("expected macro UUID string".into())),
@@ -158,7 +158,7 @@ mod tests {
     fn decodes_valid_osc_commands_and_rejects_malformed_or_unknown_packets() {
         let slide_uuid = Uuid::from_u128(1002);
         let pkt_slide = encode_osc_event(
-            "/openpresenter/slide/trigger",
+            "/trueshow/slide/trigger",
             vec![OscType::String(slide_uuid.to_string())],
         )
         .expect("encode slide");
@@ -170,7 +170,7 @@ mod tests {
             }))]
         );
 
-        let pkt_bo = encode_osc_event("/openpresenter/blackout", vec![OscType::Int(1)]).expect("bo");
+        let pkt_bo = encode_osc_event("/trueshow/blackout", vec![OscType::Int(1)]).expect("bo");
         assert_eq!(
             decode_osc_packet(&pkt_bo).expect("decode bo"),
             vec![OscControlEvent::Scene(Box::new(SceneDiff::SetBlackout(
@@ -179,7 +179,7 @@ mod tests {
         );
 
         let pkt_clr = encode_osc_event(
-            "/openpresenter/layer/clear",
+            "/trueshow/layer/clear",
             vec![OscType::String("media".into())],
         )
         .expect("clr");
@@ -191,7 +191,7 @@ mod tests {
         );
 
         let pkt_msg = encode_osc_event(
-            "/openpresenter/stage/message",
+            "/trueshow/stage/message",
             vec![OscType::String("Wrap up".into())],
         )
         .expect("msg");
@@ -204,7 +204,7 @@ mod tests {
 
         let macro_uuid = Uuid::from_u128(77);
         let pkt_mac = encode_osc_event(
-            "/openpresenter/macro/run",
+            "/trueshow/macro/run",
             vec![OscType::String(macro_uuid.to_string())],
         )
         .expect("mac");
@@ -228,7 +228,7 @@ mod tests {
             Err(OscError::UnknownAddress(_))
         ));
         let bad_layer = encode_osc_event(
-            "/openpresenter/layer/clear",
+            "/trueshow/layer/clear",
             vec![OscType::String("invalid_layer".into())],
         )
         .expect("bad layer");
@@ -239,15 +239,15 @@ mod tests {
 
         // Text-command parser happy & error paths
         assert_eq!(
-            parse_osc_text_command("/openpresenter/blackout 1").expect("blackout 1"),
+            parse_osc_text_command("/trueshow/blackout 1").expect("blackout 1"),
             OscControlEvent::Scene(Box::new(SceneDiff::SetBlackout(true)))
         );
         assert_eq!(
-            parse_osc_text_command("/openpresenter/blackout false").expect("blackout false"),
+            parse_osc_text_command("/trueshow/blackout false").expect("blackout false"),
             OscControlEvent::Scene(Box::new(SceneDiff::SetBlackout(false)))
         );
         assert_eq!(
-            parse_osc_text_command("/openpresenter/layer/clear slide").expect("clear slide"),
+            parse_osc_text_command("/trueshow/layer/clear slide").expect("clear slide"),
             OscControlEvent::Scene(Box::new(SceneDiff::ClearLayer(LayerKind::Slide)))
         );
         assert!(parse_osc_text_command("   ").is_err());

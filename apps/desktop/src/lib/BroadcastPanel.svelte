@@ -19,7 +19,7 @@
 
   let caps = $state<BroadcastCapabilities | null>(null);
   let loadError = $state<string | null>(null);
-  let ndiSourceName = $state("OpenPresenter — Main Output");
+  let ndiSourceName = $state("TrueShow — Main Output");
   let alphaMode = $state<"StraightBgra" | "PremultipliedBgra" | "KeyFillSplit">("StraightBgra");
   let decklinkMode = $state<"ExternalDualSdiKeyFill" | "InternalKeyer">("ExternalDualSdiKeyFill");
   let streamingActive = $state(false);

@@ -79,7 +79,7 @@ pub enum MidiCueBinding {
     RunMacro(Uuid),
 }
 
-/// Maps inbound MultiTracks Playback / Ableton Live MIDI cues to OpenPresenter actions.
+/// Maps inbound MultiTracks Playback / Ableton Live MIDI cues to TrueShow actions.
 #[derive(Default)]
 pub struct MidiCueRouter {
     note_bindings: HashMap<(u8, u8), MidiCueBinding>,
@@ -159,7 +159,7 @@ impl MidiCueRouter {
 
 /// Lists available OS MIDI input and output port names via `midir`.
 pub fn list_midi_ports() -> (Vec<String>, Vec<String>) {
-    let inputs = midir::MidiInput::new("openpresenter-probe")
+    let inputs = midir::MidiInput::new("trueshow-probe")
         .ok()
         .map(|mi| {
             mi.ports()
@@ -169,7 +169,7 @@ pub fn list_midi_ports() -> (Vec<String>, Vec<String>) {
         })
         .unwrap_or_default();
 
-    let outputs = midir::MidiOutput::new("openpresenter-probe")
+    let outputs = midir::MidiOutput::new("trueshow-probe")
         .ok()
         .map(|mo| {
             mo.ports()

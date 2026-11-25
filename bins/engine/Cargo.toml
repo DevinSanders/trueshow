@@ -1,13 +1,13 @@
 [package]
-name = "openpresenter-engine"
+name = "trueshow-engine"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Decoupled real-time GPU compositing sidecar engine for OpenPresenter."
+description = "Decoupled real-time GPU compositing sidecar engine for TrueShow."
 
 [[bin]]
-name = "openpresenter-engine"
+name = "trueshow-engine"
 path = "src/main.rs"
 
 [dependencies]

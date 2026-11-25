@@ -19,7 +19,7 @@ describe("BroadcastPanel UI (Happy & Failure Paths)", () => {
           web_stage_url: "http://192.168.1.50:5505/",
           web_remote_url: "http://192.168.1.50:5505/remote",
           remote_pin: "2026",
-          active_source_name: "OpenPresenter — Main Output",
+          active_source_name: "TrueShow — Main Output",
           alpha_mode: "StraightBgra",
           decklink_mode: "ExternalDualSdiKeyFill",
           streaming_active: false,

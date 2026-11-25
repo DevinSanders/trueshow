@@ -182,7 +182,7 @@ mod tests {
 
     #[tokio::test]
     async fn streams_alpha_frame_and_rejects_invalid_dimensions_over_async_transport() {
-        let desc = OmtServiceDescriptor::new("OpenPresenter Lower Third", 6400, true);
+        let desc = OmtServiceDescriptor::new("TrueShow Lower Third", 6400, true);
         assert_eq!(desc.service_type, "_omt._tcp.local.");
         assert!(desc.supports_alpha);
 

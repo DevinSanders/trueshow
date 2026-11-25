@@ -1,4 +1,4 @@
-# Cargo Workspace, Plugin Architecture & License Audit — OpenPresenter
+# Cargo Workspace, Plugin Architecture & License Audit — TrueShow
 
 > **Status:** Accepted (Phase 1 Decisions Locked)  
 > **Date:** November 2026  
@@ -11,14 +11,14 @@
 The repository is organized as a single monorepo containing a strictly acyclic Cargo workspace (`crates/` + `bins/`), the Tauri 2 operator UI (`apps/desktop/`), WIT plugin contracts (`wit/`), and clean-room format/protocol fixtures (`tests/`).
 
 ```text
-OpenPresenter/
+TrueShow/
 ├── Cargo.toml                  # Workspace root (shared dependency versions, lints, profiles)
 ├── deny.toml                   # cargo-deny license & supply-chain policy enforcement
 ├── LICENSE                     # MPL-2.0 (core application & workspace crates)
 ├── docs/
 │   └── architecture/           # ADRs, workspace specs, roadmaps, protocol docs
 ├── wit/                        # WebAssembly Interface Types (MIT OR Apache-2.0)
-│   └── openpresenter-plugin.wit
+│   └── trueshow-plugin.wit
 ├── crates/
 │   ├── core-scene/             # Pure-Rust canonical scene graph, layers, looks, transitions
 │   ├── core-library/           # SQLite (sqlx) + Loro CRDT store, FTS5 search, CCLI log
@@ -32,7 +32,7 @@ OpenPresenter/
 │   ├── plugin-sdk/             # Public plugin types & IPC/WIT helpers (MIT OR Apache-2.0)
 │   └── plugin-host/            # Sidecar process supervisor + Wasmtime Component Model host
 ├── bins/
-│   └── engine/                 # Standalone `openpresenter-engine` sidecar binary
+│   └── engine/                 # Standalone `trueshow-engine` sidecar binary
 └── apps/
     └── desktop/                # Tauri 2 shell (`src-tauri/`) + Svelte 5 TypeScript UI (`src/`)
 ```
@@ -59,7 +59,7 @@ flowchart TD
 
     subgraph AppCrates["External Connectors & Entrypoints"]
         Integ["integrations<br/>(PCO, API.Bible, S3/R2, Importers)"]
-        EngBin["bins/engine<br/>(openpresenter-engine sidecar)"]
+        EngBin["bins/engine<br/>(trueshow-engine sidecar)"]
         Desktop["apps/desktop<br/>(Tauri 2 + Svelte 5 UI)"]
     end
 
@@ -107,7 +107,7 @@ flowchart TD
 | **`integrations`** | Planning Center Services v2 (OAuth2 PKCE), MultiTracks MIDI profile presets, API.Bible BYOK client (14/30-day cache TTL & FUMS), S3/R2 BLAKE3 asset sync (`object_store`), and clean-room importers (`.pro6`, `.pro` via `prost`, OpenLyrics, ChordPro, `.usr`, OSIS/Zefania/USFX/Beblia, `.pptx` OOXML + LibreOffice bridge, `.key` macOS AppleScript). | **Zero hardcoded API keys or copyrighted Bible texts.** All secrets live in OS Keychain (`keyring`). |
 | **`plugin-sdk`** | Public, versioned types, capability manifests, and WIT/JSON-RPC contracts for third-party plugin authors. | Dual-licensed **`MIT OR Apache-2.0`** so plugin authors may freely choose permissive, copyleft, or commercial licenses. |
 | **`plugin-host`** | Lifecycle manager, permission enforcement, and routing for Tier 1 Sidecar plugins and Tier 2 Wasmtime Component plugins. | Enforces crash isolation, memory/fuel limits, and capability whitelisting; a panicking plugin never drops live outputs. |
-| **`bins/engine`** | Standalone `openpresenter-engine` executable bundling `render-wgpu`, `media-engine`, `broadcast-io`, `show-control`, and `plugin-host` (engine-side plugins). | Can run either spawned by Tauri 2 or standalone as a headless/remote render daemon. |
+| **`bins/engine`** | Standalone `trueshow-engine` executable bundling `render-wgpu`, `media-engine`, `broadcast-io`, `show-control`, and `plugin-host` (engine-side plugins). | Can run either spawned by Tauri 2 or standalone as a headless/remote render daemon. |
 | **`apps/desktop`** | Tauri 2 (`v2.12+`) Rust host + Svelte 5 TypeScript operator UI. | **Strictly control surface.** Never creates Audience/Stage live output windows via WebView. |
 
 ---
@@ -118,11 +118,11 @@ Worship production environments have two radically different plugin profiles:
 - **Lightweight Logic & Data Extensions:** Custom lyric/Bible importers, stage clock widgets, church management connectors, custom macro triggers, streaming title updaters.
 - **Heavy Native / AI / Hardware Modules:** Local Whisper STT / real-time auto-scripture detection (GPU/ONNX/Python/C++), Art-Net / sACN lighting desks, PTZ camera tracking, or proprietary hardware video/audio drivers (DeckLink, ASIO, Dante).
 
-No single plugin ABI serves both well. OpenPresenter therefore provides a **clean two-tier plugin boundary** and explicitly **rejects** in-process dynamic native libraries (`abi_stable` / raw `.dll`/`.so` `dlopen` for untrusted third-party plugins) because a single segfault or ABI mismatch in an in-process native plugin would crash live sanctuary projection.
+No single plugin ABI serves both well. TrueShow therefore provides a **clean two-tier plugin boundary** and explicitly **rejects** in-process dynamic native libraries (`abi_stable` / raw `.dll`/`.so` `dlopen` for untrusted third-party plugins) because a single segfault or ABI mismatch in an in-process native plugin would crash live sanctuary projection.
 
 ```mermaid
 flowchart LR
-    subgraph CoreHost["OpenPresenter Host (Engine & Control Shell)"]
+    subgraph CoreHost["TrueShow Host (Engine & Control Shell)"]
         Bus["Versioned Event & Command Bus<br/>(core-ipc / plugin-sdk)"]
         WasmHost["Tier 2: Wasmtime Component Host<br/>(WIT + WASI Preview 2)"]
         SidecarHost["Tier 1: Sidecar Plugin Supervisor<br/>(Local Socket + Optional SHM Bus)"]
@@ -150,10 +150,10 @@ flowchart LR
 - **Benefits:**
   - **Zero crash blast radius:** If Whisper runs out of VRAM or a lighting daemon hangs, the supervisor restarts it without touching sanctuary screens.
   - **Polyglot:** Authors can write plugins in Rust, C++, Go, Swift, or Python.
-  - **License Firewall:** Out-of-process communication over a documented IPC contract cleanly separates OpenPresenter's MPL-2.0 core from plugins carrying incompatible licenses (e.g., GPL-3.0 lighting libraries or proprietary hardware SDKs).
+  - **License Firewall:** Out-of-process communication over a documented IPC contract cleanly separates TrueShow's MPL-2.0 core from plugins carrying incompatible licenses (e.g., GPL-3.0 lighting libraries or proprietary hardware SDKs).
 
 ### Tier 2: Sandboxed WebAssembly Component Plugins (`wasmtime` + WIT)
-- **Runtime:** `wasmtime` (`Apache-2.0 WITH LLVM-exception`) executing **WebAssembly Component Model** (`.wasm`) modules defined by `wit/openpresenter-plugin.wit`.
+- **Runtime:** `wasmtime` (`Apache-2.0 WITH LLVM-exception`) executing **WebAssembly Component Model** (`.wasm`) modules defined by `wit/trueshow-plugin.wit`.
 - **Capabilities:** Strict capability-based security (WASI Preview 2) — plugins receive zero filesystem or network access unless explicitly granted by the user in Settings (e.g., scoped read access to an imported file, or allowlisted HTTP domains).
 - **Real-Time Safety:** Executed asynchronously off the render thread with strict **epoch/fuel execution deadlines** and bounded linear memory so an infinite loop cannot starve the show.
 - **Distribution:** Single cross-platform `.wasm` file works identically on Windows, macOS (Apple Silicon & Intel), and Linux without platform-specific compilation or Rust toolchain coupling.
@@ -166,7 +166,7 @@ flowchart LR
 
 | Criterion | **MPL-2.0 (Recommended)** | **GPL-3.0 + Custom Linking Exception** |
 | :--- | :--- | :--- |
-| **Protects Open-Source Core?** | **Yes (file-level copyleft).** Any modification to OpenPresenter source files must be released under MPL-2.0, preventing closed-source forks of the engine. | **Yes (strong copyleft).** Covers the entire combined work unless explicitly exempted. |
+| **Protects Open-Source Core?** | **Yes (file-level copyleft).** Any modification to TrueShow source files must be released under MPL-2.0, preventing closed-source forks of the engine. | **Yes (strong copyleft).** Covers the entire combined work unless explicitly exempted. |
 | **Dynamic NDI / DeckLink / ASIO Compatibility** | **Clean & standard.** MPL-2.0 permits combining MPL files with separately licensed or proprietary dynamically loaded runtimes in a "Larger Work" without custom legal drafting. | **Legally fragile.** Requires a lawyer-reviewed custom linking exception (and every external contributor must grant the exact exception or sign a CLA). |
 | **Dynamic LGPL-2.1+ FFmpeg Compatibility** | **Fully compatible** via LGPL dynamic linking provisions (Section 5/6) and LGPL-2.1-or-later upgrade path. | **Compatible**, though static mixing still triggers strict GPL distribution obligations. |
 | **Third-Party Plugin Ecosystem** | **Frictionless.** Commercial, MIT, Apache-2.0, and GPL plugins can all target `plugin-sdk` (`MIT OR Apache-2.0`). | **Restrictive** for non-GPL in-process plugins unless covered by carefully scoped exception text. |
@@ -190,7 +190,7 @@ flowchart LR
 | `tauri` (v2) / `tao` / `wry` | `2.12.x` | `MIT OR Apache-2.0` | Static Rust (OS WebView dynamic) | **Clean** | Uses OS WebView2 / WKWebView / WebKitGTK. |
 | Svelte 5 + TypeScript + Vite | `5.x` | `MIT` | Frontend JS bundle | **Clean** | Zero copyleft frontend dependencies. |
 | `wgpu` / `wgpu-hal` | `30.0.x` | `MIT OR Apache-2.0` | Static Rust | **Clean** | Targets Metal, D3D12, Vulkan natively. |
-| `winit` | `0.30.x` | `Apache-2.0` | Static Rust | **Clean** | Runs exclusively inside `openpresenter-engine` sidecar. |
+| `winit` | `0.30.x` | `Apache-2.0` | Static Rust | **Clean** | Runs exclusively inside `trueshow-engine` sidecar. |
 | `skia-safe` + `skia-bindings` | Latest 2026 | `MIT` (crate) / `BSD-3-Clause` (Skia) | Static prebuilt C++ lib | **Clean (Verify Notice)** | Include Skia + HarfBuzz/ICU third-party license notices in About dialog; disable optional proprietary/non-free codecs in Skia feature flags. |
 | *(Alt)* `vello` / `parley` / `skrifa` | Latest 2026 | `MIT OR Apache-2.0` | Static Rust | **Clean** | Pure-Rust fallback/future swap behind `render-text` trait. |
 

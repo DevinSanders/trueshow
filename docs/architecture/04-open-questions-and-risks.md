@@ -24,7 +24,7 @@ Before scaffolding Cargo crates or writing application code, we should explicitl
 
 **Why This Matters Now:**
 - **GPL-3.0 + custom linking exception** creates recurring legal and contributor friction: every contributor must grant the exact exception text, and dynamic loading of proprietary NDI runtimes, Blackmagic DeckLink headers, or commercial/MIT plugins remains legally scrutinized by downstream packagers.
-- **MPL-2.0** protects every core OpenPresenter source file from closed-source proprietary forks while natively allowing dynamic linking to LGPL-2.1+ FFmpeg, runtime loading of proprietary NDI/DeckLink drivers, and permissive (`MIT OR Apache-2.0`) third-party plugins.
+- **MPL-2.0** protects every core TrueShow source file from closed-source proprietary forks while natively allowing dynamic linking to LGPL-2.1+ FFmpeg, runtime loading of proprietary NDI/DeckLink drivers, and permissive (`MIT OR Apache-2.0`) third-party plugins.
 - **Blackmagic DeckLink CI Question:** Even under MPL-2.0, Blackmagic's DeckLink SDK headers carry a proprietary EULA (drivers cannot be redistributed, and developers must download the SDK from Blackmagic). Public CI cannot check DeckLink SDK headers into a clean-room repo.
 
 **Decision Needed:**

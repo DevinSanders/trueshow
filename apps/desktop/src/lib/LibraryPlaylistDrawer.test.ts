@@ -168,7 +168,7 @@ describe("LibraryPlaylistDrawer (Presentation Libraries & Playlists)", () => {
     await fireEvent.dragLeave(defaultLibRow);
     await fireEvent.drop(defaultLibRow, {
       dataTransfer: {
-        getData: (t: string) => (t === "application/x-openpresenter-song" ? "song-1" : ""),
+        getData: (t: string) => (t === "application/x-trueshow-song" ? "song-1" : ""),
       },
     });
     const plChip = screen.getByText(/Sunday Morning/).closest("div")!;
@@ -176,7 +176,7 @@ describe("LibraryPlaylistDrawer (Presentation Libraries & Playlists)", () => {
     await fireEvent.dragLeave(plChip);
     await fireEvent.drop(plChip, {
       dataTransfer: {
-        getData: (t: string) => (t === "application/x-openpresenter-song" ? "song-1" : ""),
+        getData: (t: string) => (t === "application/x-trueshow-song" ? "song-1" : ""),
       },
     });
 
@@ -186,7 +186,7 @@ describe("LibraryPlaylistDrawer (Presentation Libraries & Playlists)", () => {
     await fireEvent.dragLeave(cueList);
     await fireEvent.drop(cueList, {
       dataTransfer: {
-        getData: (t: string) => (t === "application/x-openpresenter-song" ? "song-2" : ""),
+        getData: (t: string) => (t === "application/x-trueshow-song" ? "song-2" : ""),
       },
     });
     const cueRows = cueList.querySelectorAll("li.item-row");
@@ -196,13 +196,13 @@ describe("LibraryPlaylistDrawer (Presentation Libraries & Playlists)", () => {
       await fireEvent.dragLeave(cueRows[1]);
       await fireEvent.drop(cueRows[1], {
         dataTransfer: {
-          getData: (t: string) => (t === "application/x-openpresenter-playlist-idx" ? "0" : ""),
+          getData: (t: string) => (t === "application/x-trueshow-playlist-idx" ? "0" : ""),
         },
       });
       // Dropping a song directly onto a cue row appends it
       await fireEvent.drop(cueRows[0], {
         dataTransfer: {
-          getData: (t: string) => (t === "application/x-openpresenter-song" ? "song-1" : ""),
+          getData: (t: string) => (t === "application/x-trueshow-song" ? "song-1" : ""),
         },
       });
     }

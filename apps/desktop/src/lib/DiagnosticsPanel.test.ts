@@ -5,10 +5,10 @@ import DiagnosticsPanel from "./DiagnosticsPanel.svelte";
 import type { CrashReport, DiagnosticsStatus, ExportedBundle } from "./types";
 
 const sampleStatus: DiagnosticsStatus = {
-  log_dir: "C:\\Users\\test\\AppData\\Local\\OpenPresenter\\logs",
-  crash_dir: "C:\\Users\\test\\AppData\\Local\\OpenPresenter\\crashes",
-  engine_log_path: "C:\\Users\\test\\AppData\\Local\\OpenPresenter\\logs\\engine.log",
-  desktop_log_path: "C:\\Users\\test\\AppData\\Local\\OpenPresenter\\logs\\desktop.log",
+  log_dir: "C:\\Users\\test\\AppData\\Local\\TrueShow\\logs",
+  crash_dir: "C:\\Users\\test\\AppData\\Local\\TrueShow\\crashes",
+  engine_log_path: "C:\\Users\\test\\AppData\\Local\\TrueShow\\logs\\engine.log",
+  desktop_log_path: "C:\\Users\\test\\AppData\\Local\\TrueShow\\logs\\desktop.log",
   active_log_level: "info",
   crash_count: 1,
 };
@@ -17,7 +17,7 @@ const sampleCrashes: CrashReport[] = [
   {
     id: "crash-1",
     timestamp_utc: "2026-11-24T16:00:00Z",
-    component: "openpresenter-engine",
+    component: "trueshow-engine",
     kind: "wgpu-device-error",
     app_version: "0.1.0-m3",
     pid: 1234,
@@ -56,9 +56,9 @@ describe("DiagnosticsPanel (Happy & Failure Paths)", () => {
           return currentLevel;
         case "export_diagnostics_bundle":
           return {
-            file_path: "C:\\Logs\\openpresenter-diagnostics.md",
+            file_path: "C:\\Logs\\trueshow-diagnostics.md",
             crash_count: currentCrashes.length,
-            markdown: "# OpenPresenter Diagnostic Bundle\n- Redacted OK",
+            markdown: "# TrueShow Diagnostic Bundle\n- Redacted OK",
           } satisfies ExportedBundle;
         case "clear_crash_reports": {
           const count = currentCrashes.length;

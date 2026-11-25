@@ -53,7 +53,7 @@ describe("dragStore WebView2-safe drag-and-drop state", () => {
       file_name: "Aurora.mp4",
     });
     expect(
-      readDroppedMedia(fakeDragEvent({ "application/x-openpresenter-media": "{bad" })),
+      readDroppedMedia(fakeDragEvent({ "application/x-trueshow-media": "{bad" })),
     ).toBeNull();
 
     // 4. clearAppDrag resets active drag cleanly

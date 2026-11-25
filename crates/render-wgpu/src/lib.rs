@@ -1,4 +1,4 @@
-//! Multi-surface `wgpu` 30 + `winit` 30 real-time 7-layer GPU compositor for OpenPresenter.
+//! Multi-surface `wgpu` 30 + `winit` 30 real-time 7-layer GPU compositor for TrueShow.
 //!
 //! Integrates `render-text` (`BroadcastRasterizer`) to upload cached premultiplied RGBA8
 //! typography/vector textures to the GPU on slide mutation while compositing motion
@@ -1029,7 +1029,7 @@ impl CompositorApp {
         stagger_idx: usize,
     ) -> WindowAttributes {
         let mut attrs = WindowAttributes::default()
-            .with_title(format!("OpenPresenter Output — {}", cfg.name));
+            .with_title(format!("TrueShow Output — {}", cfg.name));
 
         match cfg.effective_placement() {
             OutputPlacement::Fullscreen => {
@@ -1089,7 +1089,7 @@ impl CompositorApp {
         window: &Window,
         cfg: &OutputConfig,
     ) {
-        window.set_title(&format!("OpenPresenter Output — {}", cfg.name));
+        window.set_title(&format!("TrueShow Output — {}", cfg.name));
         match cfg.effective_placement() {
             OutputPlacement::Fullscreen => {
                 let target_mon = cfg
@@ -1470,7 +1470,7 @@ impl ApplicationHandler<EngineWakeEvent> for CompositorApp {
 
         let (device, queue) = match pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
-                label: Some("openpresenter_compositor_device"),
+                label: Some("trueshow_compositor_device"),
                 required_features: wgpu::Features::empty(),
                 required_limits: wgpu::Limits::default(),
                 ..Default::default()
@@ -1489,7 +1489,7 @@ impl ApplicationHandler<EngineWakeEvent> for CompositorApp {
             let paths = core_diagnostics::DiagnosticsPaths::default_system();
             let _ = core_diagnostics::record_runtime_error(
                 &paths,
-                "openpresenter-engine",
+                "trueshow-engine",
                 "wgpu-device-error",
                 env!("CARGO_PKG_VERSION"),
                 &err.to_string(),
@@ -1499,7 +1499,7 @@ impl ApplicationHandler<EngineWakeEvent> for CompositorApp {
         }));
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("openpresenter_compositor_wgsl"),
+            label: Some("trueshow_compositor_wgsl"),
             source: wgpu::ShaderSource::Wgsl(include_str!("compositor.wgsl").into()),
         });
 

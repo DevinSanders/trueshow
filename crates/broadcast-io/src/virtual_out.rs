@@ -107,9 +107,9 @@ mod tests {
             Err(VirtualOutputError::EmptyName)
         ));
 
-        let mut sink = VirtualOutputSink::create("OpenPresenter Spout/Syphon", &path, 4, 4)
+        let mut sink = VirtualOutputSink::create("TrueShow Spout/Syphon", &path, 4, 4)
             .expect("create virtual output");
-        assert_eq!(sink.name(), "OpenPresenter Spout/Syphon");
+        assert_eq!(sink.name(), "TrueShow Spout/Syphon");
         assert_eq!(sink.backend(), VirtualOutputBackend::native_for_host());
         assert_eq!(sink.shm_path(), path);
 

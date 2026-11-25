@@ -1,6 +1,6 @@
-//! Tauri 2 Rust bridge for the OpenPresenter operator control surface (M1).
+//! Tauri 2 Rust bridge for the TrueShow operator control surface (M1).
 //!
-//! Strictly acts as an IPC client to `openpresenter-engine` + local offline SQLite library host:
+//! Strictly acts as an IPC client to `trueshow-engine` + local offline SQLite library host:
 //! - Control plane: framed binary `EngineCommand` over `interprocess` local sockets.
 //! - Preview plane: lock-free shared-memory RGBA8 ring streamed via Tauri `Channel<Response>`.
 //! - Local library: offline SQLite WAL + FTS5 persistence (`core-library`).
@@ -50,7 +50,7 @@ struct BroadcastProfileState {
 impl Default for BroadcastProfileState {
     fn default() -> Self {
         Self {
-            source_name: "OpenPresenter — Main Broadcast".to_string(),
+            source_name: "TrueShow — Main Broadcast".to_string(),
             alpha_mode: "PremultipliedAlpha".to_string(),
             decklink_mode: "ExternalKeyAndFill".to_string(),
             streaming_active: false,
@@ -75,7 +75,7 @@ struct EngineBridgeState {
 impl EngineBridgeState {
     fn new(diagnostics: DiagnosticsPaths, logging: Option<LoggingController>) -> Self {
         let db_path = std::env::temp_dir()
-            .join("openpresenter-data")
+            .join("trueshow-data")
             .join("library.sqlite3");
         let store = LibraryStore::open(&db_path)
             .or_else(|_| LibraryStore::open_in_memory())
@@ -112,7 +112,7 @@ impl EngineBridgeState {
             return Ok(());
         }
         if !auto_spawn {
-            return Err("openpresenter-engine is not running".to_string());
+            return Err("trueshow-engine is not running".to_string());
         }
         let log_level = self
             .logging
@@ -128,7 +128,7 @@ impl EngineBridgeState {
             }
         }
         Err(format!(
-            "timed out waiting for openpresenter-engine on socket '{}'",
+            "timed out waiting for trueshow-engine on socket '{}'",
             self.socket_name
         ))
     }
@@ -157,9 +157,9 @@ impl EngineBridgeState {
 
 fn find_engine_binary() -> Option<PathBuf> {
     let bin_name = if cfg!(windows) {
-        "openpresenter-engine.exe"
+        "trueshow-engine.exe"
     } else {
-        "openpresenter-engine"
+        "trueshow-engine"
     };
 
     if let Ok(exe) = std::env::current_exe()
@@ -198,7 +198,7 @@ fn spawn_engine_sidecar(
     diag_paths: DiagnosticsPaths,
 ) -> Result<(), String> {
     let bin = find_engine_binary().ok_or_else(|| {
-        "could not locate `openpresenter-engine` binary; run `cargo build --bin openpresenter-engine` first"
+        "could not locate `trueshow-engine` binary; run `cargo build --bin trueshow-engine` first"
             .to_string()
     })?;
     info!(
@@ -224,16 +224,16 @@ fn spawn_engine_sidecar(
         .name(format!("engine-exit-watcher-{child_pid}"))
         .spawn(move || match child.wait() {
             Ok(status) if status.success() => {
-                info!(pid = child_pid, "openpresenter-engine exited cleanly");
+                info!(pid = child_pid, "trueshow-engine exited cleanly");
             }
             Ok(status) => {
                 let msg = format!(
-                    "openpresenter-engine (pid={child_pid}) exited abnormally with status: {status}"
+                    "trueshow-engine (pid={child_pid}) exited abnormally with status: {status}"
                 );
                 error!("{msg}");
                 let _ = core_diagnostics::record_runtime_error(
                     &diag_paths,
-                    "openpresenter-engine",
+                    "trueshow-engine",
                     "sidecar-abnormal-exit",
                     env!("CARGO_PKG_VERSION"),
                     &msg,
@@ -1699,7 +1699,7 @@ fn detect_lan_ipv4() -> String {
 fn read_web_stage_port() -> u16 {
     std::fs::read_to_string(
         std::env::temp_dir()
-            .join("openpresenter-data")
+            .join("trueshow-data")
             .join("web_stage_port.txt"),
     )
     .ok()
@@ -2600,7 +2600,7 @@ struct PdfImportResultDto {
 
 fn managed_imported_media_dir() -> PathBuf {
     std::env::temp_dir()
-        .join("openpresenter-data")
+        .join("trueshow-data")
         .join("imported-media")
 }
 
@@ -3405,10 +3405,10 @@ fn export_library_backup(
     bridge: State<'_, Arc<EngineBridgeState>>,
 ) -> Result<BackupSummaryDto, String> {
     let dir = std::env::temp_dir()
-        .join("openpresenter-data")
+        .join("trueshow-data")
         .join("backups");
     let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
-    let dest = dir.join(format!("openpresenter-backup-{ts}.opbundle"));
+    let dest = dir.join(format!("trueshow-backup-{ts}.tsbundle"));
     let lib = bridge.library.lock().map_err(|e| e.to_string())?;
     let item_count = lib.export_backup_bundle(&dest).map_err(|e| e.to_string())?;
     Ok(BackupSummaryDto {
@@ -3424,7 +3424,7 @@ fn import_library_backup(
 ) -> Result<BackupSummaryDto, String> {
     let trimmed = file_path.trim();
     if trimmed.is_empty() {
-        return Err("Provide a .opbundle file path to restore".to_string());
+        return Err("Provide a .tsbundle file path to restore".to_string());
     }
     let src = PathBuf::from(trimmed);
     let lib = bridge.library.lock().map_err(|e| e.to_string())?;
@@ -3447,11 +3447,11 @@ fn list_plugin_tiers() -> Vec<plugin_host::RegisteredPluginInfo> {
     let mut supervisor = plugin_host::SidecarSupervisor::default();
     let _ = supervisor.register(
         plugin_sdk::PluginManifest {
-            id: "org.openpresenter.whisper-stt".to_string(),
+            id: "org.trueshow.whisper-stt".to_string(),
             name: "Local Whisper STT (Optional Sidecar)".to_string(),
             version: "0.1.0".to_string(),
             tier: plugin_sdk::PluginTier::SidecarProcess,
-            entrypoint: "openpresenter-whisper-sidecar".to_string(),
+            entrypoint: "trueshow-whisper-sidecar".to_string(),
             capabilities: vec![
                 plugin_sdk::PluginCapability::AudioTap,
                 plugin_sdk::PluginCapability::CueTrigger,
@@ -3470,7 +3470,7 @@ async fn shutdown_engine(bridge: State<'_, Arc<EngineBridgeState>>) -> Result<()
     Ok(())
 }
 
-/// Gracefully stops the decoupled `openpresenter-engine` sidecar (closing all native GPU
+/// Gracefully stops the decoupled `trueshow-engine` sidecar (closing all native GPU
 /// Audience/Stage/Broadcast windows), releases SHM readers, closes all Tauri windows, and exits.
 #[tauri::command]
 async fn shutdown_all(
@@ -3660,7 +3660,7 @@ fn report_frontend_crash(
     error!(kind = %kind, message = %message, "recorded frontend UI crash report");
     core_diagnostics::record_runtime_error(
         &bridge.diagnostics,
-        "openpresenter-ui",
+        "trueshow-ui",
         &kind,
         env!("CARGO_PKG_VERSION"),
         &message,
@@ -3697,7 +3697,7 @@ fn export_diagnostics_bundle(
 pub fn run() {
     let diag_paths = DiagnosticsPaths::default_system();
     core_diagnostics::install_crash_hook(
-        "openpresenter-desktop",
+        "trueshow-desktop",
         env!("CARGO_PKG_VERSION"),
         diag_paths.clone(),
     );
@@ -3705,7 +3705,7 @@ pub fn run() {
     info!(
         log_dir = %diag_paths.log_dir.display(),
         crash_dir = %diag_paths.crash_dir.display(),
-        "OpenPresenter desktop control surface starting with persistent diagnostics"
+        "TrueShow desktop control surface starting with persistent diagnostics"
     );
 
     let bridge = Arc::new(EngineBridgeState::new(diag_paths, logging));
@@ -3834,5 +3834,5 @@ pub fn run() {
             export_diagnostics_bundle,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running OpenPresenter desktop control surface");
+        .expect("error while running TrueShow desktop control surface");
 }

@@ -1,4 +1,4 @@
-//! Complete Show Control & Stage Display engine for OpenPresenter.
+//! Complete Show Control & Stage Display engine for TrueShow.
 //!
 //! - [`timers`]: Concurrent Countdown, Count-Up, and Elapsed timers with overrun formatting.
 //! - [`macros`]: Reusable multi-action automations with cycle guards.

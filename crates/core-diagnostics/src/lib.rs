@@ -1,5 +1,5 @@
 //! Persistent rolling debug logging, panic/crash report capture, and redacted
-//! diagnostic bundle export shared by `openpresenter-engine` and `apps/desktop`.
+//! diagnostic bundle export shared by `trueshow-engine` and `apps/desktop`.
 //!
 //! Privacy-first & offline-first: nothing is ever transmitted over the network automatically.
 //! Operators inspect logs/crashes locally or export a redacted Markdown bundle to attach to
@@ -87,7 +87,7 @@ impl LogLevel {
     }
 }
 
-/// Filesystem layout for OpenPresenter logs and crash reports.
+/// Filesystem layout for TrueShow logs and crash reports.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiagnosticsPaths {
     pub root_dir: PathBuf,
@@ -96,9 +96,9 @@ pub struct DiagnosticsPaths {
 }
 
 impl DiagnosticsPaths {
-    /// Resolves OS-standard local diagnostics directories (overridable via `OPENPRESENTER_LOG_DIR`).
+    /// Resolves OS-standard local diagnostics directories (overridable via `TRUESHOW_LOG_DIR`).
     pub fn default_system() -> Self {
-        let root = if let Ok(custom) = std::env::var("OPENPRESENTER_LOG_DIR")
+        let root = if let Ok(custom) = std::env::var("TRUESHOW_LOG_DIR")
             && !custom.trim().is_empty()
         {
             PathBuf::from(custom)
@@ -137,7 +137,7 @@ fn default_os_root_dir() -> PathBuf {
         if let Ok(local_app_data) = std::env::var("LOCALAPPDATA")
             && !local_app_data.trim().is_empty()
         {
-            return PathBuf::from(local_app_data).join("OpenPresenter");
+            return PathBuf::from(local_app_data).join("TrueShow");
         }
     }
     #[cfg(target_os = "macos")]
@@ -148,7 +148,7 @@ fn default_os_root_dir() -> PathBuf {
             return PathBuf::from(home)
                 .join("Library")
                 .join("Logs")
-                .join("OpenPresenter");
+                .join("TrueShow");
         }
     }
     #[cfg(all(unix, not(target_os = "macos")))]
@@ -156,7 +156,7 @@ fn default_os_root_dir() -> PathBuf {
         if let Ok(state) = std::env::var("XDG_STATE_HOME")
             && !state.trim().is_empty()
         {
-            return PathBuf::from(state).join("openpresenter");
+            return PathBuf::from(state).join("trueshow");
         }
         if let Ok(home) = std::env::var("HOME")
             && !home.trim().is_empty()
@@ -164,10 +164,10 @@ fn default_os_root_dir() -> PathBuf {
             return PathBuf::from(home)
                 .join(".local")
                 .join("share")
-                .join("openpresenter");
+                .join("trueshow");
         }
     }
-    std::env::temp_dir().join("openpresenter-diagnostics")
+    std::env::temp_dir().join("trueshow-diagnostics")
 }
 
 fn sanitize_filename_token(input: &str) -> String {
@@ -693,7 +693,7 @@ pub fn export_diagnostic_bundle(
     let desktop_logs = read_recent_logs(paths, "desktop", 150)?;
 
     let mut md = String::new();
-    md.push_str("# OpenPresenter Diagnostic Bundle\n\n");
+    md.push_str("# TrueShow Diagnostic Bundle\n\n");
     md.push_str(&format!("- **Generated (UTC):** `{}`\n", now.to_rfc3339()));
     md.push_str(&format!("- **Version:** `{app_version}`\n"));
     md.push_str(&format!(
@@ -746,7 +746,7 @@ pub fn export_diagnostic_bundle(
 
     let redacted = redact_sensitive_text(&md);
     let out_file = paths.log_dir.join(format!(
-        "openpresenter-diagnostics-{}.md",
+        "trueshow-diagnostics-{}.md",
         now.format("%Y%m%dT%H%M%SZ")
     ));
     fs::write(&out_file, &redacted)?;
@@ -764,7 +764,7 @@ mod tests {
 
     fn temp_paths(tag: &str) -> DiagnosticsPaths {
         let dir = std::env::temp_dir().join(format!(
-            "openpresenter-diag-test-{tag}-{}",
+            "trueshow-diag-test-{tag}-{}",
             Uuid::new_v4()
         ));
         DiagnosticsPaths::from_root(dir)
@@ -804,7 +804,7 @@ mod tests {
         let engine_log = paths.log_file_for("engine");
         let writer = RollingFileWriter::new(&engine_log, 300, 3).expect("create writer");
         for i in 0..15 {
-            let line = format!("2026-11-24T10:00:{i:02}Z INFO openpresenter_engine line={i} padding_data_0123456789\n");
+            let line = format!("2026-11-24T10:00:{i:02}Z INFO trueshow_engine line={i} padding_data_0123456789\n");
             let mut guard = writer.make_writer();
             guard.write_all(line.as_bytes()).expect("write line");
             guard.flush().expect("flush");
@@ -847,7 +847,7 @@ mod tests {
         paths.ensure_dirs().expect("ensure dirs");
         fs::write(
             paths.log_file_for("engine"),
-            "INFO started from C:\\Users\\PastorBob\\OpenPresenter\nDEBUG Authorization: secret-xyz-123\n",
+            "INFO started from C:\\Users\\PastorBob\\TrueShow\nDEBUG Authorization: secret-xyz-123\n",
         )
         .expect("write log");
         fs::write(
@@ -861,7 +861,7 @@ mod tests {
 
         let r1 = record_runtime_error(
             &paths,
-            "openpresenter-engine",
+            "trueshow-engine",
             "wgpu-device-error",
             "0.1.0-m3",
             "Vulkan swapchain surface lost",
@@ -869,12 +869,12 @@ mod tests {
             Some("frame 0: render_output"),
         )
         .expect("record r1");
-        assert_eq!(r1.component, "openpresenter-engine");
+        assert_eq!(r1.component, "trueshow-engine");
         assert!(!r1.recent_logs.is_empty());
 
         let r2 = record_runtime_error(
             &paths,
-            "openpresenter-ui",
+            "trueshow-ui",
             "ui-unhandled-error",
             "0.1.0-m3",
             "TypeError: cannot read properties of null",
@@ -896,7 +896,7 @@ mod tests {
         .expect("export bundle");
         assert_eq!(bundle.crash_count, 2);
         assert!(Path::new(&bundle.file_path).exists());
-        assert!(bundle.markdown.contains("C:\\Users\\<redacted>\\OpenPresenter"));
+        assert!(bundle.markdown.contains("C:\\Users\\<redacted>\\TrueShow"));
         assert!(bundle.markdown.contains("/Users/<redacted>/songs"));
         assert!(bundle.markdown.contains("/home/<redacted>/media"));
         assert!(!bundle.markdown.contains("PastorBob"));

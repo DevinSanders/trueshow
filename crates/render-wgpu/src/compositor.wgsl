@@ -1,4 +1,4 @@
-// OpenPresenter M1 7-Layer GPU Compositor Shader
+// TrueShow M1 7-Layer GPU Compositor Shader
 // Composites motion backgrounds, Dissolve/Push/Wipe transitions, real rasterized
 // premultiplied RGBA8 slide/stage text textures, blend modes, masks, and overlays.
 

@@ -1,14 +1,14 @@
-# OpenPresenter — Complete User Guide
+# TrueShow — Complete User Guide
 
-Welcome to **OpenPresenter**, an open-source, cross-platform (**Windows, macOS, Linux**) worship and live-event presentation suite built on a native **Rust + `wgpu` GPU engine** with a fast, low-clutter desktop control surface.
+Welcome to **TrueShow**, an open-source, cross-platform (**Windows, macOS, Linux**) worship and live-event presentation suite built on a native **Rust + `wgpu` GPU engine** with a fast, low-clutter desktop control surface.
 
-This guide walks new operators through their first Sunday service and serves as a complete reference for **every workspace, menu item, drawer, button, right-click menu, drag-and-drop workflow, import format, broadcast output, and keyboard shortcut** included in OpenPresenter.
+This guide walks new operators through their first Sunday service and serves as a complete reference for **every workspace, menu item, drawer, button, right-click menu, drag-and-drop workflow, import format, broadcast output, and keyboard shortcut** included in TrueShow.
 
 ---
 
 ## Table of Contents
 
-1. [How OpenPresenter Works (Architecture & Sunday-Morning Safety)](#1-how-openpresenter-works-architecture--sunday-morning-safety)
+1. [How TrueShow Works (Architecture & Sunday-Morning Safety)](#1-how-trueshow-works-architecture--sunday-morning-safety)
 2. [Getting Started & Interface Tour](#2-getting-started--interface-tour)
    - [Top Application Menu Bar](#21-top-application-menu-bar)
    - [Bottom Live Telemetry Status Bar](#22-bottom-live-telemetry-status-bar)
@@ -40,21 +40,21 @@ This guide walks new operators through their first Sunday service and serves as 
     - [Planning Center Online (Services v2) Attachments Importer](#164-planning-center-online-services-v2-attachments-importer)
     - [Paste Worship Document Importer](#165-paste-worship-document-importer)
 17. [Automated CCLI License & Song Attribution Display + CSV Audit Reports](#17-automated-ccli-license--song-attribution-display--csv-audit-reports)
-18. [Portable Full-Library Backup & Restore (`.opbundle`)](#18-portable-full-library-backup--restore-opbundle)
+18. [Portable Full-Library Backup & Restore (`.tsbundle`)](#18-portable-full-library-backup--restore-tsbundle)
 19. [Diagnostics, Rolling Logs, Crash Reports & Recovery](#19-diagnostics-rolling-logs-crash-reports--recovery)
 20. [Complete Keyboard Shortcuts Reference](#20-complete-keyboard-shortcuts-reference)
 
 ---
 
-## 1. How OpenPresenter Works (Architecture & Sunday-Morning Safety)
+## 1. How TrueShow Works (Architecture & Sunday-Morning Safety)
 
-OpenPresenter is intentionally engineered as **two cooperating processes**:
+TrueShow is intentionally engineered as **two cooperating processes**:
 
-1. **`openpresenter-engine` (Decoupled GPU Render Sidecar):**
+1. **`trueshow-engine` (Decoupled GPU Render Sidecar):**
    - Renders every physical Audience display, Stage Confidence display, and Broadcast feed directly on your graphics card (`DX12`, `Vulkan`, or `Metal` via `wgpu`).
    - **Never uses a web browser to draw your sanctuary screens.**
    - Streams real-time RGBA8 thumbnails back to the operator UI over lock-free shared memory.
-2. **`openpresenter-desktop` (Operator Control Surface):**
+2. **`trueshow-desktop` (Operator Control Surface):**
    - The lightweight operator window where you organize playlists, click slides, edit text, manage timers, and configure screens.
 
 > **Why this matters on Sunday morning:** If you ever reload the operator UI (**File → Reload UI (Keep Live)**) — or even if the UI window closes unexpectedly — **your sanctuary screens stay completely live at 60 fps with zero blackout.** When the UI reopens, it seamlessly re-attaches to the running GPU engine.
@@ -65,9 +65,9 @@ OpenPresenter is intentionally engineered as **two cooperating processes**:
 
 ## 2. Getting Started & Interface Tour
 
-When you launch OpenPresenter, the app automatically connects to `openpresenter-engine` and opens directly into the **Show Workspace**.
+When you launch TrueShow, the app automatically connects to `trueshow-engine` and opens directly into the **Show Workspace**.
 
-![OpenPresenter Show Workspace](images/01-show-workspace.png)
+![TrueShow Show Workspace](images/01-show-workspace.png)
 
 The Show Workspace is divided into six focused zones:
 
@@ -93,12 +93,12 @@ Instead of crowding dozens of buttons across the top edge of the window, all nav
 
 | Menu | Items & What They Do |
 | :--- | :--- |
-| **File** | **Show Deck**, **Scripture Lookup**, **Quick Lyrics & Arrangements**, **Import Files & Planning Center…**, **Backup & Restore (`.opbundle`)…**, **Reconnect Engine**, **Reload UI (Keep Live)** (reloads the operator window without interrupting live outputs), **Stop Engine** (stops the sidecar render engine only), **Shutdown All** (gracefully closes both the UI and the GPU engine). |
+| **File** | **Show Deck**, **Scripture Lookup**, **Quick Lyrics & Arrangements**, **Import Files & Planning Center…**, **Backup & Restore (`.tsbundle`)…**, **Reconnect Engine**, **Reload UI (Keep Live)** (reloads the operator window without interrupting live outputs), **Stop Engine** (stops the sidecar render engine only), **Shutdown All** (gracefully closes both the UI and the GPU engine). |
 | **Edit** | **Undo (`Ctrl+Z`)**, **Redo (`Ctrl+Y`)**, **Slide Editor**, **Overlays & Messages**. |
 | **View** | Switch between **Show Workspace**, **Scripture Drawer**, **Quick Lyrics**, and check/uncheck **Libraries & Playlists Drawer**, **Layer Manager Dock**, and **Media Bin Drawer** to show or hide workspace panels. |
 | **Screens** | **Configure Screens & Monitors**, **Looks & Templates**, **Stage Layout Designer**, **Broadcast I/O & LAN Remote**. |
-| **Tools** | **Live Timers**, **Macros, Calendar & OSC**, **Import & Planning Center**, **CCLI Attribution & Reports**, **Backup & Restore (`.opbundle`)**, and **Diagnostics & Logs** (displays a crash badge count if any issue was recorded). |
-| **Help** | **User Guide** (opens this complete illustrated manual right inside OpenPresenter, 100% offline with search and click-to-zoom screenshots), **Keyboard Shortcuts** (jumps straight to Section 20), and **Diagnostics & Logs**. |
+| **Tools** | **Live Timers**, **Macros, Calendar & OSC**, **Import & Planning Center**, **CCLI Attribution & Reports**, **Backup & Restore (`.tsbundle`)**, and **Diagnostics & Logs** (displays a crash badge count if any issue was recorded). |
+| **Help** | **User Guide** (opens this complete illustrated manual right inside TrueShow, 100% offline with search and click-to-zoom screenshots), **Keyboard Shortcuts** (jumps straight to Section 20), and **Diagnostics & Logs**. |
 
 On the far right of the Menu Bar:
 - **Active View Pill:** Shows which screen you are currently viewing (e.g., `Show Deck`, `Slide Editor`, `Import & Planning Center`).
@@ -118,7 +118,7 @@ The slim `24px` footer keeps critical production health visible at a glance with
 
 ### 2.3 Context-Aware Right-Click Menus & Cascading Submenus
 
-OpenPresenter replaces the default browser context menu with **context-aware operator menus** tailored to whatever item you right-click. *(Standard Copy/Paste/Cut right-click menus still work normally whenever you right-click inside a text box or search field.)*
+TrueShow replaces the default browser context menu with **context-aware operator menus** tailored to whatever item you right-click. *(Standard Copy/Paste/Cut right-click menus still work normally whenever you right-click inside a text box or search field.)*
 
 ![Right-Click Context Menu with Cascading Submenu](images/03-context-menu-submenu.png)
 
@@ -205,7 +205,7 @@ The left-hand **Libraries & Playlists Drawer** organizes all of your church's so
 
 ## 5. The 7-Layer GPU Compositor & Media Bins (Background vs. Foreground)
 
-OpenPresenter renders every screen as a deterministic **7-layer GPU stack** from bottom (`L0`) to top (`L6`), visible in the **Composition Layers Dock**:
+TrueShow renders every screen as a deterministic **7-layer GPU stack** from bottom (`L0`) to top (`L6`), visible in the **Composition Layers Dock**:
 
 | Layer | Name | Persistence Behavior | Typical Use |
 | :---: | :--- | :--- | :--- |
@@ -239,14 +239,14 @@ Directly above the Cue Deck slides sits the **Arrangements & Auto-Play Strip**. 
 
 ### 6.1 Creating & Reordering Song Arrangements
 
-Just like ProPresenter's Master vs. Arrangement workflow, OpenPresenter keeps every song's original slides safely in its **Master** order while letting you save unlimited custom arrangements (e.g., `Sunday Standard`, `Acoustic Short`, `Youth Night`) persisted directly in SQLite:
+Just like ProPresenter's Master vs. Arrangement workflow, TrueShow keeps every song's original slides safely in its **Master** order while letting you save unlimited custom arrangements (e.g., `Sunday Standard`, `Acoustic Short`, `Youth Night`) persisted directly in SQLite:
 
 1. **Switch Arrangements:** Use the **`Arrangement`** dropdown (`Master` or any saved arrangement) to immediately reshape the Cue Deck slide sequence live.
 2. **Create, Duplicate or Delete:** Type a name in `New arrangement name...` and click **`+ New`**, click **`Duplicate`** to clone the active arrangement, or click **`Delete`** to remove it.
 3. **Drag-and-Drop Groups or Slides (Copy & Repeat Sections):**
    - **Master Groups Palette:** Drag any color-coded group token (`Verse 1`, `Chorus`, `Verse 2`, `Bridge`, `Verse 3`) into the **Arrangement Track** below — or simply click it to append it to the end. You can drop `Chorus` or `Bridge` as many times as needed without duplicating lyrics!
    - **Drag Directly from Master Slide Cards:** You can also drag any slide card straight from the Master deck into the Arrangement Track to insert its section group at an exact slot.
-   - **Reorder & Remove:** Drag any numbered pill inside the **Arrangement Track** left or right to reorder sections, or click its **`×`** button to remove that instance. If you edit while `Master` is selected, OpenPresenter automatically creates a new `Custom Arrangement` so your Master slides are never overwritten.
+   - **Reorder & Remove:** Drag any numbered pill inside the **Arrangement Track** left or right to reorder sections, or click its **`×`** button to remove that instance. If you edit while `Master` is selected, TrueShow automatically creates a new `Custom Arrangement` so your Master slides are never overwritten.
 
 ---
 
@@ -258,7 +258,7 @@ Need slides to advance automatically with a backing track, click track, announce
    - Optionally set a name in **`Rec Track Name`** (e.g., `Sunday Band Click Track (76 BPM)`).
    - Click **`● Record Cues`** in the strip bar. A live red timer (`● REC 00:08.4 (3 cues)`) begins counting with `0.1s` precision.
    - Simply click through your slides (or press `Space`/`ArrowRight`) in real time with the music or speaker. Every slide trigger and dwell time is captured automatically.
-   - Click **`■ Stop & Save Rec`**. OpenPresenter saves the recorded `AutoPlayTrack` to SQLite for that song **and** stamps each slide's individual `auto_advance_secs` timer!
+   - Click **`■ Stop & Save Rec`**. TrueShow saves the recorded `AutoPlayTrack` to SQLite for that song **and** stamps each slide's individual `auto_advance_secs` timer!
 2. **Running Auto-Play (`▶ Auto-Play`):**
    - Choose your **`Playback Source`**: either **`Per-Slide Timers`** (uses each slide's `⏱` timer, falling back to `Fallback (s)`) or any saved **Recorded Cue Track**.
    - Check **`Loop`** if you want playback to restart automatically from the beginning (great for pre-service announcement loops!).
@@ -281,7 +281,7 @@ Open via **View → Scripture Drawer** (or **File → Scripture Lookup**).
 
 ![Scripture Lookup with Dual-Translation KJV and WEB](images/05-scripture-lookup.png)
 
-OpenPresenter includes built-in Public Domain **KJV** and **WEB** Bible passages indexed in local SQLite FTS5 (plus you can import additional OSIS XML Bibles in **Tools → Import & PCO**):
+TrueShow includes built-in Public Domain **KJV** and **WEB** Bible passages indexed in local SQLite FTS5 (plus you can import additional OSIS XML Bibles in **Tools → Import & PCO**):
 
 1. **Quick Reference Chips:** Click preset passages (`John 3:16-17`, `Psalm 23:1-3`, `Psalm 100:1-2`, `Romans 8:28`, `Numbers 6:24-26`) for instant lookup.
 2. **Reference or Keyword Search:** Enter any reference (`John 3:16-17`, `Ps 23`, `Rom 8:28`) **or** plain keywords (`shepherd`, `love`, `peace`) and click **`Search`**.
@@ -323,7 +323,7 @@ This panel controls Layers 4 (`Props & Overlays`) and 6 (`Messages & Timers`) pl
    - Configure each overlay's **Name**, **Text**, and exact 1920×1080 coordinates (`X`, `Y`, `Width`, `Height`), then save or delete it.
 2. **Audience & Stage Message Templates (Layer 6):**
    - Create reusable templates with curly-brace tokens — for example: `Parent with Tag #{code}, please check Nursery Room {room}.`
-   - OpenPresenter automatically detects every `{token}` and generates quick fill-in boxes (`code`, `room`).
+   - TrueShow automatically detects every `{token}` and generates quick fill-in boxes (`code`, `room`).
    - Check **`Audience`** and/or **`Stage`** to route the alert to the congregation, the stage display, or both, then click **`Show Message Live`** (or **`Clear Message`** when done).
 3. **Live Dynamic Variables (`{{var:Name}}`):**
    - Define global key-value variables (such as `ServiceName = Sunday 10:00 AM`, `Campus = Main Sanctuary`, `WifiPass = GraceGuest2026`).
@@ -357,7 +357,7 @@ Open via **Screens → Configure Screens & Monitors** (or click **`Configure`** 
 
 ### Physical Displays & Borderless Grid Splitting
 
-At the top, OpenPresenter automatically lists every connected physical display (resolution, coordinates, refresh rate) and shows which logical screens are mapped onto each display:
+At the top, TrueShow automatically lists every connected physical display (resolution, coordinates, refresh rate) and shows which logical screens are mapped onto each display:
 
 - **Quick Screen Presets:** Click **`+ New Audience`**, **`+ New Broadcast Lower-Third`**, or **`+ New Stage`** to spin up a new GPU output immediately.
 - **Full-Screen Assignment:** Click **`Full Screen`** under any detected monitor to map an output across the entire display.
@@ -430,7 +430,7 @@ Open via **Screens → Broadcast I/O & LAN Remote**.
 
 ### Broadcast Video Outputs & Runtime Probing
 
-Click **`Probe Runtimes`** at any time to detect installed broadcast drivers (OpenPresenter loads proprietary drivers dynamically at runtime and never bundles proprietary SDK DLLs):
+Click **`Probe Runtimes`** at any time to detect installed broadcast drivers (TrueShow loads proprietary drivers dynamically at runtime and never bundles proprietary SDK DLLs):
 
 - **NDI 6.x (Dynamic Runtime):** Sends live video + straight or premultiplied alpha over gigabit Ethernet to OBS, vMix, TriCaster, or Wirecast.
 - **Open Media Transport (OMT):** Built-in open-source (MIT) low-latency LAN video + alpha + mDNS discovery transport.
@@ -440,7 +440,7 @@ Click **`Probe Runtimes`** at any time to detect installed broadcast drivers (Op
 
 ### LAN Browser Stage Display & PIN-Protected Mobile Remote Controller
 
-OpenPresenter automatically detects your machine's real LAN IPv4 address and hosts two zero-install browser apps on your local network:
+TrueShow automatically detects your machine's real LAN IPv4 address and hosts two zero-install browser apps on your local network:
 
 1. **LAN Browser Stage Display** (e.g., `http://192.168.1.42:8765/`): Open on any iPad, tablet, or secondary laptop on church Wi-Fi for an extra real-time WebSocket stage confidence monitor.
 2. **LAN Mobile Remote Controller** (e.g., `http://192.168.1.42:8765/remote`, default **PIN: `2026`**): Lets a pastor, worship leader, or roving tech volunteer control slides (`Prev`/`Next`), trigger `Blackout` / `Clear`, and draw live on-screen annotations using the touch **Telestrator Laser Pointer** right from their phone!
@@ -471,7 +471,7 @@ The **Tools** menu organizes automation, importing, CCLI compliance, and backups
 - **Calendar Schedule (Right Card — Top):**
   - Schedule any saved macro to fire automatically at an exact wall-clock **`HH:MM`** time (e.g., `09:55` Pre-Service Countdown, `10:00` Worship Start).
 - **OSC & Bitfocus Companion Control (Right Card — Bottom):**
-  - Select **`OSC`**, **`Bitfocus Companion`**, or **`Macro Step`**, enter a command (such as `/openpresenter/blackout 0`), and click **`Send`** to test or trigger external hardware/lighting/stream-deck integrations.
+  - Select **`OSC`**, **`Bitfocus Companion`**, or **`Macro Step`**, enter a command (such as `/trueshow/blackout 0`), and click **`Send`** to test or trigger external hardware/lighting/stream-deck integrations.
 
 ---
 
@@ -492,13 +492,13 @@ Before importing any song, slide deck, or media file, choose exactly where it sh
 
 ### 16.2 Local Presentation & Lyrics Import (PDF, Images, PPTX, Keynote, FreeShow, ProPresenter)
 
-In **Section 1**, enter a local file path — or an entire **image folder path** — and click **`Import Presentation / Lyrics`**. OpenPresenter automatically detects the format by file extension:
+In **Section 1**, enter a local file path — or an entire **image folder path** — and click **`Import Presentation / Lyrics`**. TrueShow automatically detects the format by file extension:
 
-| Format | Extensions | How OpenPresenter Imports It |
+| Format | Extensions | How TrueShow Imports It |
 | :--- | :--- | :--- |
 | **Lyric Sheet & Chord Chart PDF** | `.pdf` | Pure-Rust PDF text & `/FlateDecode` stream parser extracts lyrics, strips SongSelect footers, separates guitar chords onto Stage chord strips, builds color-coded Verse/Chorus/Bridge slides, and auto-detects **CCLI Song #**, **Author**, **Copyright**, and **Arrangements**! |
 | **Single Image or Folder of Images** | `.png`, `.jpg`, `.jpeg`, `.bmp`, `.webp`, or a folder path | Turns a single graphic or an entire sorted folder of announcement/sermon slides into a ready-to-present slide deck (with every image safely hashed into your local library). |
-| **Microsoft PowerPoint** | `.pptx` | Unpacks OOXML slides, extracts slide titles, bullet text, and embedded slide visuals directly into native OpenPresenter slides. |
+| **Microsoft PowerPoint** | `.pptx` | Unpacks OOXML slides, extracts slide titles, bullet text, and embedded slide visuals directly into native TrueShow slides. |
 | **Apple Keynote** | `.key` | Parses Keynote package archives (XML text & embedded slide preview images) into clean presentation slides. |
 | **Other Worship Suites** | `.show` (FreeShow), `.pro6` (ProPresenter), `.xml` (OpenSong / OpenLyrics), `.cho`/`.crd` (ChordPro), `.usr` (SongSelect) | Clean-room native parsers preserve song metadata, CCLI numbers, and section groupings. |
 
@@ -506,15 +506,15 @@ In **Section 1**, enter a local file path — or an entire **image folder path**
 
 ### 16.3 Collision-Safe Local Media Import
 
-Ever had two different presentations both contain a file named `Title.png` or `Intro.mp4`? OpenPresenter prevents accidental overwrites automatically:
+Ever had two different presentations both contain a file named `Title.png` or `Intro.mp4`? TrueShow prevents accidental overwrites automatically:
 
 - Enter a **`Media Context Label`** (such as the presentation or service name, e.g., `Sunday Service`) and a **`Safe Media File Path`**, then click **`Import Media Safely`**.
-- OpenPresenter copies and hashes the file using a **collision-proof meaningful naming scheme**:
+- TrueShow copies and hashes the file using a **collision-proof meaningful naming scheme**:
   ```text
   {context}__{original_stem}__{blake3_hash8}.{ext}
   Example: Sunday_10am__Grace_Title__4f9a12c8.png
   ```
-- If the exact same media bytes already exist in your library, OpenPresenter deduplicates it cleanly instead of wasting disk space; if two files share a name like `slide1.png` with different contents, both coexist safely with zero overwriting!
+- If the exact same media bytes already exist in your library, TrueShow deduplicates it cleanly instead of wasting disk space; if two files share a name like `slide1.png` with different contents, both coexist safely with zero overwriting!
 
 ---
 
@@ -524,7 +524,7 @@ In **Section 2**, connect directly to your church's **Planning Center Services**
 
 1. Enter your **PCO App ID** (or OAuth **Bearer Token**), **PCO Secret** (leave blank if using a Bearer Token), and **Service Type ID**, then click **`Fetch Plans`**.
 2. Click **`Load Attachments`** next to any upcoming service plan.
-3. OpenPresenter lists every attached **SongSelect Lyric Sheet / Chord Chart PDF (`LYRICPDF`)**, **Image (`IMAGE`)**, **Video (`VIDEO`)**, and **Audio (`AUDIO`)** attachment on that plan.
+3. TrueShow lists every attached **SongSelect Lyric Sheet / Chord Chart PDF (`LYRICPDF`)**, **Image (`IMAGE`)**, **Video (`VIDEO`)**, and **Audio (`AUDIO`)** attachment on that plan.
 4. Click **`Import Lyrics`** or **`Import Media`** on any individual attachment — or click **`Import All PDFs & Media`** to batch-import the entire service into your chosen Target Lyrics Library and Target Media Bin with collision-safe naming!
 
 ---
@@ -557,20 +557,20 @@ Stay 100% compliant with CCLI licensing rules automatically without manually pas
    - Verify the formatted output immediately in the dark **Live Preview** box directly beneath the editor, then click **`Save & Apply CCLI Template Live`**.
    - Your settings persist in SQLite and render directly on the GPU compositor whenever matching song slides go live!
 4. **CCLI Usage Audit Report (Local Log → CSV):**
-   - OpenPresenter automatically logs every licensed song presented live. Click **`Export CCLI CSV Report`** to generate a clean CSV table ready for CCLI Reporting.
+   - TrueShow automatically logs every licensed song presented live. Click **`Export CCLI CSV Report`** to generate a clean CSV table ready for CCLI Reporting.
 
 ---
 
-## 18. Portable Full-Library Backup & Restore (`.opbundle`)
+## 18. Portable Full-Library Backup & Restore (`.tsbundle`)
 
-Open via **Tools → Backup & Restore (`.opbundle`)** (or **File → Backup & Restore (`.opbundle`)…**).
+Open via **Tools → Backup & Restore (`.tsbundle`)** (or **File → Backup & Restore (`.tsbundle`)…**).
 
 ![Tools — Portable Full Library Backup and Restore](images/17-tools-backup.png)
 
 Move your church's entire presentation workstation to a backup laptop or archive your library before an upgrade in one click:
 
-- **`Export .opbundle Backup`:** Bundles your libraries, songs, arrangements, cue tracks, playlists, looks, templates, macros, scheduled events, and settings into a single portable `.opbundle` file and displays its exact path and item count.
-- **`Restore`:** Paste the path to any `.opbundle` file and click **`Restore`** to hydrate another OpenPresenter workstation cleanly.
+- **`Export .tsbundle Backup`:** Bundles your libraries, songs, arrangements, cue tracks, playlists, looks, templates, macros, scheduled events, and settings into a single portable `.tsbundle` file and displays its exact path and item count.
+- **`Restore`:** Paste the path to any `.tsbundle` file and click **`Restore`** to hydrate another TrueShow workstation cleanly.
 
 ---
 
@@ -580,7 +580,7 @@ Open via **Tools → Diagnostics & Logs** (or click **`Diagnostics`** on the far
 
 ![Tools — Diagnostics, Rolling Logs and Crash Reports](images/18-diagnostics.png)
 
-OpenPresenter is strictly **local-first with zero automatic telemetry**:
+TrueShow is strictly **local-first with zero automatic telemetry**:
 
 - **Live Log Verbosity (`Log Level`):** Switch both the Desktop UI and GPU Engine live between `Error`, `Warn`, `Info (Default)`, `Debug (Verbose)`, and `Trace (Full)` without restarting.
 - **Rolling Live Logs:** Filter between `All (Engine + Desktop)`, `Engine Only`, or `Desktop UI Only`, and click **`Reload Tail`** to inspect the latest 150 lines.

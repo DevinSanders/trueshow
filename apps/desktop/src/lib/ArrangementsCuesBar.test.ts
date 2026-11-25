@@ -110,7 +110,7 @@ describe("ArrangementsCuesBar (ProPresenter Drag+Drop Arrangements & Live Cue Re
     await fireEvent.dragOver(dropzone);
     await fireEvent.drop(dropzone, {
       dataTransfer: {
-        getData: (t: string) => (t === "application/x-openpresenter-master-group" ? "Chorus" : ""),
+        getData: (t: string) => (t === "application/x-trueshow-master-group" ? "Chorus" : ""),
       },
     });
     await waitFor(() => expect(current.active_arrangements?.[0].group_order.length).toBe(5));
@@ -122,7 +122,7 @@ describe("ArrangementsCuesBar (ProPresenter Drag+Drop Arrangements & Live Cue Re
     await fireEvent.dragOver(trackTokens[0]);
     await fireEvent.drop(trackTokens[0], {
       dataTransfer: {
-        getData: (t: string) => (t === "application/x-openpresenter-arr-idx" ? "2" : ""),
+        getData: (t: string) => (t === "application/x-trueshow-arr-idx" ? "2" : ""),
       },
     });
     await waitFor(() => expect(current.active_arrangements?.[0].group_order[0]).toBe("Bridge"));

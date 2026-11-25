@@ -1,7 +1,7 @@
-//! Canonical, resolution-independent scene graph for OpenPresenter.
+//! Canonical, resolution-independent scene graph for TrueShow.
 //!
 //! Reference virtual canvas coordinate space is `1920.0 × 1080.0`. Both the native GPU
-//! compositor (`openpresenter-engine`) and the operator editor (`apps/desktop`) share these
+//! compositor (`trueshow-engine`) and the operator editor (`apps/desktop`) share these
 //! exact structures so WYSIWYG previews match sanctuary displays pixel-for-pixel.
 
 use serde::{Deserialize, Serialize};
@@ -2763,7 +2763,7 @@ pub fn demo_deck() -> Vec<Slide> {
             elements: default_lyric_elements(
                 5001,
                 "WELCOME TO WORSHIP",
-                Some("Sunday Morning Gathering • OpenPresenter Native GPU"),
+                Some("Sunday Morning Gathering • TrueShow Native GPU"),
             ),
         },
         Slide {

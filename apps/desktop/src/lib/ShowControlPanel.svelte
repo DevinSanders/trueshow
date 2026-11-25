@@ -55,7 +55,7 @@
   let schedMacroId = $state("");
 
   let controlProtocol = $state<"osc" | "companion" | "macro">("osc");
-  let controlCommand = $state("/openpresenter/blackout 0");
+  let controlCommand = $state("/trueshow/blackout 0");
   let controlResult = $state<string | null>(null);
 
   let importKind = $state<
@@ -261,7 +261,7 @@
     panelError = null;
     backupStatus = null;
     if (!backupPath.trim()) {
-      panelError = "Provide a .opbundle backup file path to restore";
+      panelError = "Provide a .tsbundle backup file path to restore";
       return;
     }
     try {
@@ -470,14 +470,14 @@
     </div>
   {:else}
     <div class="section" data-testid="section-backup">
-      <h3>Portable Full Library Backup & Restore (.opbundle)</h3>
+      <h3>Portable Full Library Backup & Restore (.tsbundle)</h3>
       <div class="row">
-        <button class="btn primary" onclick={() => void exportBackup()}>Export .opbundle Backup</button>
+        <button class="btn primary" onclick={() => void exportBackup()}>Export .tsbundle Backup</button>
       </div>
       <div class="row">
         <input
           aria-label="Backup Bundle Path"
-          placeholder="Path to .opbundle file to restore"
+          placeholder="Path to .tsbundle file to restore"
           bind:value={backupPath}
         />
         <button class="btn" onclick={() => void restoreBackup()}>Restore</button>

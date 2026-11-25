@@ -17,19 +17,19 @@ export function startAppDrag(event: DragEvent, payload: DragPayload): void {
     // Some headless test environments expose a partial DataTransfer mock
   }
   if (payload.type === "song") {
-    dt.setData("application/x-openpresenter-song", payload.songId);
+    dt.setData("application/x-trueshow-song", payload.songId);
     dt.setData("text/plain", payload.title || payload.songId);
   } else if (payload.type === "playlist-cue") {
-    dt.setData("application/x-openpresenter-playlist-idx", String(payload.fromIdx));
+    dt.setData("application/x-trueshow-playlist-idx", String(payload.fromIdx));
     dt.setData("text/plain", String(payload.fromIdx));
   } else if (payload.type === "master-group") {
-    dt.setData("application/x-openpresenter-master-group", payload.group);
+    dt.setData("application/x-trueshow-master-group", payload.group);
     dt.setData("text/plain", payload.group);
   } else if (payload.type === "arrangement-slot") {
-    dt.setData("application/x-openpresenter-arr-idx", String(payload.fromIdx));
+    dt.setData("application/x-trueshow-arr-idx", String(payload.fromIdx));
     dt.setData("text/plain", String(payload.fromIdx));
   } else {
-    dt.setData("application/x-openpresenter-media", JSON.stringify(payload));
+    dt.setData("application/x-trueshow-media", JSON.stringify(payload));
     dt.setData("text/plain", payload.file_name);
   }
 }
@@ -59,14 +59,14 @@ export function allowDrop(
 
 export function readDroppedSongId(event: DragEvent): string | null {
   const fromStore = activePayload?.type === "song" ? activePayload.songId : null;
-  const fromDt = event.dataTransfer?.getData("application/x-openpresenter-song") || null;
+  const fromDt = event.dataTransfer?.getData("application/x-trueshow-song") || null;
   activePayload = null;
   return fromDt || fromStore;
 }
 
 export function readDroppedPlaylistIndex(event: DragEvent): number | null {
   const fromStore = activePayload?.type === "playlist-cue" ? activePayload.fromIdx : null;
-  const raw = event.dataTransfer?.getData("application/x-openpresenter-playlist-idx");
+  const raw = event.dataTransfer?.getData("application/x-trueshow-playlist-idx");
   activePayload = null;
   if (raw !== undefined && raw !== "") {
     const parsed = Number(raw);
@@ -79,7 +79,7 @@ export function readDroppedMedia(
   event: DragEvent,
 ): { blake3_hash: string; kind?: string; file_name?: string } | null {
   const fromStore = activePayload?.type === "media" ? activePayload : null;
-  const raw = event.dataTransfer?.getData("application/x-openpresenter-media");
+  const raw = event.dataTransfer?.getData("application/x-trueshow-media");
   activePayload = null;
   if (raw) {
     try {
@@ -113,8 +113,8 @@ export function readDroppedArrangementPayload(
   event: DragEvent,
 ): { kind: "master-group"; group: string } | { kind: "arrangement-slot"; fromIdx: number } | null {
   const storeSnap = activePayload;
-  const dtGroup = event.dataTransfer?.getData("application/x-openpresenter-master-group") || "";
-  const dtIdxRaw = event.dataTransfer?.getData("application/x-openpresenter-arr-idx") || "";
+  const dtGroup = event.dataTransfer?.getData("application/x-trueshow-master-group") || "";
+  const dtIdxRaw = event.dataTransfer?.getData("application/x-trueshow-arr-idx") || "";
   activePayload = null;
   if (dtIdxRaw !== "" && !Number.isNaN(Number(dtIdxRaw))) {
     return { kind: "arrangement-slot", fromIdx: Number(dtIdxRaw) };
