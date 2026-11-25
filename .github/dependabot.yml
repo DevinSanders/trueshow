@@ -1,54 +1,34 @@
 version: 2
+
+# Consolidate all dependency updates (Cargo, npm, and GitHub Actions — major,
+# minor, and patch) into a single weekly Dependabot pull request.
+multi-ecosystem-groups:
+  all-dependencies:
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+
 updates:
   # Rust workspace + Tauri desktop crate dependencies.
   - package-ecosystem: "cargo"
     directories:
       - "/"
       - "/apps/desktop/src-tauri"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 5
-    groups:
-      cargo-minor-patch:
-        patterns:
-          - "*"
-        update-types:
-          - "minor"
-          - "patch"
-      cargo-major:
-        patterns:
-          - "*"
-        update-types:
-          - "major"
+    multi-ecosystem-group: "all-dependencies"
+    patterns:
+      - "*"
 
   # Svelte 5 + Vite + Tauri CLI frontend packages.
   - package-ecosystem: "npm"
     directory: "/apps/desktop"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 5
-    groups:
-      npm-minor-patch:
-        patterns:
-          - "*"
-        update-types:
-          - "minor"
-          - "patch"
-      npm-major:
-        patterns:
-          - "*"
-        update-types:
-          - "major"
+    multi-ecosystem-group: "all-dependencies"
+    patterns:
+      - "*"
 
   # GitHub Actions workflows.
   - package-ecosystem: "github-actions"
     directory: "/"
-    schedule:
-      interval: "monthly"
-    open-pull-requests-limit: 3
-    groups:
-      github-actions:
-        patterns:
-          - "*"
+    multi-ecosystem-group: "all-dependencies"
+    patterns:
+      - "*"
