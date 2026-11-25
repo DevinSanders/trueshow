@@ -18,6 +18,12 @@ updates:
     multi-ecosystem-group: "all-dependencies"
     patterns:
       - "*"
+    ignore:
+      # cosmic-text 0.15+ changed Buffer::set_metrics/set_size/set_text
+      # signatures (removed &mut FontSystem, added Option<Align>).
+      # Hold on 0.14.x until crates/render-text is migrated.
+      - dependency-name: "cosmic-text"
+        versions: [">=0.15.0"]
 
   # Svelte 5 + Vite + Tauri CLI frontend packages.
   - package-ecosystem: "npm"
@@ -25,6 +31,11 @@ updates:
     multi-ecosystem-group: "all-dependencies"
     patterns:
       - "*"
+    ignore:
+      # svelte-check 4.x declares peer dependency typescript "^5.0.0 || ^6.0.0".
+      # Hold TypeScript below 7.x until svelte-check supports TS 7.
+      - dependency-name: "typescript"
+        versions: [">=7.0.0"]
 
   # GitHub Actions workflows.
   - package-ecosystem: "github-actions"
