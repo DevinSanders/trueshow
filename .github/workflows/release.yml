@@ -179,13 +179,19 @@ jobs:
           if-no-files-found: error
 
   # ───────────────────────────────────────────────────────────────────────────
-  # Step 2: Generate SHA256SUMS.txt and publish the GitHub Release.
+  # Step 2: Generate SHA256SUMS.txt, build release notes (PR categories +
+  # direct-commit fallback), and publish the GitHub Release.
   # ───────────────────────────────────────────────────────────────────────────
   release:
     name: Create GitHub Release
     needs: [build]
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout full git history for release notes
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Download all installer artifacts
         uses: actions/download-artifact@v4
         with:
@@ -208,6 +214,91 @@ jobs:
             fi
           fi
 
+      - name: Generate release notes (PRs via .github/release.yml + direct commits)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.meta.outputs.tag }}"
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            RANGE_END="${TAG}"
+            PREV_TAG=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)
+          else
+            RANGE_END="HEAD"
+            PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || true)
+          fi
+
+          # 1. Ask GitHub to generate categorized PR notes using .github/release.yml
+          API_ARGS=(-f "tag_name=${TAG}" -f "target_commitish=${GITHUB_SHA}")
+          if [[ -n "$PREV_TAG" ]]; then
+            API_ARGS+=(-f "previous_tag_name=${PREV_TAG}")
+          fi
+          PR_NOTES=$(gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" "${API_ARGS[@]}" --jq '.body' 2>/dev/null || true)
+
+          # 2. Collect non-merge direct commits not already listed via a PR reference (#123)
+          if [[ -n "$PREV_TAG" ]]; then
+            LOG_RANGE="${PREV_TAG}..${RANGE_END}"
+          else
+            LOG_RANGE="${RANGE_END}"
+          fi
+
+          FEAT_LINES=""
+          FIX_LINES=""
+          OTHER_LINES=""
+          while IFS= read -r line; do
+            [[ -z "$line" ]] && continue
+            HASH="${line%% *}"
+            SUBJ="${line#* }"
+            # Skip commits already covered in GitHub's PR notes via (#NNN)
+            if [[ "$SUBJ" =~ \(#([0-9]+)\) ]] && grep -qE "pull/${BASH_REMATCH[1]}\b|#${BASH_REMATCH[1]}\b" <<< "$PR_NOTES"; then
+              continue
+            fi
+            ENTRY="- ${SUBJ} (\`${HASH}\`)"
+            if [[ "$SUBJ" =~ ^feat(\([^)]+\))?: ]]; then
+              FEAT_LINES+="${ENTRY}"$'\n'
+            elif [[ "$SUBJ" =~ ^fix(\([^)]+\))?: ]]; then
+              FIX_LINES+="${ENTRY}"$'\n'
+            else
+              OTHER_LINES+="${ENTRY}"$'\n'
+            fi
+          done < <(git log "${LOG_RANGE}" --no-merges --pretty=format:"%h %s")
+
+          {
+            if [[ -n "$PR_NOTES" ]]; then
+              printf '%s\n\n' "$PR_NOTES"
+            fi
+
+            if [[ -n "$FEAT_LINES" || -n "$FIX_LINES" || -n "$OTHER_LINES" ]]; then
+              echo "## Commits Included"
+              if [[ -n "$FEAT_LINES" ]]; then
+                echo ""
+                echo "### 🚀 Features"
+                printf '%s' "$FEAT_LINES"
+              fi
+              if [[ -n "$FIX_LINES" ]]; then
+                echo ""
+                echo "### 🐛 Fixes"
+                printf '%s' "$FIX_LINES"
+              fi
+              if [[ -n "$OTHER_LINES" ]]; then
+                echo ""
+                echo "### 🔧 Other Commits"
+                printf '%s' "$OTHER_LINES"
+              fi
+              echo ""
+            fi
+
+            echo "---"
+            echo "### Downloads & Verification"
+            echo "- **Windows x64:** \`.exe\` (NSIS installer) or \`.msi\` (WiX installer)"
+            echo "- **macOS:** \`.dmg\` for Apple Silicon (\`aarch64\`) or Intel (\`x64\`)"
+            echo "- **Linux x64:** \`.AppImage\`, \`.deb\`, or \`.rpm\`"
+            echo "- Verify integrity against \`SHA256SUMS.txt\`."
+          } > release-notes.md
+
+          echo "=== Generated release-notes.md ==="
+          cat release-notes.md
+
       - name: Generate SHA256SUMS.txt
         shell: bash
         run: |
@@ -224,6 +315,7 @@ jobs:
           tag_name: ${{ steps.meta.outputs.tag }}
           name: TrueShow ${{ steps.meta.outputs.tag }}
           prerelease: ${{ steps.meta.outputs.prerelease }}
-          generate_release_notes: true
+          body_path: release-notes.md
+          generate_release_notes: false
           fail_on_unmatched_files: true
           files: artifacts/*

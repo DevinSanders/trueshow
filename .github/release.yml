@@ -1,0 +1,32 @@
+# Configures GitHub's auto-generated release notes categories.
+# Used automatically by the Release workflow and GitHub's "Generate release notes" button.
+changelog:
+  exclude:
+    labels:
+      - ignore-for-release
+      - duplicate
+      - invalid
+      - wontfix
+  categories:
+    - title: "🚀 New Features"
+      labels:
+        - enhancement
+        - feature
+    - title: "🐛 Bug Fixes"
+      labels:
+        - bug
+        - fix
+    - title: "🎨 UI & Documentation"
+      labels:
+        - documentation
+        - docs
+        - ui
+    - title: "🔧 Maintenance & Dependencies"
+      labels:
+        - dependencies
+        - chore
+        - ci
+        - build
+    - title: "📦 Other Changes"
+      labels:
+        - "*"
